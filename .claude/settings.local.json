@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(lua:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(luac:*)",
+      "Bash(for f in /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/challenge_controller.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/ui/action_sequencer.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/action_resolver.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/npc_ai.lua)",
+      "Bash(do luac:*)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(timeout:*)",
+      "Bash(for f in src/ui/arena_view.lua src/ui/command_board.lua src/ui/minor_action_panel.lua src/data/action_registry.lua src/logic/action_resolver.lua src/logic/challenge_controller.lua)",
+      "Bash(for:*)",
+      "Bash(wc:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)"
     ]
   }
 }

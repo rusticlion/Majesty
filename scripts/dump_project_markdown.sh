@@ -64,8 +64,10 @@ mkdir -p "$(dirname "$OUTPUT_PATH")"
 
 # Collect files respecting .gitignore
 FILE_LIST="$(mktemp)"
+TMP_OUT=""
 cleanup() {
-  rm -f "$FILE_LIST" "$TMP_OUT"
+  rm -f "$FILE_LIST"
+  if [ -n "${TMP_OUT:-}" ]; then rm -f "$TMP_OUT"; fi
 }
 trap cleanup EXIT
 
@@ -78,6 +80,58 @@ elif [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
 else
   echo "Error: Need ripgrep (rg) installed or a Git repo to honor .gitignore." >&2
   exit 1
+fi
+
+# Additional filtering: ensure top-level directories/files specified with
+# root-anchored patterns in .gitignore (e.g., /sprints/, /rulebook/, /.claude/)
+# are excluded from FILE_LIST even when using 'git ls-files' that may include
+# already-tracked files. Use awk-based string matching for macOS compatibility.
+if [ -f "$ROOT_DIR/.gitignore" ]; then
+  DIRS_CSV=""
+  FILES_CSV=""
+  while IFS= read -r raw; do
+    # Strip trailing comments and whitespace
+    line="${raw%%#*}"
+    line="$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//')"
+    [ -n "$line" ] || continue
+    # Only handle root-anchored patterns for directories/files
+    case "$line" in
+      /*/)
+        name="${line#/}"; name="${name%/}"
+        DIRS_CSV="${DIRS_CSV}${name},"
+        ;;
+      /*)
+        name="${line#/}"
+        FILES_CSV="${FILES_CSV}${name},"
+        ;;
+      *)
+        # Non-root-anchored or other complex patterns are ignored here;
+        # they are already handled by ripgrep when available.
+        :
+        ;;
+    esac
+  done < "$ROOT_DIR/.gitignore"
+
+  if [ -n "$DIRS_CSV$FILES_CSV" ]; then
+    TMP_LIST="$(mktemp)"
+    awk -v dirs="$DIRS_CSV" -v files="$FILES_CSV" '
+      BEGIN{
+        n=split(dirs,d,","); for(i=1;i<=n;i++) if(d[i]!="") D[d[i]]=1;
+        m=split(files,f,","); for(i=1;i<=m;i++) if(f[i]!="") F[f[i]]=1;
+      }
+      {
+        path=$0
+        slash=index(path,"/")
+        if (slash>0) {
+          comp=substr(path,1,slash-1)
+          if (comp in D) next
+        } else {
+          if (path in F) next
+        }
+        print path
+      }' "$FILE_LIST" > "$TMP_LIST"
+    mv "$TMP_LIST" "$FILE_LIST"
+  fi
 fi
 
 # Temporary output to avoid partial writes

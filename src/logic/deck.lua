@@ -5,18 +5,6 @@
 local M = {}
 
 --------------------------------------------------------------------------------
--- RANDOM SEED (call once at startup)
---------------------------------------------------------------------------------
-local seeded = false
-
-local function ensureSeeded()
-    if not seeded then
-        math.randomseed(os.time())
-        seeded = true
-    end
-end
-
---------------------------------------------------------------------------------
 -- DEEP COPY HELPER
 -- Prevents the "reference trap" where modifying a drawn card affects the registry
 --------------------------------------------------------------------------------
@@ -26,7 +14,41 @@ local function deepCopyCard(card)
         suit     = card.suit,
         value    = card.value,
         is_major = card.is_major,
+        -- S12.6: Greater/Lesser Doom classification
+        isGreaterDoom = card.isGreaterDoom,
+        isLesserDoom  = card.isLesserDoom,
     }
+end
+
+--------------------------------------------------------------------------------
+-- S12.6: GREATER / LESSER DOOM HELPERS
+-- Greater Doom: Major Arcana I-XIV (The Magician through Temperance)
+-- Lesser Doom: Major Arcana XV-XXI (The Devil through The World)
+--------------------------------------------------------------------------------
+
+--- Check if a card is a Greater Doom (Major Arcana 1-14)
+function M.isGreaterDoom(card)
+    if not card or not card.is_major then return false end
+    return card.value >= 1 and card.value <= 14
+end
+
+--- Check if a card is a Lesser Doom (Major Arcana 15-21)
+function M.isLesserDoom(card)
+    if not card or not card.is_major then return false end
+    return card.value >= 15 and card.value <= 21
+end
+
+--- Get the Doom classification of a card
+-- @param card table: The card to check
+-- @return string: "greater", "lesser", or nil if not Major Arcana
+function M.getDoomType(card)
+    if not card or not card.is_major then return nil end
+    if card.value >= 1 and card.value <= 14 then
+        return "greater"
+    elseif card.value >= 15 and card.value <= 21 then
+        return "lesser"
+    end
+    return nil
 end
 
 local function deepCopyCards(cards)
@@ -39,9 +61,9 @@ end
 
 --------------------------------------------------------------------------------
 -- FISHER-YATES SHUFFLE (in-place)
+-- Note: Random seed must be initialized via game_clock:init() before use
 --------------------------------------------------------------------------------
 local function fisherYatesShuffle(t)
-    ensureSeeded()
     for i = #t, 2, -1 do
         local j = math.random(1, i)
         t[i], t[j] = t[j], t[i]
@@ -57,8 +79,6 @@ end
 -- @param cards table: Array of card data from constants.lua (MinorArcana or MajorArcana)
 -- @return Deck instance with draw_pile, discard_pile, and methods
 function M.createDeck(cards)
-    ensureSeeded()
-
     local deck = {
         draw_pile    = {},
         discard_pile = {},

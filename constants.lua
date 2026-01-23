@@ -38,12 +38,25 @@ M.FACE_VALUES = {
 -- CARD FACTORY
 --------------------------------------------------------------------------------
 local function createCard(name, suit, value, is_major)
-    return {
+    local card = {
         name     = name,
         suit     = suit,
         value    = value,
         is_major = is_major or false,
     }
+
+    -- S12.6: Add Greater/Lesser Doom classification for Major Arcana
+    if is_major and value then
+        if value >= 1 and value <= 14 then
+            card.isGreaterDoom = true
+            card.isLesserDoom = false
+        elseif value >= 15 and value <= 21 then
+            card.isGreaterDoom = false
+            card.isLesserDoom = true
+        end
+    end
+
+    return card
 end
 
 --------------------------------------------------------------------------------

@@ -5,6 +5,32 @@
 local M = {}
 
 --------------------------------------------------------------------------------
+-- GLOBAL INITIALIZATION
+-- Call once at game startup, before creating any decks
+--------------------------------------------------------------------------------
+local initialized = false
+
+--- Initialize the random seed for the entire game
+-- Must be called once before any deck shuffling occurs
+-- Uses a combination of time and a high-precision counter to avoid
+-- identical shuffles when multiple decks are created in the same millisecond
+function M.init()
+    if not initialized then
+        -- Combine os.time() with os.clock() for better entropy
+        local seed = os.time() + math.floor(os.clock() * 1000)
+        math.randomseed(seed)
+        -- Warm up the generator (first few values can be predictable)
+        for _ = 1, 10 do math.random() end
+        initialized = true
+    end
+end
+
+--- Check if the system has been initialized
+function M.isInitialized()
+    return initialized
+end
+
+--------------------------------------------------------------------------------
 -- PHASE CONSTANTS
 --------------------------------------------------------------------------------
 M.PHASES = {
