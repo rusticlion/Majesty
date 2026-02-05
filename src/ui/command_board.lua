@@ -153,12 +153,13 @@ function M.createCommandBoard(config)
     --- Calculate total board height based on max column length
     function board:calculateHeight()
         local maxActions = 0
+        local filter = { challengeOnly = true, commandBoardOnly = true }
         local suits = { action_registry.SUITS.SWORDS, action_registry.SUITS.PENTACLES,
                         action_registry.SUITS.CUPS, action_registry.SUITS.WANDS,
                         action_registry.SUITS.MISC }
 
         for _, suit in ipairs(suits) do
-            local actions = action_registry.getActionsForSuit(suit)
+            local actions = action_registry.getActionsForSuit(suit, filter)
             maxActions = math.max(maxActions, #actions)
         end
 
@@ -179,10 +180,11 @@ function M.createCommandBoard(config)
         }
 
         local cardSuit = action_registry.cardSuitToActionSuit(self.selectedCard.suit)
+        local filter = { challengeOnly = true, commandBoardOnly = true }
 
         for col, suitInfo in ipairs(suits) do
             local colX = self.x + M.BOARD_PADDING + (col - 1) * (M.COLUMN_WIDTH + M.BUTTON_PADDING)
-            local actions = action_registry.getActionsForSuit(suitInfo.id)
+            local actions = action_registry.getActionsForSuit(suitInfo.id, filter)
 
             -- Column is enabled if:
             -- 1. It's the primary turn (all columns enabled)
@@ -201,29 +203,14 @@ function M.createCommandBoard(config)
                 local enabled = columnEnabled
                 local disabledReason = nil
 
-                -- Additional requirements check
-                -- S13: Check for weapon in hands with proper type matching
-                if enabled and action.requiresWeaponType then
-                    local entity = self.selectedEntity
-                    local hasRequiredWeapon = false
-
-                    -- Check inventory hands for weapons
-                    if entity and entity.inventory then
-                        local weapon = entity.inventory:getWieldedWeapon()
-                        if weapon then
-                            if action.requiresWeaponType == "ranged" then
-                                hasRequiredWeapon = weapon.isRanged == true
-                            elseif action.requiresWeaponType == "melee" then
-                                hasRequiredWeapon = weapon.isMelee == true or (weapon.isWeapon and not weapon.isRanged)
-                            else
-                                hasRequiredWeapon = weapon.weaponType == action.requiresWeaponType
-                            end
-                        end
-                    end
-
-                    if not hasRequiredWeapon then
+                if enabled then
+                    local requirementsOk, requirementReason = action_registry.checkActionRequirements(
+                        action,
+                        self.selectedEntity
+                    )
+                    if not requirementsOk then
                         enabled = false
-                        disabledReason = "Requires " .. action.requiresWeaponType .. " weapon in hands"
+                        disabledReason = requirementReason or "Requirements not met"
                     end
                 end
 

@@ -1,7 +1,319 @@
 # Project Source Dump
 
 - Root: /Users/russellbates/JunkDrawer/HMTW/Majesty
-- Generated: 2026-01-22T20:29:23Z
+- Generated: 2026-02-05T21:02:38Z
+
+---
+
+## File: .claude/settings.local.json
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(lua:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(luac:*)",
+      "Bash(for f in /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/challenge_controller.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/ui/action_sequencer.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/action_resolver.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/npc_ai.lua)",
+      "Bash(do luac:*)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(timeout:*)",
+      "Bash(for f in src/ui/arena_view.lua src/ui/command_board.lua src/ui/minor_action_panel.lua src/data/action_registry.lua src/logic/action_resolver.lua src/logic/challenge_controller.lua)",
+      "Bash(for:*)",
+      "Bash(wc:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)"
+    ]
+  }
+}
+
+```
+
+---
+
+## File: .gitignore
+
+```
+/sprints/
+/rulebook/
+/.claude/  
+```
+
+---
+
+## File: constants.lua
+
+```lua
+-- constants.lua
+-- Tarot card data structures and constant tables for Majesty
+-- Ticket T1_1: Tarot Data Structures & Constants
+
+local M = {}
+
+--------------------------------------------------------------------------------
+-- SUIT CONSTANTS (use these for logic, not string comparisons)
+--------------------------------------------------------------------------------
+M.SUITS = {
+    SWORDS    = 1,
+    PENTACLES = 2,
+    CUPS      = 3,
+    WANDS     = 4,
+    MAJOR     = 5,  -- For major arcana cards
+}
+
+-- Reverse lookup: ID -> name (useful for display/debugging)
+M.SUIT_NAMES = {
+    [1] = "Swords",
+    [2] = "Pentacles",
+    [3] = "Cups",
+    [4] = "Wands",
+    [5] = "Major",
+}
+
+--------------------------------------------------------------------------------
+-- FACE CARD VALUES
+--------------------------------------------------------------------------------
+M.FACE_VALUES = {
+    PAGE   = 11,
+    KNIGHT = 12,
+    QUEEN  = 13,
+    KING   = 14,
+}
+
+--------------------------------------------------------------------------------
+-- CARD FACTORY
+--------------------------------------------------------------------------------
+local function createCard(name, suit, value, is_major)
+    local card = {
+        name     = name,
+        suit     = suit,
+        value    = value,
+        is_major = is_major or false,
+    }
+
+    -- S12.6: Add Greater/Lesser Doom classification for Major Arcana
+    if is_major and value then
+        if value >= 1 and value <= 14 then
+            card.isGreaterDoom = true
+            card.isLesserDoom = false
+        elseif value >= 15 and value <= 21 then
+            card.isGreaterDoom = false
+            card.isLesserDoom = true
+        end
+    end
+
+    return card
+end
+
+--------------------------------------------------------------------------------
+-- MINOR ARCANA (56 cards + The Fool = 57 cards in player deck)
+--------------------------------------------------------------------------------
+local function buildMinorArcana()
+    local cards = {}
+    local SUITS = M.SUITS
+    local FACE_VALUES = M.FACE_VALUES
+
+    -- Suit data: { suit_id, suit_name_for_cards }
+    local suits = {
+        { SUITS.SWORDS,    "Swords" },
+        { SUITS.PENTACLES, "Pentacles" },
+        { SUITS.CUPS,      "Cups" },
+        { SUITS.WANDS,     "Wands" },
+    }
+
+    -- Number card names (Ace through Ten)
+    local numberNames = {
+        "Ace", "Two", "Three", "Four", "Five",
+        "Six", "Seven", "Eight", "Nine", "Ten"
+    }
+
+    -- Face card names in order of value
+    local faceCards = {
+        { "Page",   FACE_VALUES.PAGE },
+        { "Knight", FACE_VALUES.KNIGHT },
+        { "Queen",  FACE_VALUES.QUEEN },
+        { "King",   FACE_VALUES.KING },
+    }
+
+    -- Build all 56 suited cards
+    for _, suitData in ipairs(suits) do
+        local suitId, suitName = suitData[1], suitData[2]
+
+        -- Number cards (Ace = 1 through Ten = 10)
+        for value = 1, 10 do
+            local name = numberNames[value] .. " of " .. suitName
+            cards[#cards + 1] = createCard(name, suitId, value, false)
+        end
+
+        -- Face cards
+        for _, faceData in ipairs(faceCards) do
+            local faceName, faceValue = faceData[1], faceData[2]
+            local name = faceName .. " of " .. suitName
+            cards[#cards + 1] = createCard(name, suitId, faceValue, false)
+        end
+    end
+
+    -- The Fool (value 0, belongs with minor arcana in player deck)
+    cards[#cards + 1] = createCard("The Fool", SUITS.MAJOR, 0, true)
+
+    return cards
+end
+
+--------------------------------------------------------------------------------
+-- MAJOR ARCANA (21 cards, I-XXI, used by GM)
+--------------------------------------------------------------------------------
+local function buildMajorArcana()
+    local cards = {}
+    local SUITS = M.SUITS
+
+    -- Major Arcana names in order (I through XXI)
+    -- Note: The Fool (0) is NOT included here; it's in the minor arcana deck
+    local majorNames = {
+        "The Magician",         -- I
+        "The High Priestess",   -- II
+        "The Empress",          -- III
+        "The Emperor",          -- IV
+        "The Hierophant",       -- V
+        "The Lovers",           -- VI
+        "The Chariot",          -- VII
+        "Strength",             -- VIII
+        "The Hermit",           -- IX
+        "Wheel of Fortune",     -- X
+        "Justice",              -- XI
+        "The Hanged Man",       -- XII
+        "Death",                -- XIII
+        "Temperance",           -- XIV
+        "The Devil",            -- XV
+        "The Tower",            -- XVI
+        "The Star",             -- XVII
+        "The Moon",             -- XVIII
+        "The Sun",              -- XIX
+        "Judgement",            -- XX
+        "The World",            -- XXI
+    }
+
+    for i, name in ipairs(majorNames) do
+        cards[#cards + 1] = createCard(name, SUITS.MAJOR, i, true)
+    end
+
+    return cards
+end
+
+--------------------------------------------------------------------------------
+-- EXPORT CONSTANT TABLES
+--------------------------------------------------------------------------------
+M.MinorArcana = buildMinorArcana()  -- 57 cards (56 suited + The Fool)
+M.MajorArcana = buildMajorArcana()  -- 21 cards (I-XXI)
+
+return M
+
+```
+
+---
+
+## File: docs/KEYBOARD_BINDINGS.md
+
+```markdown
+# Keyboard Bindings Reference
+
+This document lists all keyboard bindings in Majesty, organized by context.
+
+## Global Keys
+
+| Key | Action | Notes |
+|-----|--------|-------|
+| `Escape` | Close current modal/menu | Works in all contexts |
+| `Tab` | Toggle Character Sheet | Opens/closes the party character sheet |
+
+## Crawl Phase (Exploration)
+
+| Key | Action | Notes |
+|-----|--------|-------|
+| `` ` `` (backtick) | Cycle equipment PC | Switches which PC's hands/belt is shown |
+| `Space` | Skip typewriter | Completes the typewriter text animation |
+| `X` | Exit dungeon | Only works at entrance room |
+| Drag item to POI | Use item | Drag from hands/belt onto clickable text |
+
+## Character Sheet (when open)
+
+| Key | Action | Notes |
+|-----|--------|-------|
+| `Tab` | Close sheet | Also: `Escape` |
+| `1-4` | Select PC | Switches which PC's details are shown |
+| Click+drag | Move items | Drag items between hands/belt/pack |
+
+## Loot Modal (when open)
+
+| Key | Action | Notes |
+|-----|--------|-------|
+| `Escape` | Close modal | Leaves remaining loot in container |
+| `1-4` | Select recipient | Switches which PC receives looted items |
+| Click | Take item | Click on item to take it |
+
+## Combat Phase
+
+### Command Selection
+| Key | Action | Notes |
+|-----|--------|-------|
+| `1-4` | Select PC | Chooses which PC to give a command |
+| `Escape` | Cancel | Cancels current selection |
+
+### Zone Selection
+| Key | Action | Notes |
+|-----|--------|-------|
+| `1-3` | Select zone | Chooses movement destination |
+| `Escape` | Cancel | Returns to command selection |
+
+### Target Selection
+| Key | Action | Notes |
+|-----|--------|-------|
+| `1-N` | Select target | Chooses attack target |
+| `Escape` | Cancel | Returns to previous selection |
+
+### Resolution
+| Key | Action | Notes |
+|-----|--------|-------|
+| `Space` | Confirm | Confirms current action |
+| `1-4` | Quick select PC | Alternative to clicking |
+
+## Camp Phase
+
+| Key | Action | Notes |
+|-----|--------|-------|
+| `Escape` | Exit camp | Returns to crawl phase |
+
+## Debug Keys (Development Only)
+
+| Key | Action | Notes |
+|-----|--------|-------|
+| `D` | Draw meatgrinder | Draws a card from GM deck |
+| `M` | Advance watch | Increments watch counter |
+| `F9` | Auto-win combat | Instantly wins current combat (only during combat) |
+| `H` | Debug info | Shows debug information |
+
+---
+
+## Key Binding Priority
+
+When multiple systems could handle a key, priority is:
+1. Loot Modal (if open)
+2. Character Sheet (if open)
+3. Minor Action Panel (if open)
+4. Command Board (if open)
+5. Phase-specific handlers (crawl, combat, camp)
+6. Belt Hotbar
+7. Global debug keys
+
+## Design Principles
+
+1. **Context-aware number keys**: 1-4 always selects something relevant to current context
+2. **Escape always closes**: Any modal or menu can be closed with Escape
+3. **Tab for character sheet**: Primary toggle for the detailed party view
+4. **Space for confirmation**: Skip animations or confirm selections
+
+```
 
 ---
 
@@ -46,16 +358,20 @@ local player_hand = require('ui.player_hand')
 local combat_display = require('ui.combat_display')
 local inspect_panel = require('ui.inspect_panel')
 local arena_view = require('ui.arena_view')
+local layout_manager = require('ui.layout_manager')
 local command_board = require('ui.command_board')
 local minor_action_panel = require('ui.minor_action_panel')
 local floating_text = require('ui.floating_text')
 local sound_manager = require('ui.sound_manager')
+local test_of_fate_modal = require('ui.test_of_fate_modal')
 
 -- World systems
 local dungeon_graph = require('world.dungeon_graph')
+local zone_system = require('world.zone_system')
 
 -- Entity systems
 local adventurer = require('entities.adventurer')
+local factory = require('entities.factory')
 
 -- Map data
 local tomb_data = require('data.maps.tomb_of_golden_ghosts')
@@ -74,7 +390,8 @@ local camp_controller = require('logic.camp_controller')
 -- GAME STATE
 --------------------------------------------------------------------------------
 
-local gameState = {
+-- Global game state (accessible by UI components for active PC tracking)
+gameState = {
     -- Core systems (initialized in love.load)
     gameClock         = nil,
     gmDeck            = nil,
@@ -97,6 +414,7 @@ local gameState = {
     arenaView           = nil,  -- S6.1: Arena tactical schematic
     commandBoard        = nil,  -- S6.2: Categorized command board
     minorActionPanel    = nil,  -- S6.4: Minor action declaration panel
+    pendingTestAction   = nil,  -- S12.5: Pending Test of Fate Challenge action
 
     -- Camp systems (Sprint 8-9)
     campController      = nil,
@@ -107,6 +425,12 @@ local gameState = {
 
     -- S11.3: Loot modal
     lootModal           = nil,
+
+    -- S12.5: Test of Fate modal
+    testOfFateModal     = nil,
+
+    -- S13.2: Layout manager for stage-based UI
+    layoutManager       = nil,
 
     -- Party
     guild             = {},    -- Array of adventurer entities
@@ -119,6 +443,9 @@ local gameState = {
 
     -- Game phase
     phase             = "crawl",  -- "crawl", "challenge", "camp", "town"
+
+    -- Active PC tracking (for inventory, POI interaction, Tests of Fate)
+    activePCIndex     = 1,
 
     -- Victory condition tracking
     vellumMapFound    = false,
@@ -150,6 +477,57 @@ local function resetCombatInputState()
 end
 
 --------------------------------------------------------------------------------
+-- ACTIVE PC MANAGEMENT
+--------------------------------------------------------------------------------
+
+--- Get the character plate at a screen position (if any)
+local function getPlateAt(x, y)
+    if not gameState.currentScreen or not gameState.currentScreen.characterPlates then
+        return nil, nil
+    end
+
+    for i, plate in ipairs(gameState.currentScreen.characterPlates) do
+        local plateHeight = plate.getHeight and plate:getHeight() or 0
+        local plateWidth = plate.width or 0
+        if x >= plate.x and x <= plate.x + plateWidth and
+           y >= plate.y and y <= plate.y + plateHeight then
+            return plate, i
+        end
+    end
+
+    return nil, nil
+end
+
+--- Get the currently active PC
+function getActivePC()
+    if gameState.activePCIndex and gameState.guild[gameState.activePCIndex] then
+        return gameState.guild[gameState.activePCIndex]
+    end
+    return gameState.guild[1]
+end
+
+--- Set the active PC by index
+function setActivePC(index)
+    if index >= 1 and index <= #gameState.guild then
+        local previousIndex = gameState.activePCIndex
+        gameState.activePCIndex = index
+
+        -- Emit event for UI components to sync
+        gameState.eventBus:emit(events.EVENTS.ACTIVE_PC_CHANGED, {
+            previousIndex = previousIndex,
+            newIndex = index,
+            pc = gameState.guild[index],
+        })
+    end
+end
+
+--- Cycle to the next active PC
+function cycleActivePC()
+    local newIndex = (gameState.activePCIndex % #gameState.guild) + 1
+    setActivePC(newIndex)
+end
+
+--------------------------------------------------------------------------------
 -- INITIALIZATION
 --------------------------------------------------------------------------------
 
@@ -171,6 +549,11 @@ function love.load()
 
     -- Create game clock with deck references
     gameState.gameClock = game_clock.createGameClock(gameState.playerDeck, gameState.gmDeck)
+    -- Track The Fool draws for reshuffle logic
+    if gameState.gameClock and gameState.gameClock.onCardDrawn then
+        gameState.playerDeck.onDraw = function(card) gameState.gameClock:onCardDrawn(card) end
+        gameState.gmDeck.onDraw = function(card) gameState.gameClock:onCardDrawn(card) end
+    end
 
     -- Load dungeon
     gameState.dungeon = dungeon_graph.loadFromData(tomb_data.data)
@@ -213,18 +596,27 @@ function love.load()
     })
     gameState.environmentManager:init()
 
+    -- S12.1: Create zone registry for engagement tracking
+    gameState.zoneRegistry = zone_system.createZoneRegistry({
+        eventBus = gameState.eventBus,
+    })
+
     -- Create challenge systems (Sprint 4)
     gameState.actionResolver = action_resolver.createActionResolver({
-        eventBus = gameState.eventBus,
+        eventBus   = gameState.eventBus,
+        zoneSystem = gameState.zoneRegistry,  -- S12.1: Pass zone registry for engagement tracking
     })
 
     gameState.challengeController = challenge_controller.createChallengeController({
         eventBus   = gameState.eventBus,
         playerDeck = gameState.playerDeck,
         gmDeck     = gameState.gmDeck,
+        gameClock  = gameState.gameClock,
         guild      = gameState.guild,
+        zoneSystem = gameState.zoneRegistry,  -- S12.1: Pass zone registry for engagement clearing
     })
     gameState.challengeController:init()
+    gameState.actionResolver.challengeController = gameState.challengeController
 
     gameState.actionSequencer = action_sequencer.createActionSequencer({
         eventBus = gameState.eventBus,
@@ -264,6 +656,23 @@ function love.load()
     })
     gameState.inspectPanel:init()
 
+    -- S13.2: Create layout manager for stage-based UI
+    gameState.layoutManager = layout_manager.createLayoutManager({
+        eventBus = gameState.eventBus,
+        leftRailWidth = crawl_screen.LAYOUT.LEFT_RAIL_WIDTH,
+        rightRailWidth = crawl_screen.LAYOUT.RIGHT_RAIL_WIDTH,
+        padding = crawl_screen.LAYOUT.PADDING,
+        headerHeight = crawl_screen.LAYOUT.HEADER_HEIGHT,
+        bottomReserve = 200,
+        equipmentBarOffset = 80,
+    })
+    gameState.layoutManager:init()
+    if love then
+        local w, h = love.graphics.getDimensions()
+        gameState.layoutManager:resize(w, h)
+    end
+    gameState.layoutManager:setStage(gameState.phase, true)
+
     -- S6.1: Arena view for tactical combat visualization
     local w, h = love.graphics.getDimensions()
     gameState.arenaView = arena_view.createArenaView({
@@ -272,8 +681,29 @@ function love.load()
         y = 90,   -- Below header
         width = w - 430,  -- Leave room for right rail
         height = h - 250, -- Leave room for hand display
+        inspectPanel = gameState.inspectPanel,  -- S13.7: Pass for enemy tooltips
+        zoneSystem = gameState.zoneRegistry,    -- S13.3: Pass for adjacency queries
     })
     gameState.arenaView:init()
+    -- S13.2: Register arena with layout manager for stage positioning
+    if gameState.layoutManager then
+        gameState.layoutManager:register("arena_view", gameState.arenaView, {
+            apply = function(arena, layout)
+                if layout.x and layout.y then
+                    if arena.x ~= layout.x or arena.y ~= layout.y then
+                        arena:setPosition(layout.x, layout.y)
+                    end
+                end
+                if layout.width and layout.height then
+                    if arena.width ~= layout.width or arena.height ~= layout.height then
+                        arena:resize(layout.width, layout.height)
+                    end
+                end
+                arena.alpha = layout.alpha or 1
+                arena.isVisible = layout.visible
+            end,
+        })
+    end
 
     -- S6.2: Command board for action selection
     gameState.commandBoard = command_board.createCommandBoard({
@@ -305,10 +735,34 @@ function love.load()
         roomManager = gameState.roomManager,
     })
 
+    -- S12.5: Test of Fate modal (used in Crawl and Challenge contexts)
+    gameState.testOfFateModal = test_of_fate_modal.createTestOfFateModal({
+        eventBus = gameState.eventBus,
+        deck = gameState.playerDeck,
+    })
+    gameState.testOfFateModal:init()
+
     -- Wire up challenge action resolution
     gameState.eventBus:on(events.EVENTS.CHALLENGE_ACTION, function(data)
         local result = gameState.actionResolver:resolve(data)
+        if result and result.pendingTestOfFate then
+            gameState.pendingTestAction = data
+            return
+        end
         gameState.challengeController:resolveAction(data)
+    end)
+
+    -- Resolve Test of Fate outcomes for pending Challenge actions
+    gameState.eventBus:on(events.EVENTS.TEST_OF_FATE_COMPLETE, function(data)
+        if not gameState.pendingTestAction then
+            return
+        end
+
+        local action = gameState.pendingTestAction
+        gameState.pendingTestAction = nil
+
+        gameState.actionResolver:resolveTestOfFateOutcome(action, data.result)
+        gameState.challengeController:resolveAction(action)
     end)
 
     -- Wire up action selection from command board
@@ -416,12 +870,22 @@ function love.load()
         end
     end)
 
+    -- S13.2: Arena click events for target/zone selection
+    gameState.eventBus:on(events.EVENTS.ARENA_ENTITY_CLICKED, function(data)
+        handleArenaEntityClick(data)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.ARENA_ZONE_CLICKED, function(data)
+        handleArenaZoneClick(data)
+    end)
+
     -- Create and initialize the crawl screen
     gameState.currentScreen = crawl_screen.createCrawlScreen({
         eventBus     = gameState.eventBus,
         roomManager  = gameState.roomManager,
         watchManager = gameState.watchManager,
         gameState    = gameState,
+        layoutManager = gameState.layoutManager,
     })
     gameState.currentScreen:init()
 
@@ -493,12 +957,29 @@ function love.load()
     end)
 
     -- S10.2: Challenge start/end sounds
+    -- S13.2/S13.6: Also update game phase for layout and action gating
     gameState.eventBus:on(events.EVENTS.CHALLENGE_START, function(data)
+        local oldPhase = gameState.phase
+        gameState.phase = "challenge"  -- S13.2/S13.6: Set phase for UI gating
+        gameState.eventBus:emit(events.EVENTS.PHASE_CHANGED, {
+            oldPhase = oldPhase,
+            newPhase = "challenge",
+        })
         sound_manager.play(sound_manager.SOUNDS.ROUND_START)
         sound_manager.playMusic(sound_manager.SOUNDS.COMBAT_MUSIC)
     end)
 
     gameState.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
+        local oldPhase = gameState.phase
+        gameState.phase = "crawl"  -- S13.2/S13.6: Return to crawl phase
+        gameState.eventBus:emit(events.EVENTS.PHASE_CHANGED, {
+            oldPhase = oldPhase,
+            newPhase = "crawl",
+        })
+        gameState.pendingTestAction = nil
+        if gameState.testOfFateModal then
+            gameState.testOfFateModal:hide()
+        end
         sound_manager.stopMusic()
         if data.victory then
             sound_manager.play(sound_manager.SOUNDS.VICTORY)
@@ -528,7 +1009,6 @@ function createGuild()
         armorSlots = 2,  -- Fighter has armor
     })
     fighter:addTalent("aegis", true)
-    fighter.weapon = { name = "Sword", type = "sword" }
     giveStartingItems(fighter, { "Sword", "Torch", "Torch" })
 
     -- Adventurer 2: The Thief
@@ -541,7 +1021,6 @@ function createGuild()
         motifs = { "Former Burglar", "Quick Fingers" },
     })
     thief:addTalent("finesse", true)
-    thief.weapon = { name = "Dagger", type = "dagger" }
     giveStartingItems(thief, { "Dagger", "Lockpicks", "Rope" })
 
     -- Adventurer 3: The Sage
@@ -554,7 +1033,6 @@ function createGuild()
         motifs = { "Hedge Witch", "Bookish" },
     })
     sage:addTalent("ritualist", false)  -- In training
-    sage.weapon = { name = "Staff", type = "staff" }
     giveStartingItems(sage, { "Staff", "Lantern", "Chalk" })
 
     -- Adventurer 4: The Scout
@@ -567,7 +1045,6 @@ function createGuild()
         motifs = { "Wilderness Guide", "Sharp Eyes" },
     })
     scout:addTalent("pathfinder", true)
-    scout.weapon = { name = "Bow", type = "bow", uses_ammo = true }
     scout.ammo = 10  -- Starting arrows
     giveStartingItems(scout, { "Bow", "Torch", "Rations" })
 
@@ -581,6 +1058,18 @@ function createGuild()
     scout:setBond(sage.id, "friendship")
 end
 
+-- Weapon definitions for proper inventory items
+local WEAPON_DATA = {
+    Sword   = { weaponType = "sword",   isWeapon = true, isMelee = true },
+    Dagger  = { weaponType = "dagger",  isWeapon = true, isMelee = true },
+    Staff   = { weaponType = "staff",   isWeapon = true, isMelee = true },
+    Bow     = { weaponType = "bow",     isWeapon = true, isRanged = true, uses_ammo = true },
+    Crossbow = { weaponType = "crossbow", isWeapon = true, isRanged = true, uses_ammo = true },
+    Axe     = { weaponType = "axe",     isWeapon = true, isMelee = true },
+    Mace    = { weaponType = "mace",    isWeapon = true, isMelee = true },
+    Spear   = { weaponType = "spear",   isWeapon = true, isMelee = true },
+}
+
 --- Give starting items to an adventurer
 function giveStartingItems(entity, itemNames)
     entity.inventory = inventory.createInventory()
@@ -591,15 +1080,40 @@ function giveStartingItems(entity, itemNames)
             size = inventory.SIZE.NORMAL,
         })
 
-        -- Special handling for light sources
-        if itemName == "Torch" then
-            item.properties = { flicker_count = 3, light_source = true }
-        elseif itemName == "Lantern" then
-            item.properties = { flicker_count = 6, light_source = true }
+        -- Check if this is a weapon and add proper flags
+        local weaponData = WEAPON_DATA[itemName]
+        if weaponData then
+            item.isWeapon = weaponData.isWeapon
+            item.isMelee = weaponData.isMelee
+            item.isRanged = weaponData.isRanged
+            item.weaponType = weaponData.weaponType
+            item.uses_ammo = weaponData.uses_ammo
+            -- Weapons go in hands
+            entity.inventory:addItem(item, inventory.LOCATIONS.HANDS)
+        else
+            -- Special handling for light sources
+            if itemName == "Torch" then
+                item.properties = {
+                    flicker_count = 3,
+                    light_source = true,
+                    isLit = true,                -- Starts lit
+                    requires_hands = true,       -- Must be in hands to provide light
+                    provides_belt_light = false, -- Does NOT work from belt
+                    fragile_on_belt = false,
+                }
+            elseif itemName == "Lantern" then
+                item.properties = {
+                    flicker_count = 6,
+                    light_source = true,
+                    isLit = true,                -- Starts lit
+                    requires_hands = false,      -- Works from hands OR belt
+                    provides_belt_light = true,  -- Works from belt
+                    fragile_on_belt = true,      -- Breaks when taking wound while on belt
+                }
+            end
+            -- Non-weapons go to belt for quick access
+            entity.inventory:addItem(item, inventory.LOCATIONS.BELT)
         end
-
-        -- Add to belt for quick access
-        entity.inventory:addItem(item, inventory.LOCATIONS.BELT)
     end
 end
 
@@ -686,7 +1200,14 @@ function returnToCity()
                 local torch = inventory.createItem({
                     name = "Torch",
                     size = inventory.SIZE.NORMAL,
-                    properties = { flicker_count = 3, light_source = true },
+                    properties = {
+                        flicker_count = 3,
+                        light_source = true,
+                        isLit = true,
+                        requires_hands = true,
+                        provides_belt_light = false,
+                        fragile_on_belt = false,
+                    },
                 })
                 pc.inventory:addItem(torch, inventory.LOCATIONS.BELT)
             end
@@ -725,6 +1246,7 @@ function returnToCity()
         roomManager  = gameState.roomManager,
         watchManager = gameState.watchManager,
         gameState    = gameState,
+        layoutManager = gameState.layoutManager,
     })
     gameState.currentScreen:init()
     gameState.currentScreen:setGuild(gameState.guild)
@@ -807,6 +1329,7 @@ function handlePhaseChange(data)
             roomManager  = gameState.roomManager,
             watchManager = gameState.watchManager,
             gameState    = gameState,
+            layoutManager = gameState.layoutManager,
         })
         gameState.currentScreen:init()
         gameState.currentScreen:setGuild(gameState.guild)
@@ -842,12 +1365,18 @@ function triggerRandomEncounter(data)
         dangerLevel = roomData.danger_level or 1
     end
 
-    -- Create default zones
-    local zones = {
-        { id = "near", name = "Near Side", description = "Closer to the entrance." },
-        { id = "center", name = "Center", description = "The middle of the room." },
-        { id = "far", name = "Far Side", description = "The far end of the room." },
-    }
+    -- S13.4: Use room's zones if available (with descriptions), otherwise fallback to defaults
+    local zones
+    if roomData and roomData.zones and #roomData.zones > 0 then
+        zones = roomData.zones
+    else
+        -- Fallback default zones
+        zones = {
+            { id = "near", name = "Near Side", description = "Closer to the entrance." },
+            { id = "center", name = "Center", description = "The middle of the room." },
+            { id = "far", name = "Far Side", description = "The far end of the room." },
+        }
+    end
 
     -- Create enemy based on meatgrinder value and room context
     -- Higher card values = tougher enemies
@@ -856,50 +1385,40 @@ function triggerRandomEncounter(data)
         enemyCount = 2  -- Tougher encounter
     end
 
+    -- Select enemy blueprint based on danger level
+    local blueprintId = "skeleton_brute"  -- Default
+    if dangerLevel >= 4 then
+        blueprintId = "brain_spider"
+    elseif dangerLevel >= 3 then
+        blueprintId = "puppet_mummy"
+    elseif dangerLevel >= 2 then
+        blueprintId = "skeleton_brute"
+    else
+        blueprintId = "goblin_minion"
+    end
+
     local enemies = {}
     for i = 1, enemyCount do
-        local enemy = {
-            id = "encounter_enemy_" .. i,
-            name = "Tomb Guardian",
-            isPC = false,
-            rank = "soldier",
-            zone = zones[#zones].id,  -- Enemies start in far zone
+        -- Use factory to create proper entity with HD system
+        local enemy = factory.createEntity(blueprintId, {
+            name = "Tomb Guardian",  -- Override name for flavor
+        })
 
-            -- Stats scaled by danger level
-            swords = 1 + dangerLevel,
-            pentacles = 1,
-            cups = 0,
-            wands = 1,
-
-            -- Combat state
-            armorNotches = dangerLevel > 1 and 1 or 0,
-            conditions = {},
-            morale = 6 + dangerLevel,
-
-            -- Weapon
-            weapon = { name = "Rusty Blade", type = "sword" },
-
-            -- Simple wound handling for NPC
-            takeWound = function(self, pierceArmor)
-                if not pierceArmor and self.armorNotches > 0 then
-                    self.armorNotches = self.armorNotches - 1
-                    return "armor_notched"
-                elseif not self.conditions.staggered then
-                    self.conditions.staggered = true
-                    return "staggered"
-                elseif not self.conditions.injured then
-                    self.conditions.injured = true
-                    return "injured"
-                elseif not self.conditions.deaths_door then
-                    self.conditions.deaths_door = true
-                    return "deaths_door"
-                else
-                    self.conditions.dead = true
-                    return "dead"
-                end
-            end,
-        }
-        enemies[#enemies + 1] = enemy
+        if enemy then
+            enemy.id = "encounter_enemy_" .. i
+            enemy.rank = "soldier"
+            enemy.zone = zones[#zones].id  -- Enemies start in far zone
+            -- Give enemy inventory with weapon in hands
+            enemy.inventory = inventory.createInventory()
+            local weapon = inventory.createItem({
+                name = "Rusty Blade",
+                isWeapon = true,
+                isMelee = true,
+                weaponType = "sword",
+            })
+            enemy.inventory:addItem(weapon, inventory.LOCATIONS.HANDS)
+            enemies[#enemies + 1] = enemy
+        end
     end
 
     -- Set starting zones for PCs
@@ -931,11 +1450,11 @@ function startTestCombat()
 
     -- Get current room data for zones
     local currentRoom = gameState.watchManager:getCurrentRoom()
-    local roomData = gameState.roomManager:getRoom(currentRoom) if roomData then roomData = roomData.data end
+    local roomData = gameState.roomManager:getRoom(currentRoom)
 
-    -- Get zones from room data, or use defaults
-    local zones = nil
-    if roomData and roomData.zones then
+    -- S13.4: Use room's zones if available (with descriptions), otherwise fallback to defaults
+    local zones
+    if roomData and roomData.zones and #roomData.zones > 0 then
         zones = roomData.zones
     else
         -- Default zones for combat
@@ -946,48 +1465,49 @@ function startTestCombat()
         }
     end
 
-    -- Create a test enemy (placed in "far" zone by default)
-    local testEnemy = {
-        id = "test_skeleton_1",
-        name = "Skeleton Warrior",
-        isPC = false,
-        rank = "soldier",
-        zone = zones[#zones].id,  -- Put enemy in the last zone (far end)
+    -- Create a test enemy using the factory (proper HD system)
+    local testEnemy = factory.createEntity("skeleton_brute", {
+        name = "Skeleton Warrior",  -- Override name
+    })
 
-        -- Stats (same structure as adventurers)
-        swords = 2,
-        pentacles = 1,
-        cups = 0,
-        wands = 1,
-
-        -- Combat state
-        armorNotches = 1,
-        conditions = {},
-        morale = 8,
-
-        -- Weapon
-        weapon = { name = "Rusty Sword", type = "sword" },
-
-        -- Simple wound handling for NPC
-        takeWound = function(self, pierceArmor)
-            if not pierceArmor and self.armorNotches > 0 then
-                self.armorNotches = self.armorNotches - 1
-                return "armor_notched"
-            elseif not self.conditions.staggered then
-                self.conditions.staggered = true
-                return "staggered"
-            elseif not self.conditions.injured then
-                self.conditions.injured = true
-                return "injured"
-            elseif not self.conditions.deaths_door then
-                self.conditions.deaths_door = true
-                return "deaths_door"
-            else
-                self.conditions.dead = true
-                return "dead"
-            end
-        end,
-    }
+    if testEnemy then
+        testEnemy.id = "test_skeleton_1"
+        testEnemy.rank = "soldier"
+        testEnemy.zone = zones[#zones].id  -- Put enemy in the last zone (far end)
+        -- Give enemy inventory with weapon in hands
+        testEnemy.inventory = inventory.createInventory()
+        local weapon = inventory.createItem({
+            name = "Rusty Sword",
+            isWeapon = true,
+            isMelee = true,
+            weaponType = "sword",
+        })
+        testEnemy.inventory:addItem(weapon, inventory.LOCATIONS.HANDS)
+    else
+        -- Fallback if factory fails
+        print("[COMBAT] Warning: Failed to create enemy from factory, using fallback")
+        testEnemy = {
+            id = "test_skeleton_1",
+            name = "Skeleton Warrior",
+            isPC = false,
+            rank = "soldier",
+            zone = zones[#zones].id,
+            swords = 2, pentacles = 1, cups = 0, wands = 1,
+            npcHealth = 3, npcDefense = 0, npcMaxHealth = 3, npcMaxDefense = 0,
+            instantDestruction = true,
+            conditions = {},
+            baseMorale = 20,
+        }
+        -- Give fallback enemy inventory too
+        testEnemy.inventory = inventory.createInventory()
+        local weapon = inventory.createItem({
+            name = "Rusty Sword",
+            isWeapon = true,
+            isMelee = true,
+            weaponType = "sword",
+        })
+        testEnemy.inventory:addItem(weapon, inventory.LOCATIONS.HANDS)
+    end
 
     -- Set starting zones for PCs (near the entrance)
     local pcStartZone = zones[1].id
@@ -1014,6 +1534,138 @@ end
 
 --- Handle input during challenge phase
 -- New flow: Q/W/E selects card → Command Board → Select Action → Select Target → Execute
+--- Get card index at mouse position for a PC's hand
+local function getHandCardIndexAt(x, y, pc, maxIndex)
+    local hand = gameState.playerHand
+    local cards = hand:getHand(pc)
+    if #cards == 0 then return nil end
+
+    local w, h = love.graphics.getDimensions()
+    local cardWidth = 100
+    local cardHeight = 140
+    local cardSpacing = 20
+    local totalWidth = (#cards * cardWidth) + ((#cards - 1) * cardSpacing)
+    local startX = (w - totalWidth) / 2
+    local startY = h - cardHeight - 70
+
+    for i, _ in ipairs(cards) do
+        if maxIndex and i > maxIndex then
+            break
+        end
+        local cx = startX + (i - 1) * (cardWidth + cardSpacing)
+        if x >= cx and x <= cx + cardWidth and y >= startY and y <= startY + cardHeight then
+            return i
+        end
+    end
+
+    return nil
+end
+
+--- Select a card for an action (primary or minor)
+local function selectCardForAction(entity, cardIndex, isPrimaryTurn)
+    local hand = gameState.playerHand
+    local cards = hand:getHand(entity)
+    if cardIndex > #cards then
+        print("[COMBAT] No card at position " .. cardIndex)
+        return false
+    end
+
+    local card = cards[cardIndex]
+
+    combatInputState.selectedCard = card
+    combatInputState.selectedCardIndex = cardIndex
+    combatInputState.selectedEntity = entity
+
+    gameState.eventBus:emit("card_selected", {
+        card = card,
+        entity = entity,
+        isPrimaryTurn = isPrimaryTurn,
+        cardIndex = cardIndex,
+    })
+
+    return true
+end
+
+--- Handle combat mouse input (card clicks, initiative clicks)
+local function handleCombatMousePressed(x, y, button)
+    if button ~= 1 then return false end
+
+    local controller = gameState.challengeController
+    if not controller or not controller:isActive() then return false end
+
+    local state = controller:getState()
+
+    -- Initiative phase
+    if state == "pre_round" then
+        local hand = gameState.playerHand
+        -- Allow clicking a plate to select a PC
+        if not hand.selectedPC then
+            local plate = getPlateAt(x, y)
+            if plate and plate.entity and controller.awaitingInitiative[plate.entity.id] then
+                hand.selectedPC = plate.entity
+                print("[INITIATIVE] Select a card for " .. plate.entity.name .. " (Q/W/E/R or click)")
+                return true
+            end
+        end
+
+        if hand.selectedPC and controller.awaitingInitiative[hand.selectedPC.id] then
+            local cardIndex = getHandCardIndexAt(x, y, hand.selectedPC, 4)
+            if cardIndex then
+                local card = hand:useForInitiative(hand.selectedPC, cardIndex)
+                if card then
+                    controller:submitInitiative(hand.selectedPC, card)
+                    hand:clearSelection()
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    -- Minor window
+    if state == "minor_window" then
+        if not combatInputState.minorPC then
+            local plate = getPlateAt(x, y)
+            if plate and plate.entity then
+                local cards = gameState.playerHand:getHand(plate.entity)
+                if #cards > 0 then
+                    combatInputState.minorPC = plate.entity
+                    print("[MINOR] Select a card for " .. plate.entity.name .. " (Q/W/E or click)")
+                    return true
+                end
+            end
+        end
+
+        if combatInputState.minorPC then
+            local cardIndex = getHandCardIndexAt(x, y, combatInputState.minorPC, 3)
+            if cardIndex then
+                selectCardForAction(combatInputState.minorPC, cardIndex, false)
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Primary action selection
+    if state ~= "awaiting_action" then
+        return false
+    end
+
+    local activeEntity = controller:getActiveEntity()
+    if not activeEntity or not activeEntity.isPC then
+        return false
+    end
+
+    local cardIndex = getHandCardIndexAt(x, y, activeEntity, 3)
+    if cardIndex then
+        selectCardForAction(activeEntity, cardIndex, true)
+        print("[COMBAT] " .. activeEntity.name .. " selected a card - choose action from Command Board")
+        return true
+    end
+
+    return false
+end
+
 function handleChallengeInput(key)
     local controller = gameState.challengeController
     local hand = gameState.playerHand
@@ -1061,20 +1713,7 @@ function handleChallengeInput(key)
 
         if cardIndex <= #cards then
             local card = cards[cardIndex]
-
-            -- Store selection state
-            combatInputState.selectedCard = card
-            combatInputState.selectedCardIndex = cardIndex
-            combatInputState.selectedEntity = activeEntity
-
-            -- Emit card_selected to show command board
-            gameState.eventBus:emit("card_selected", {
-                card = card,
-                entity = activeEntity,
-                isPrimaryTurn = true,
-                cardIndex = cardIndex,
-            })
-
+            selectCardForAction(activeEntity, cardIndex, true)
             print("[COMBAT] " .. activeEntity.name .. " selected " .. card.name .. " - choose action from Command Board")
         else
             print("[COMBAT] No card at position " .. cardIndex)
@@ -1147,19 +1786,7 @@ function handleMinorWindowInput(key)
 
             if cardIndex <= #cards then
                 local card = cards[cardIndex]
-
-                -- Store selection and show command board (with minor filtering)
-                combatInputState.selectedCard = card
-                combatInputState.selectedCardIndex = cardIndex
-                combatInputState.selectedEntity = combatInputState.minorPC
-
-                gameState.eventBus:emit("card_selected", {
-                    card = card,
-                    entity = combatInputState.minorPC,
-                    isPrimaryTurn = false,  -- Minor action = suit restricted
-                    cardIndex = cardIndex,
-                })
-
+                selectCardForAction(combatInputState.minorPC, cardIndex, false)
                 print("[MINOR] " .. combatInputState.minorPC.name .. " selected " .. card.name .. " for minor action")
             end
             return
@@ -1209,73 +1836,78 @@ function handleZoneSelection(key)
     end
 end
 
+--- Handle zone selection by clicked zone id
+function handleZoneSelectionById(zoneId)
+    local zones = combatInputState.availableZones
+    if not zones or #zones == 0 then
+        combatInputState.awaitingZone = false
+        return false
+    end
+
+    for _, zone in ipairs(zones) do
+        if zone.id == zoneId then
+            executeSelectedAction(nil, zoneId)
+            return true
+        end
+    end
+
+    print("[COMBAT] Zone not available for move: " .. tostring(zoneId))
+    return false
+end
+
+--- Build valid target list for the current action/actor
+local function getValidTargetsForAction(action, actor)
+    local controller = gameState.challengeController
+    local actorZone = actor and actor.zone
+
+    if not action then return {} end
+
+    local isMelee = (action.id == "melee" or action.id == "grapple" or
+                    action.id == "trip" or action.id == "disarm" or
+                    action.id == "displace")
+
+    local targets = {}
+
+    local function addIfValid(entity)
+        if not (entity.conditions and entity.conditions.dead) then
+            if isMelee then
+                if entity.zone == actorZone then
+                    targets[#targets + 1] = entity
+                end
+            else
+                targets[#targets + 1] = entity
+            end
+        end
+    end
+
+    local targetType = action.targetType or "any"
+
+    if targetType == "enemy" or targetType == "any" then
+        for _, npc in ipairs(controller.npcs or {}) do
+            addIfValid(npc)
+        end
+    end
+
+    if targetType == "ally" or targetType == "any" then
+        for _, pc in ipairs(controller.pcs or {}) do
+            addIfValid(pc)
+        end
+    end
+
+    return targets
+end
+
 --- Handle target selection (number keys to select target)
 function handleTargetSelection(key)
-    local controller = gameState.challengeController
     local action = combatInputState.selectedAction
-    local actorZone = combatInputState.selectedEntity and combatInputState.selectedEntity.zone
 
     if not action then
         combatInputState.awaitingTarget = false
         return
     end
 
-    -- Check if this is a melee action (requires same zone)
-    local isMelee = (action.id == "melee" or action.id == "grapple" or
-                    action.id == "trip" or action.id == "disarm" or
-                    action.id == "displace")
-
     -- Get valid targets based on action type
-    local targets = {}
-    if action.targetType == "enemy" then
-        for _, npc in ipairs(controller.npcs or {}) do
-            if not (npc.conditions and npc.conditions.dead) then
-                if isMelee then
-                    if npc.zone == actorZone then
-                        targets[#targets + 1] = npc
-                    end
-                else
-                    targets[#targets + 1] = npc
-                end
-            end
-        end
-    elseif action.targetType == "ally" then
-        for _, pc in ipairs(controller.pcs or {}) do
-            if not (pc.conditions and pc.conditions.dead) then
-                if isMelee then
-                    if pc.zone == actorZone then
-                        targets[#targets + 1] = pc
-                    end
-                else
-                    targets[#targets + 1] = pc
-                end
-            end
-        end
-    else
-        -- "any" - include all living entities
-        for _, npc in ipairs(controller.npcs or {}) do
-            if not (npc.conditions and npc.conditions.dead) then
-                if isMelee then
-                    if npc.zone == actorZone then
-                        targets[#targets + 1] = npc
-                    end
-                else
-                    targets[#targets + 1] = npc
-                end
-            end
-        end
-        for _, pc in ipairs(controller.pcs or {}) do
-            if not (pc.conditions and pc.conditions.dead) then
-                if isMelee then
-                    if pc.zone == actorZone then
-                        targets[#targets + 1] = pc
-                    end
-                else
-                    targets[#targets + 1] = pc
-                end
-            end
-        end
-    end
+    local targets = getValidTargetsForAction(action, combatInputState.selectedEntity)
 
     -- Number keys to select target
     local keyNum = tonumber(key)
@@ -1291,6 +1923,41 @@ function handleTargetSelection(key)
         resetCombatInputState()
         gameState.eventBus:emit("card_deselected", {})
         print("[COMBAT] Target selection cancelled")
+    end
+end
+
+--- Handle target selection by clicked entity
+function handleTargetSelectionByEntity(entity)
+    local action = combatInputState.selectedAction
+    if not action or not entity then
+        return false
+    end
+
+    local targets = getValidTargetsForAction(action, combatInputState.selectedEntity)
+    for _, target in ipairs(targets) do
+        if target == entity then
+            executeSelectedAction(target)
+            return true
+        end
+    end
+
+    print("[COMBAT] Invalid target for action.")
+    return false
+end
+
+--- Handle arena entity click events (target selection)
+function handleArenaEntityClick(data)
+    if not data or not data.entity then return end
+    if combatInputState.awaitingTarget then
+        handleTargetSelectionByEntity(data.entity)
+    end
+end
+
+--- Handle arena zone click events (move selection)
+function handleArenaZoneClick(data)
+    if not data or not data.zoneId then return end
+    if combatInputState.awaitingZone then
+        handleZoneSelectionById(data.zoneId)
     end
 end
 
@@ -1324,24 +1991,21 @@ function executeSelectedAction(target, destinationZone)
             type = action.id,
             target = target,
             destinationZone = destinationZone,
-            weapon = entity.weapon,
+            weapon = entity.inventory and entity.inventory:getWieldedWeapon() or nil,
+            allEntities = controller.allCombatants,
         })
 
         print("[MINOR] " .. entity.name .. " declares " .. action.name)
         combatInputState.minorPC = nil  -- Clear PC selection
     else
         -- Execute primary action immediately
-        local cards = hand:getHand(entity)
-        table.remove(cards, cardIndex)
-        gameState.playerDeck:discard(card)
-
         local fullAction = {
             actor = entity,
             target = target,
             card = card,
             type = action.id,
             destinationZone = destinationZone,
-            weapon = entity.weapon or { name = "Fists", type = "staff" },
+            weapon = (entity.inventory and entity.inventory:getWieldedWeapon()) or { name = "Fists", isMelee = true },
             allEntities = controller.allCombatants,  -- Pass all entities for parting blow checks
         }
 
@@ -1350,7 +2014,18 @@ function executeSelectedAction(target, destinationZone)
         else
             print("[COMBAT] " .. entity.name .. " uses " .. action.name .. " on " .. (target and target.name or "no target"))
         end
-        gameState.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, fullAction)
+
+        local success, err = controller:submitAction(fullAction)
+        if not success then
+            print("[COMBAT] Action submit failed: " .. tostring(err))
+            resetCombatInputState()
+            gameState.eventBus:emit("card_deselected", {})
+            return
+        end
+
+        local cards = hand:getHand(entity)
+        table.remove(cards, cardIndex)
+        gameState.playerDeck:discard(card)
     end
 
     resetCombatInputState()
@@ -1435,6 +2110,9 @@ end
 function love.update(dt)
     if gameState.currentScreen then
         gameState.currentScreen:update(dt)
+    end
+    if gameState.layoutManager then
+        gameState.layoutManager:update(dt)
     end
 
     -- Update challenge systems
@@ -1530,6 +2208,11 @@ function love.draw()
         gameState.lootModal:draw()
     end
 
+    -- S12.5: Draw Test of Fate modal (on top of everything except debug)
+    if gameState.testOfFateModal then
+        gameState.testOfFateModal:draw()
+    end
+
     -- Draw debug info
     love.graphics.setColor(1, 1, 1, 0.5)
     local challengeInfo = ""
@@ -1538,10 +2221,20 @@ function love.draw()
             gameState.challengeController:getCurrentTurn(),
             gameState.challengeController:getMaxTurns())
     end
+
+    -- Get active PC's light level
+    local activePC = getActivePC()
+    local activePCName = activePC and activePC.name or "?"
+    local activePCLight = "?"
+    if activePC and gameState.lightSystem then
+        activePCLight = gameState.lightSystem:getEntityLightLevel(activePC) or "?"
+    end
+
     love.graphics.print(
-        string.format("Watch: %d | Light: %s | FPS: %d%s",
+        string.format("Watch: %d | %s: %s | FPS: %d%s",
             gameState.watchManager:getWatchCount(),
-            gameState.lightSystem:getLightLevel() or "?",
+            activePCName,
+            activePCLight,
             love.timer.getFPS(),
             challengeInfo),
         10,
@@ -1681,15 +2374,8 @@ function drawChallengeOverlay()
     local combatDsp = gameState.combatDisplay
     local activeEntity = controller:getActiveEntity()
 
-    -- Draw NPCs on the right side
-    local npcs = controller.npcs or {}
-    local npcStartX = w - 220
-    local npcStartY = 85
-
-    for i, npc in ipairs(npcs) do
-        local isActive = (activeEntity == npc)
-        combatDsp:drawCombatantRow(npc, npcStartX, npcStartY + (i-1) * 65, isActive)
-    end
+    -- S13.7: NPC plates removed - enemy info now shown via tooltips on arena tokens
+    -- Hover or right-click enemy tokens in the arena to see their stats
 
     -- Draw count-up bar (if in count-up phase)
     if state == "count_up" or state == "awaiting_action" or state == "resolving" then
@@ -1881,9 +2567,19 @@ function love.resize(w, h)
     if gameState.currentScreen then
         gameState.currentScreen:resize(w, h)
     end
+    if gameState.layoutManager then
+        gameState.layoutManager:resize(w, h)
+    end
 end
 
 function love.mousepressed(x, y, button)
+    -- S12.5: Test of Fate modal (highest priority when open)
+    if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
+        if gameState.testOfFateModal:mousepressed(x, y, button) then
+            return
+        end
+    end
+
     -- S11.3: Loot modal mouse handling (highest priority when open)
     if gameState.lootModal and gameState.lootModal.isOpen then
         if gameState.lootModal:mousepressed(x, y, button) then
@@ -1945,6 +2641,13 @@ function love.mousepressed(x, y, button)
         end
     end
 
+    -- Combat card selection via click
+    if gameState.challengeController and gameState.challengeController:isActive() then
+        if handleCombatMousePressed(x, y, button) then
+            return
+        end
+    end
+
     -- S6.1: Arena view drag handling
     if gameState.arenaView and gameState.arenaView.isVisible then
         if gameState.arenaView:mousepressed(x, y, button) then
@@ -1978,6 +2681,12 @@ function love.mousereleased(x, y, button)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    -- S12.5: Test of Fate modal hover (highest priority)
+    if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
+        gameState.testOfFateModal:mousemoved(x, y)
+        return
+    end
+
     -- S11.3: Loot modal hover (highest priority)
     if gameState.lootModal and gameState.lootModal.isOpen then
         gameState.lootModal:mousemoved(x, y, dx, dy)
@@ -2011,6 +2720,13 @@ function love.mousemoved(x, y, dx, dy)
 end
 
 function love.keypressed(key)
+    -- S12.5: Test of Fate modal keyboard handling (highest priority when open)
+    if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
+        if gameState.testOfFateModal:keypressed(key) then
+            return
+        end
+    end
+
     -- S11.3: Loot modal keyboard handling (highest priority when open)
     if gameState.lootModal and gameState.lootModal.isOpen then
         if gameState.lootModal:keypressed(key) then
@@ -2069,6 +2785,14 @@ function love.keypressed(key)
     --     startCampPhase()
     -- end
 
+    -- Debug: F9 to auto-win combat (for testing crawl features)
+    if key == "f9" and gameState.challengeController:isActive() then
+        print("=== DEBUG: AUTO-WIN COMBAT ===")
+        gameState.challengeController:endChallenge(challenge_controller.OUTCOMES.VICTORY, {
+            debugWin = true,
+        })
+    end
+
     -- X to exit dungeon / end expedition (S10.1)
     if key == "x" and gameState.phase == "crawl" and not gameState.challengeController:isActive() then
         -- Only allow exit from entrance room
@@ -2093,6 +2817,340 @@ function love.keypressed(key)
 end
 
 ```
+
+---
+
+## File: output/pdf/majesty_app_summary.pdf
+
+```
+%PDF-1.4
+%���� ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/Contents 8 0 R /MediaBox [ 0 0 612 792 ] /Parent 7 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>> 
+  /Type /Page
+>>
+endobj
+5 0 obj
+<<
+/PageMode /UseNone /Pages 7 0 R /Type /Catalog
+>>
+endobj
+6 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20260204125834-06'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20260204125834-06'00') /Producer (ReportLab PDF Library - \(opensource\)) 
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+7 0 obj
+<<
+/Count 1 /Kids [ 4 0 R ] /Type /Pages
+>>
+endobj
+8 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 1582
+>>
+stream
+Gau0C968iI%)1n+i99OKMBtJCHeP@MChM2'48$#u+%0&3c%[EB;R5Wfq?8<NE=sX613&hh*[X22"7Q>ITLYWqJ+F*,h%\06NZa3f\q"H*%UaSlQd_-?-W.Qt(l&bAa$':])85M7pL\\;>GFY+mE8$u%+3!bMIS"]lCE^*nX+csVU5.[^8!9gd"SIEk+EN0V.GMkY#a6lp(XC]@JU4Nn*M<!rh[q.FaERQSZqS_i8O@&JoNcO</fbjh(H@bf?j>hYa_sF!m>YhAX5'WKiuH(Y.Jae0qFm'<'.2*BKU!nM/"=X>TYEDTN1%?2>O[i"UOt6/I1u>cT<?mm7`LcH^=([@"n(b9d)K[n3m\EF=8iQT(V-kf1UqW_ieR:\^?*`[Q-\5FP@(RQ>Z5s#9b\L'"%e7$4Ufa6mn=;bN9Fg)n(l:\O"rU&]G*e<XO,'.G\QV3eAflAJoc&CCA@&k]K<oQu/ut0$+l_?rHnH9t3(e;D/1a@&&]T+_:fbRY.08s$"p;>$,H*b)8a8DP`ED3Y,F+O%+'L@U493.J*J*_t-HXQOc.Q7Md>^,g1lC(W7I#o8NtPR?O9-m+_jgih]'GKLh-CC;h=G]Z^Xp9Z+;p+22m9V]&cKIQ4>6W$\UNP;6k9l7bOgj#aS\4ME3@:@r5(0D[BLV!qfg07<EQ/)ghqXu<?m\diPOF_1aF0l('lckS!VMSP"W@`GNV;e"_3U*]YjKD9,g&)u3o^1(!7Eic7/go[5O8A1uVW)D/K)7Uu\>A@#5^(X0T%a<hZgE.^k0%@09MKj(s.!D=l#fV/O\)*F9\$)MXcS\cGrHh%aP\Q_Ve@(ds)]d29hQoZ28b5,%6R@A47jZU2"0;Y.^1)h%7on:X,/pocC\ga=XZ.$]fc4QDl,9_.A3+;-`V.,YE\,rad4^K"=,?REg,X;9`J1BaQbo"iej3-OYk?QcjEcetgLfdHBPc7UI\ElBB811,SGj5-Ps&)0F/Dc;nh?DA8f7u[+I.km^l@rtbpf9c7=dg_nt">k<ic.:I4_a9SnleEFG"#jD<f8.j=Dc2e.^WGe<N>t$;X(MhfHd.9f$K'%1`6onuge?1+#sK99qi#$_aNbfk]$W?ZOHeXecr.8Fg"V%S2c`WeW@-IL)F`PR:GH48!KZQU7RPjg12oQo6NpiqgABL"k`N"Br<PqPQK*CN3nbr-5.uZ<rLSL$KMFH&due[Ljc"-OUW^PfJV<r62oN#gSZJ4n*$q.WJ2!X/OBAENb9:<HTlBB`bg?Hi\_F\Ec?u<Xc!ORS1nDCBrq^>RFq9$g8@'O.[VpDSr=#F!fe02JL))2-nVuinW6'4b<2`hhaE6>rN8-qVB'A\*AfWiLer3Z]+!(E<F6bUtA?R9>g<862aGTjB%#?)a>7*+,qEharfFD?N5i>oj8"H&ag]<V+<#Igp:k'E7XPh9AmjdJ4?<`[?i=S3d=bnlVM@6S[MR9=G,F7;caUeU\)-c98.M61->H`,L/ql>kP:U2]?'REiC'R)C[qk=0O@ml#"L3DohN,C78$`IpdYQZjsYZrPEmXe=:\@L/f5\7Pr4Z7F2\=k4\=a"t0EQet8Ks~>endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000061 00000 n 
+0000000102 00000 n 
+0000000209 00000 n 
+0000000321 00000 n 
+0000000514 00000 n 
+0000000582 00000 n 
+0000000862 00000 n 
+0000000921 00000 n 
+trailer
+<<
+/ID 
+[<71759531a1e052bf2fbdd2562b5ec4a5><71759531a1e052bf2fbdd2562b5ec4a5>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 6 0 R
+/Root 5 0 R
+/Size 9
+>>
+startxref
+2594
+%%EOF
+
+```
+
+---
+
+## File: scripts/dump_project_markdown.sh
+
+~~~bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: dump_project_markdown.sh [-r ROOT_DIR] [-o OUTPUT_MD]
+
+Create a single Markdown file containing the project's text files with clear
+per-file separators and language-aware code fences, respecting .gitignore.
+
+Options:
+  -r, --root   Project root directory (default: current directory)
+  -o, --out    Output Markdown file path (default: project_dump.md, created under root)
+  -h, --help   Show this help and exit
+
+Notes:
+- Prefers ripgrep (rg) for file discovery; falls back to 'git ls-files'.
+  Either ripgrep must be installed or ROOT_DIR must be a Git repo.
+- Binary files are skipped.
+EOF
+}
+
+ROOT_DIR="$(pwd)"
+OUTPUT_PATH="project_dump.md"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -r|--root)
+      [ $# -ge 2 ] || { echo "Missing argument for $1" >&2; exit 1; }
+      ROOT_DIR="$2"
+      shift 2
+      ;;
+    -o|--out)
+      [ $# -ge 2 ] || { echo "Missing argument for $1" >&2; exit 1; }
+      OUTPUT_PATH="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+# Normalize ROOT_DIR
+if [ ! -d "$ROOT_DIR" ]; then
+  echo "Root directory does not exist: $ROOT_DIR" >&2
+  exit 1
+fi
+ROOT_DIR="$(cd "$ROOT_DIR" && pwd)"
+
+# Normalize OUTPUT_PATH (make absolute if relative)
+case "$OUTPUT_PATH" in
+  /*) : ;; # absolute already
+  *) OUTPUT_PATH="$ROOT_DIR/$OUTPUT_PATH" ;;
+esac
+
+mkdir -p "$(dirname "$OUTPUT_PATH")"
+
+# Collect files respecting .gitignore
+FILE_LIST="$(mktemp)"
+TMP_OUT=""
+cleanup() {
+  rm -f "$FILE_LIST"
+  if [ -n "${TMP_OUT:-}" ]; then rm -f "$TMP_OUT"; fi
+}
+trap cleanup EXIT
+
+if command -v rg >/dev/null 2>&1; then
+  # ripgrep respects .gitignore by default
+  ( cd "$ROOT_DIR" && rg --files --hidden --follow --glob '!.git' ) > "$FILE_LIST"
+elif [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+  # git files incl. untracked, excluding standard ignores
+  ( cd "$ROOT_DIR" && git ls-files -co --exclude-standard ) > "$FILE_LIST"
+else
+  echo "Error: Need ripgrep (rg) installed or a Git repo to honor .gitignore." >&2
+  exit 1
+fi
+
+# Additional filtering: ensure top-level directories/files specified with
+# root-anchored patterns in .gitignore (e.g., /sprints/, /rulebook/, /.claude/)
+# are excluded from FILE_LIST even when using 'git ls-files' that may include
+# already-tracked files. Use awk-based string matching for macOS compatibility.
+if [ -f "$ROOT_DIR/.gitignore" ]; then
+  DIRS_CSV=""
+  FILES_CSV=""
+  while IFS= read -r raw; do
+    # Strip trailing comments and whitespace
+    line="${raw%%#*}"
+    line="$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//')"
+    [ -n "$line" ] || continue
+    # Only handle root-anchored patterns for directories/files
+    case "$line" in
+      /*/)
+        name="${line#/}"; name="${name%/}"
+        DIRS_CSV="${DIRS_CSV}${name},"
+        ;;
+      /*)
+        name="${line#/}"
+        FILES_CSV="${FILES_CSV}${name},"
+        ;;
+      *)
+        # Non-root-anchored or other complex patterns are ignored here;
+        # they are already handled by ripgrep when available.
+        :
+        ;;
+    esac
+  done < "$ROOT_DIR/.gitignore"
+
+  if [ -n "$DIRS_CSV$FILES_CSV" ]; then
+    TMP_LIST="$(mktemp)"
+    awk -v dirs="$DIRS_CSV" -v files="$FILES_CSV" '
+      BEGIN{
+        n=split(dirs,d,","); for(i=1;i<=n;i++) if(d[i]!="") D[d[i]]=1;
+        m=split(files,f,","); for(i=1;i<=m;i++) if(f[i]!="") F[f[i]]=1;
+      }
+      {
+        path=$0
+        slash=index(path,"/")
+        if (slash>0) {
+          comp=substr(path,1,slash-1)
+          if (comp in D) next
+        } else {
+          if (path in F) next
+        }
+        print path
+      }' "$FILE_LIST" > "$TMP_LIST"
+    mv "$TMP_LIST" "$FILE_LIST"
+  fi
+fi
+
+# Temporary output to avoid partial writes
+TMP_OUT="$(mktemp)"
+
+# Header
+{
+  echo "# Project Source Dump"
+  echo
+  echo "- Root: $ROOT_DIR"
+  echo "- Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  echo
+  echo "---"
+  echo
+} >> "$TMP_OUT"
+
+guess_lang() {
+  # Echo a Markdown code fence language based on file extension
+  # Falls back to empty (no language hint)
+  file="$1"
+  ext="${file##*.}"
+  case "$ext" in
+    lua) echo "lua" ;;
+    md|markdown) echo "markdown" ;;
+    txt|text|license|licence) echo "text" ;;
+    sh|bash|zsh) echo "bash" ;;
+    js|jsx|mjs|cjs) echo "javascript" ;;
+    ts|tsx) echo "typescript" ;;
+    json) echo "json" ;;
+    yml|yaml) echo "yaml" ;;
+    html|htm) echo "html" ;;
+    css|scss|sass|less) echo "css" ;;
+    py) echo "python" ;;
+    go) echo "go" ;;
+    rs) echo "rust" ;;
+    java) echo "java" ;;
+    kt|kts) echo "kotlin" ;;
+    c) echo "c" ;;
+    h) echo "c" ;;
+    cpp|cxx|cc) echo "cpp" ;;
+    hpp|hh|hxx) echo "cpp" ;;
+    m) echo "objective-c" ;;
+    mm) echo "objective-c++" ;;
+    swift) echo "swift" ;;
+    rb) echo "ruby" ;;
+    php) echo "php" ;;
+    *) echo "" ;;
+  esac
+}
+
+is_text_file() {
+  # Heuristic: grep -Iq returns success for text files
+  # Using LC_ALL=C for consistent behavior across locales
+  LC_ALL=C grep -Iq . -- "$1"
+}
+
+# Compute absolute path to skip if output resides under root
+SKIP_ABS="$OUTPUT_PATH"
+
+while IFS= read -r rel; do
+  # Skip empty lines
+  [ -n "$rel" ] || continue
+
+  abs="$ROOT_DIR/$rel"
+
+  # Skip non-regular files
+  if [ ! -f "$abs" ]; then
+    continue
+  fi
+
+  # Skip the output file itself if it lives in the tree
+  if [ "$abs" = "$SKIP_ABS" ]; then
+    continue
+  fi
+
+  # Skip binaries
+  if ! is_text_file "$abs"; then
+    continue
+  fi
+
+  # Decide on fence; if file contains triple backticks, use tildes
+  fence='```'
+  if grep -q '```' -- "$abs"; then
+    fence='~~~'
+  fi
+
+  lang="$(guess_lang "$rel")"
+
+  {
+    echo "## File: $rel"
+    echo
+    if [ -n "$lang" ]; then
+      echo "${fence}${lang}"
+    else
+      echo "${fence}"
+    fi
+    cat -- "$abs"
+    echo
+    echo "${fence}"
+    echo
+    echo "---"
+    echo
+  } >> "$TMP_OUT"
+done < "$FILE_LIST"
+
+mv -f "$TMP_OUT" "$OUTPUT_PATH"
+
+echo "Wrote Markdown to: $OUTPUT_PATH"
+
+
+
+~~~
 
 ---
 
@@ -2130,6 +3188,8 @@ M.SUITS = {
 --   description   - Short description for tooltip
 --   allowMinor    - Whether this can be used as a Minor Action (default: true for suit-matched)
 --   requiresTarget - Whether a target is needed
+--   challengeAction - Whether this should appear in Challenge action menus
+--   showInCommandBoard - Optional override for Challenge UI visibility
 
 M.ACTIONS = {
     ----------------------------------------------------------------------------
@@ -2143,6 +3203,7 @@ M.ACTIONS = {
         description = "Strike an enemy in your zone with a melee weapon.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "missile",
@@ -2153,24 +3214,17 @@ M.ACTIONS = {
         requiresTarget = true,
         targetType = "enemy",
         requiresWeaponType = "ranged",
+        isRanged = true,  -- S12.2: Cannot use while engaged
+        challengeAction = true,
     },
     {
-        id = "grapple",
-        name = "Grapple",
+        id = "riposte",
+        name = "Riposte",
         suit = M.SUITS.SWORDS,
         attribute = "swords",
-        description = "Seize an enemy. Success engages and prevents their movement.",
-        requiresTarget = true,
-        targetType = "enemy",
-    },
-    {
-        id = "intimidate",
-        name = "Intimidate",
-        suit = M.SUITS.SWORDS,
-        attribute = "swords",
-        description = "Threaten an enemy to reduce their morale.",
-        requiresTarget = true,
-        targetType = "enemy",
+        description = "Prepare to counter-attack. If attacked, strike back with this card.",
+        requiresTarget = false,
+        challengeAction = true,
     },
 
     ----------------------------------------------------------------------------
@@ -2181,8 +3235,27 @@ M.ACTIONS = {
         name = "Avoid",
         suit = M.SUITS.PENTACLES,
         attribute = "pentacles",
-        description = "Prepare to dodge an incoming attack. Also clears engagement safely.",
+        description = "Avoid a danger or disengage safely; move to an adjacent zone afterward.",
         requiresTarget = false,
+        challengeAction = true,
+    },
+    {
+        id = "dash",
+        name = "Dash",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Move quickly through a zone, potentially avoiding obstacles.",
+        requiresTarget = false,
+        challengeAction = true,
+    },
+    {
+        id = "dodge",
+        name = "Dodge",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Prepare to dodge. Card value helps you avoid an attack.",
+        requiresTarget = false,
+        challengeAction = true,
     },
     {
         id = "trip",
@@ -2192,6 +3265,7 @@ M.ACTIONS = {
         description = "Knock an enemy prone, reducing their defense.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "disarm",
@@ -2201,6 +3275,7 @@ M.ACTIONS = {
         description = "Remove an item from an enemy's hands.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "displace",
@@ -2210,6 +3285,17 @@ M.ACTIONS = {
         description = "Push an enemy to an adjacent zone.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
+    },
+    {
+        id = "grapple",
+        name = "Grapple",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Seize an enemy. Success engages and prevents their movement.",
+        requiresTarget = true,
+        targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "pick_lock",
@@ -2219,6 +3305,9 @@ M.ACTIONS = {
         description = "Attempt to open a locked door or container.",
         requiresTarget = false,
         requiresItem = "lockpicks",
+        testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "disarm_trap",
@@ -2227,43 +3316,57 @@ M.ACTIONS = {
         attribute = "pentacles",
         description = "Safely disarm a detected trap.",
         requiresTarget = false,
-    },
-    {
-        id = "dash",
-        name = "Dash",
-        suit = M.SUITS.PENTACLES,
-        attribute = "pentacles",
-        description = "Move quickly through a zone, potentially avoiding obstacles.",
-        requiresTarget = false,
+        testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
-    -- CUPS (Social / Emotional / Defense)
+    -- CUPS (Support / Commands)
     ----------------------------------------------------------------------------
     {
-        id = "defend",
-        name = "Defend",
+        id = "aid",
+        name = "Aid Another",
         suit = M.SUITS.CUPS,
         attribute = "cups",
-        description = "Take a defensive stance, gaining +2 to defense until your next turn.",
-        requiresTarget = false,
+        description = "Bank a bonus for an ally's next action (card value + Cups).",
+        requiresTarget = true,
+        targetType = "ally",
+        challengeAction = true,
     },
     {
-        id = "dodge",
-        name = "Dodge",
+        id = "command",
+        name = "Command",
         suit = M.SUITS.CUPS,
         attribute = "cups",
-        description = "Prepare to dodge. Card value adds to defense difficulty when attacked.",
+        description = "Command an animal companion (or similar ally) to act.",
         requiresTarget = false,
+        requiresCompanion = true,
+        challengeAction = true,
     },
     {
-        id = "riposte",
-        name = "Riposte",
+        id = "pull_item",
+        name = "Pull Item from Pack",
         suit = M.SUITS.CUPS,
         attribute = "cups",
-        description = "Prepare to counter-attack. If attacked, strike back with this card.",
+        description = "Swap an item from your pack with an item in your hands.",
         requiresTarget = false,
+        autoSuccess = true,
+        challengeAction = true,
     },
+    {
+        id = "use_item",
+        name = "Use Item",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        description = "Use an item in hand. If used on a combatant, resolve against Initiative.",
+        requiresTarget = false,  -- Optional target
+        challengeAction = true,
+    },
+
+    ----------------------------------------------------------------------------
+    -- CUPS EXTENSIONS (not shown in Challenge command board)
+    ----------------------------------------------------------------------------
     {
         id = "heal",
         name = "Heal",
@@ -2272,6 +3375,8 @@ M.ACTIONS = {
         description = "Attempt to heal a wound on yourself or an ally.",
         requiresTarget = true,
         targetType = "ally",
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "parley",
@@ -2281,6 +3386,8 @@ M.ACTIONS = {
         description = "Attempt to negotiate or reason with an NPC.",
         requiresTarget = true,
         targetType = "any",
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "rally",
@@ -2290,37 +3397,45 @@ M.ACTIONS = {
         description = "Inspire an ally, removing a condition or boosting morale.",
         requiresTarget = true,
         targetType = "ally",
-    },
-    {
-        id = "aid",
-        name = "Aid Another",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",
-        description = "Bank a bonus for an ally's next action (card value + Cups).",
-        requiresTarget = true,
-        targetType = "ally",
+        challengeAction = false,
+        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
-    -- WANDS (Magic / Perception)
+    -- WANDS (Social / Spellcraft)
     ----------------------------------------------------------------------------
-    {
-        id = "cast",
-        name = "Cast Spell",
-        suit = M.SUITS.WANDS,
-        attribute = "wands",
-        description = "Channel a prepared spell effect.",
-        requiresTarget = false,  -- Depends on spell
-    },
     {
         id = "banter",
         name = "Banter",
         suit = M.SUITS.WANDS,
         attribute = "wands",
-        description = "Distract an enemy with wit, reducing their next action's effectiveness.",
+        description = "Taunt, intimidate, or frighten an enemy to sway morale/disposition.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
+    {
+        id = "speak_incantation",
+        name = "Speak Incantation",
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        description = "Intone the words of power to cast a spell effect.",
+        requiresTarget = false,  -- Optional target
+        challengeAction = true,
+    },
+    {
+        id = "recover",
+        name = "Recover",
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        description = "Remove one recoverable effect (rooted, prone, blind, deaf, disarmed).",
+        requiresTarget = false,
+        challengeAction = true,
+    },
+
+    ----------------------------------------------------------------------------
+    -- WANDS EXTENSIONS (not shown in Challenge command board)
+    ----------------------------------------------------------------------------
     {
         id = "investigate",
         name = "Investigate",
@@ -2328,6 +3443,9 @@ M.ACTIONS = {
         attribute = "wands",
         description = "Search for hidden details, secrets, or clues.",
         requiresTarget = false,
+        testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "detect_magic",
@@ -2336,19 +3454,36 @@ M.ACTIONS = {
         attribute = "wands",
         description = "Sense magical auras or enchantments nearby.",
         requiresTarget = false,
-    },
-    {
-        id = "recover",
-        name = "Recover",
-        suit = M.SUITS.WANDS,
-        attribute = "wands",
-        description = "Clear a negative status effect (rooted, prone, blind, deaf, disarmed).",
-        requiresTarget = false,
+        testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
-    -- MISCELLANEOUS (Any Suit on Primary Turn)
+    -- MISCELLANEOUS (Any Suit on Primary Turn; never minor actions)
     ----------------------------------------------------------------------------
+    {
+        id = "bid_lore",
+        name = "Bid Lore",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Bid lore during a Challenge to recall esoteric details.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
+    },
+    {
+        id = "guard",
+        name = "Guard",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "If wielding a shield, replace your Initiative with this card's value.",
+        requiresTarget = false,
+        allowMinor = false,
+        requiresTag = "shield",
+        challengeAction = true,
+    },
     {
         id = "move",
         name = "Move",
@@ -2357,24 +3492,18 @@ M.ACTIONS = {
         description = "Move to an adjacent zone. No test required unless obstacles.",
         requiresTarget = false,
         allowMinor = false,  -- Cannot be a Minor action (normally)
+        challengeAction = true,
     },
     {
-        id = "pull_item",
-        name = "Pull Item",
+        id = "pull_item_belt",
+        name = "Pull Item from Belt",
         suit = M.SUITS.MISC,
         attribute = nil,
-        description = "Ready an item from your pack to your belt.",
+        description = "Swap an item from your belt with an item in your hands.",
         requiresTarget = false,
         allowMinor = false,
-    },
-    {
-        id = "use_item",
-        name = "Use Item",
-        suit = M.SUITS.MISC,
-        attribute = nil,  -- Depends on item
-        description = "Activate an item's special ability.",
-        requiresTarget = false,
-        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
     },
     {
         id = "interact",
@@ -2384,16 +3513,52 @@ M.ACTIONS = {
         description = "Interact with the environment (pull lever, open door, etc.)",
         requiresTarget = false,
         allowMinor = false,
+        autoSuccess = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "reload",
-        name = "Reload",
+        name = "Reload Crossbow",
         suit = M.SUITS.MISC,
         attribute = nil,
         description = "Reload a crossbow (required after each shot).",
         requiresTarget = false,
         allowMinor = false,
         requiresWeaponType = "crossbow",
+        challengeAction = true,
+    },
+    {
+        id = "test_fate",
+        name = "Test Fate",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Trigger a Test of Fate for risky complex actions mid-Challenge.",
+        requiresTarget = false,
+        allowMinor = false,
+        testOfFate = true,
+        challengeAction = true,
+    },
+    {
+        id = "trivial_action",
+        name = "Trivial Action",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Perform a quick uncontested interaction not covered by other actions.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
+    },
+    {
+        id = "vigilance",
+        name = "Vigilance",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Prepare a triggered response action using a matching-suit card.",
+        requiresTarget = false,
+        allowMinor = false,
+        challengeAction = true,
     },
 }
 
@@ -2422,14 +3587,132 @@ end
 -- QUERY FUNCTIONS
 --------------------------------------------------------------------------------
 
---- Get an action by ID
-function M.getAction(actionId)
-    return M.byId[actionId]
+-- Backward-compatible aliases for renamed actions
+M.ALIASES = {
+    cast = "speak_incantation",
+}
+
+local function normalizeActionId(actionId)
+    local current = actionId
+    local seen = {}
+
+    while current and M.ALIASES[current] and not seen[current] do
+        seen[current] = true
+        current = M.ALIASES[current]
+    end
+
+    return current or actionId
 end
 
---- Get all actions for a suit
-function M.getActionsForSuit(suit)
-    return M.bySuit[suit] or {}
+local function hasTagInHands(entity, requiredTag)
+    if not entity or not entity.inventory or not entity.inventory.getItems then
+        return false
+    end
+
+    local hands = entity.inventory:getItems("hands") or {}
+    for _, item in ipairs(hands) do
+        local props = item.properties
+        if props and props.tags then
+            for _, tag in ipairs(props.tags) do
+                if tag == requiredTag then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+--- Validate an action's requirements against an entity
+-- @return boolean, string|nil: canUse, disableReason
+function M.checkActionRequirements(action, entity)
+    if not action then
+        return false, "Unknown action"
+    end
+
+    if action.requiresWeaponType then
+        local hasRequiredWeapon = false
+
+        if entity and entity.inventory then
+            local weapon = entity.inventory:getWieldedWeapon()
+            if weapon then
+                if action.requiresWeaponType == "ranged" then
+                    hasRequiredWeapon = weapon.isRanged == true
+                elseif action.requiresWeaponType == "melee" then
+                    hasRequiredWeapon = weapon.isMelee == true or (weapon.isWeapon and not weapon.isRanged)
+                else
+                    hasRequiredWeapon = weapon.weaponType == action.requiresWeaponType
+                end
+            end
+        end
+
+        if not hasRequiredWeapon then
+            return false, "Requires " .. action.requiresWeaponType .. " weapon in hands"
+        end
+    end
+
+    if action.requiresTag then
+        if not hasTagInHands(entity, action.requiresTag) then
+            return false, "Requires " .. action.requiresTag
+        end
+    end
+
+    if action.requiresCompanion then
+        local hasCompanion = entity and (
+            entity.companion ~= nil or
+            (type(entity.companions) == "table" and next(entity.companions) ~= nil)
+        )
+        if not hasCompanion then
+            return false, "Requires companion"
+        end
+    end
+
+    if action.requiresItem then
+        if entity and entity.inventory then
+            local hasItem = entity.inventory:hasItemOfType(action.requiresItem)
+            if not hasItem then
+                return false, "Requires " .. action.requiresItem
+            end
+        else
+            return false, "Requires " .. action.requiresItem
+        end
+    end
+
+    return true, nil
+end
+
+--- Get an action by ID
+function M.getAction(actionId)
+    local normalized = normalizeActionId(actionId)
+    return M.byId[normalized]
+end
+
+--- Get actions for a suit
+-- @param options table|nil: { challengeOnly = bool, commandBoardOnly = bool }
+function M.getActionsForSuit(suit, options)
+    local actions = M.bySuit[suit] or {}
+    if not options then
+        return actions
+    end
+
+    local filtered = {}
+    for _, action in ipairs(actions) do
+        local include = true
+
+        if options.challengeOnly and action.challengeAction == false then
+            include = false
+        end
+        if options.commandBoardOnly and action.showInCommandBoard == false then
+            include = false
+        end
+
+        if include then
+            filtered[#filtered + 1] = action
+        end
+    end
+
+    return filtered
 end
 
 --- Get actions available for a given card and context
@@ -2454,23 +3737,8 @@ function M.getAvailableActions(card, isPrimaryTurn, entity)
             end
         end
 
-        -- Check additional requirements
-        if canUse and action.requiresWeaponType then
-            if not entity or not entity.weapon or entity.weapon.type ~= action.requiresWeaponType then
-                canUse = false
-            end
-        end
-
-        if canUse and action.requiresItem then
-            -- Check if entity has required item
-            if entity and entity.inventory then
-                local hasItem = entity.inventory:hasItemOfType(action.requiresItem)
-                if not hasItem then
-                    canUse = false
-                end
-            else
-                canUse = false
-            end
+        if canUse then
+            canUse = M.checkActionRequirements(action, entity)
         end
 
         if canUse then
@@ -2558,8 +3826,11 @@ M.blueprints = {
             cups      = 1,
             wands     = 4,
         },
-        armorSlots = 0,
-        talentWoundSlots = 0,  -- Skeletons don't have talents to wound
+        -- NPC HD System: health/defense (p. 125)
+        health = 3,   -- Must be bashed apart
+        defense = 0,  -- No armor, just bones
+        instantDestruction = true,  -- Undead don't go to Death's Door, just fall apart
+        baseMorale = 20,  -- S12.3: Undead feel no fear
         starting_gear = {
             hands = {
                 { name = "Rusty Sword", size = 1, durability = 2 },
@@ -2575,8 +3846,10 @@ M.blueprints = {
             cups      = 1,
             wands     = 3,
         },
-        armorSlots = 0,
-        talentWoundSlots = 0,
+        health = 2,   -- Frailer than brute
+        defense = 0,
+        instantDestruction = true,  -- Undead
+        baseMorale = 20,  -- S12.3: Undead feel no fear
         starting_gear = {
             hands = {
                 { name = "Cracked Bow", size = 2, durability = 1 },
@@ -2599,8 +3872,11 @@ M.blueprints = {
             cups      = 1,
             wands     = 2,
         },
-        armorSlots = 0,
-        talentWoundSlots = 0,
+        -- HD: 1/0 - One hit and they're down
+        health = 1,
+        defense = 0,
+        baseMorale = 10,  -- S12.3: Goblins are cowardly
+        disposition = "fear",  -- S12.4: Goblins start fearful
         starting_gear = {
             hands = {
                 { name = "Shiv", size = 1, durability = 1 },
@@ -2616,8 +3892,11 @@ M.blueprints = {
             cups      = 3,
             wands     = 4,
         },
-        armorSlots = 0,
-        talentWoundSlots = 1,
+        -- HD: 2/1 - Slightly tougher, has some magical protection
+        health = 2,
+        defense = 1,
+        baseMorale = 14,  -- S12.3: Shamans have more confidence
+        disposition = "distaste",  -- S12.4: Shamans are dismissive
         starting_gear = {
             hands = {
                 { name = "Gnarled Staff", size = 2, durability = 2 },
@@ -2640,8 +3919,10 @@ M.blueprints = {
             cups      = 2,
             wands     = 1,
         },
-        armorSlots = 0,
-        talentWoundSlots = 0,
+        -- HD: 3/1 - Tough beast, thick hide
+        health = 3,
+        defense = 1,  -- Thick fur/hide
+        baseMorale = 14,  -- S12.3: Predator, but not suicidal
         -- No gear - natural weapons
         starting_gear = {},
     },
@@ -2658,12 +3939,14 @@ M.blueprints = {
             cups      = 3,
             wands     = 3,
         },
-        armorSlots = 3,  -- Heavy armor
-        talentWoundSlots = 2,
+        -- HD: 3/5 - Tough warrior in heavy armor (Defense represents plate armor)
+        health = 3,
+        defense = 5,  -- Heavy plate armor
+        baseMorale = 16,  -- S12.3: Trained and disciplined
         starting_gear = {
             hands = {
                 { name = "Longsword", size = 1, durability = 3 },
-                { name = "Heater Shield", size = 1, durability = 2 },
+                { name = "Heater Shield", size = 1, durability = 2, properties = { tags = { "shield" } } },
             },
             belt = {
                 { name = "Plate Armor", size = 2, isArmor = true, durability = 3 },
@@ -2684,8 +3967,11 @@ M.blueprints = {
             cups      = 3,
             wands     = 5,  -- Psychic powers
         },
-        armorSlots = 1,  -- Chitinous hide
-        talentWoundSlots = 1,
+        -- HD: 2/2 - Chitinous hide provides some defense
+        health = 2,
+        defense = 2,  -- Chitinous carapace
+        baseMorale = 14,  -- S12.3: Cunning predators, will retreat if outmatched
+        disposition = "surprise",  -- S12.4: Psychic predators assess before acting
         starting_gear = {},  -- Natural weapons (fangs and psychic attacks)
     },
 
@@ -2697,8 +3983,11 @@ M.blueprints = {
             cups      = 1,
             wands     = 1,
         },
-        armorSlots = 0,  -- Already dried and dead
-        talentWoundSlots = 0,
+        -- HD: 2/0 - Dried corpses, no armor but must be hacked apart
+        health = 2,
+        defense = 0,
+        instantDestruction = true,  -- Undead puppet, just stops moving
+        baseMorale = 20,  -- S12.3: Mindless undead, controlled by their master
         starting_gear = {
             hands = {
                 { name = "Corroded Khopesh", size = 1, durability = 1 },
@@ -2714,8 +4003,10 @@ M.blueprints = {
             cups      = 1,
             wands     = 2,
         },
-        armorSlots = 1,  -- Hard carapace
-        talentWoundSlots = 0,
+        -- HD: 2/2 - Hard carapace, segmented body
+        health = 2,
+        defense = 2,  -- Hard chitinous shell
+        baseMorale = 12,  -- S12.3: Instinctive beast, will flee if badly hurt
         starting_gear = {},  -- Venomous mandibles
     },
 
@@ -2729,8 +4020,10 @@ M.blueprints = {
             cups      = 6,  -- Master psychic
             wands     = 6,  -- Powerful caster
         },
-        armorSlots = 2,  -- Reinforced carapace
-        talentWoundSlots = 3,
+        -- HD: 5/4 - Boss-level durability with reinforced carapace
+        health = 5,
+        defense = 4,  -- Reinforced psychic carapace
+        baseMorale = 18,  -- S12.3: Cunning boss, will use every trick before fleeing
         starting_gear = {},
 
         -- Greater Doom: A devastating special ability
@@ -2748,6 +4041,70 @@ M.blueprints = {
 
         -- Boss-specific AI behaviors
         aiTags = { "boss", "psychic", "summons_minions" },
+    },
+
+    ----------------------------------------------------------------------------
+    -- S12.8: SOCIAL ENCOUNTER NPCs
+    -- These entities are designed for non-combat resolution
+    ----------------------------------------------------------------------------
+
+    tomb_guardian_spirit = {
+        name = "Tomb Guardian Spirit",
+        attributes = {
+            swords    = 4,  -- Can fight if needed
+            pentacles = 3,
+            cups      = 5,  -- Strong will
+            wands     = 6,  -- Perceptive and magical
+        },
+        -- HD: 4/2 - Spectral being, partially incorporeal
+        health = 4,
+        defense = 2,  -- Incorporeal nature provides some protection
+        instantDestruction = true,  -- Spirit dissipates when defeated
+        baseMorale = 16,  -- S12.3: Confident but not aggressive
+        disposition = "trust",  -- S12.4: Open to parley initially
+
+        -- S12.8: Social encounter data
+        social = {
+            likes = { "respect", "offerings", "knowledge_of_tomb" },
+            dislikes = { "grave_robbing", "disrespect", "lies" },
+            -- Dialogue hooks for different dispositions
+            dialogue = {
+                trust = "You carry yourself with respect. Speak your purpose here.",
+                joy = "Ah, seekers of knowledge! The tomb welcomes those who honor the dead.",
+                fear = "The guardian's form wavers and dims...",
+                anger = "DEFILERS! You shall join the sleepers in eternal darkness!",
+                sadness = "So many have come... so many have fallen... why do you disturb this place?",
+                distaste = "More grave robbers. State your business quickly.",
+                surprise = "You... you know the old words? Perhaps there is hope yet.",
+            },
+            -- Failure threshold before forced combat
+            failureThreshold = 3,
+            -- Rewards for successful social resolution
+            trustReward = {
+                description = "The guardian reveals a secret passage and blesses your journey.",
+                items = { "guardian_blessing" },
+                revealSecret = true,
+            },
+            fearReward = {
+                description = "The guardian retreats into the walls, leaving the chamber accessible.",
+            },
+        },
+
+        -- Greater Doom: Spectral Wail
+        greaterDoom = {
+            name = "Spectral Wail",
+            description = "The guardian unleashes a terrifying scream that echoes through the tomb. All adventurers must test Cups vs 14 or gain the Frightened condition.",
+            trigger = "on_combat_start",  -- Triggers when combat begins
+            effect = {
+                type = "group_test",
+                attribute = "cups",
+                difficulty = 14,
+                onFailure = { condition = "frightened" },
+            },
+        },
+
+        -- AI tags
+        aiTags = { "spirit", "social_priority", "guardian" },
     },
 
 }
@@ -3249,14 +4606,28 @@ M.templates = {
         name = "Torch",
         size = 1,
         durability = 1,
-        properties = { flicker_count = 3, light_source = true },
+        properties = {
+            flicker_count = 3,
+            light_source = true,
+            isLit = true,                -- Starts lit by default
+            requires_hands = true,       -- Must be in hands to provide light
+            provides_belt_light = false, -- Does NOT work from belt
+            fragile_on_belt = false,
+        },
     },
 
     lantern = {
         name = "Lantern",
         size = 1,
         durability = 2,
-        properties = { flicker_count = 6, light_source = true },
+        properties = {
+            flicker_count = 6,
+            light_source = true,
+            isLit = true,                -- Starts lit by default
+            requires_hands = false,      -- Works from hands OR belt
+            provides_belt_light = true,  -- Works from belt
+            fragile_on_belt = true,      -- Breaks when taking wound while on belt
+        },
     },
 
     ----------------------------------------------------------------------------
@@ -3448,6 +4819,31 @@ M.templates = {
         properties = { map = true, incomplete = true },
     },
 
+    -- S12.8: Social encounter rewards
+    guardian_blessing = {
+        name = "Guardian's Blessing",
+        size = 1,
+        properties = {
+            magical = true,
+            blessing = true,
+            effect = "protection_from_undead",
+            duration = "until_rest",
+            description = "A spectral blessing that shields you from hostile undead.",
+        },
+    },
+
+    golden_medallion = {
+        name = "Golden Medallion",
+        size = 1,
+        properties = {
+            jewelry = true,
+            magical = true,
+            value = 75,
+            effect = "sense_undead",
+            description = "A medallion that grows warm when undead are near.",
+        },
+    },
+
     ----------------------------------------------------------------------------
     -- MISCELLANEOUS
     ----------------------------------------------------------------------------
@@ -3541,6 +4937,9 @@ M.data = {
                     type = "decoration",
                     description = "A heavy iron door, twisted completely off its hinges. Whatever did this was strong.",
                     hidden_description = "Deep claw marks score the metal. Something large forced its way in.",
+                    secrets = "Wedged in the twisted frame you find a discarded torch and a stick of chalk.",
+                    investigate_test = { attribute = "swords", difficulty = 10 },
+                    loot = { "torch", "chalk" },
                 },
                 {
                     id = "west_mural",
@@ -3550,6 +4949,7 @@ M.data = {
                     hidden_description = "One star in the mural seems slightly raised from the wall...",
                     secrets = "Pressing the raised star reveals a hidden latch! A secret door swings open.",
                     investigate_test = { attribute = "pentacles", difficulty = 12 },
+                    reveal_connection = { to = "112_hidden_sanctum" },
                 },
             },
         },
@@ -3879,6 +5279,103 @@ M.data = {
             description = "A spacious room covered in webs. A few fat sacks of webs hang from the ceiling here.",
             danger_level = 4,
         },
+
+        -- S12.8: Social Encounter POC - The Tomb Guardian
+        {
+            id          = "118_chamber_of_vigilant",
+            name        = "Chamber of the Vigilant",
+            description = "A circular chamber of polished black stone. An ancient altar stands at its center, covered in faded offerings of gold coins and dried flowers. Carved tablets line the walls, inscribed with the names of those interred here. A spectral figure materializes as you enter, its golden form flickering with ancient power.",
+            danger_level = 2,  -- Not inherently dangerous if handled socially
+            zones = {
+                { id = "entrance", name = "Entrance", description = "The threshold into the chamber." },
+                { id = "altar", name = "Ancient Altar", description = "Before the offering altar." },
+                { id = "tablets", name = "Memorial Tablets", description = "Among the carved stone tablets." },
+            },
+            features = {
+                {
+                    id = "tomb_guardian",
+                    name = "Tomb Guardian Spirit",
+                    type = "creature",
+                    description = "A translucent golden figure wearing ancient ceremonial robes. It watches you with eyes that have seen centuries pass.",
+                    hidden_description = "The guardian seems more curious than hostile. Perhaps it can be reasoned with.",
+                    -- S12.8: Social encounter configuration
+                    encounter = {
+                        blueprint_id = "tomb_guardian_spirit",
+                        count = 1,
+                        isSocialEncounter = true,  -- Flags this as a social encounter
+                        initiatesDialogue = true,  -- Guardian speaks first
+                    },
+                },
+                {
+                    id = "ancient_altar",
+                    name = "ancient altar",
+                    type = "container",
+                    description = "A stone altar covered in offerings - gold coins, dried flower petals, and small personal effects left by mourners long dead.",
+                    hidden_description = "The offerings seem to please the guardian. Leaving something of value might earn its favor.",
+                    secrets = "Among the offerings, you notice a golden medallion still radiating faint warmth.",
+                    investigate_test = { attribute = "cups", difficulty = 10 },
+                    -- S12.8: Offering interaction
+                    acceptsOffering = true,
+                    offeringEffect = {
+                        type = "disposition_shift",
+                        target = "tomb_guardian",
+                        direction = 1,  -- Toward Trust/Joy
+                        amount = 2,
+                    },
+                    loot = { "golden_medallion" },
+                },
+                {
+                    id = "inscribed_tablets",
+                    name = "inscribed tablets",
+                    type = "decoration",
+                    description = "Stone tablets carved with names, dates, and epitaphs in an ancient script. Some are still legible.",
+                    hidden_description = "The tablets tell the story of this tomb - a resting place for the astronomers who predicted the Comet of Woe.",
+                    secrets = "Reading the tablets aloud seems to please the guardian. The names resonate with meaning: Kethran the Seer, Miravel Starwatcher, Ossian of the Silver Eye...",
+                    investigate_test = { attribute = "wands", difficulty = 8 },
+                    -- S12.8: Lore interaction - grants social bonus
+                    grantsLore = "tomb_history",
+                    loreEffect = {
+                        type = "social_favor",
+                        target = "tomb_guardian",
+                        description = "Knowledge of the tomb's history grants +2 to social attempts with the guardian.",
+                        modifier = 2,
+                    },
+                },
+            },
+            -- S12.8: Room-level social encounter configuration
+            socialEncounter = {
+                guardian = "tomb_guardian",
+                -- Opening dialogue based on disposition
+                onEnter = {
+                    event = "guardian_materializes",
+                    description = "The guardian materializes from the walls, golden light pooling into a humanoid form.",
+                },
+                -- Options available to players
+                playerOptions = {
+                    { action = "attack", description = "Attack (triggers combat)" },
+                    { action = "banter", description = "Speak with respect (Banter - Wands)" },
+                    { action = "offer", description = "Make an offering at the altar" },
+                    { action = "read_tablets", description = "Study the inscribed tablets" },
+                    { action = "leave", description = "Back away slowly and leave" },
+                },
+                -- Resolution outcomes
+                outcomes = {
+                    trust_success = {
+                        description = "The guardian bows deeply. 'You have honored the dead. Take this blessing, and may the path ahead open before you.'",
+                        effect = "reveal_secret_passage",
+                        reward = "guardian_blessing",
+                    },
+                    fear_success = {
+                        description = "The guardian's form wavers, then fades into the walls with a mournful wail. The chamber falls silent.",
+                        effect = "guardian_retreats",
+                    },
+                    anger_combat = {
+                        description = "The guardian's eyes blaze with fury. 'DEFILERS!' Its form solidifies, ready for battle.",
+                        effect = "combat_start",
+                    },
+                },
+            },
+        },
     },
 
     connections = {
@@ -3943,6 +5440,12 @@ M.data = {
         { from = "109_guard_room", to = "117_kodi_nest", properties = {
             direction = "east",
             description = "An illusory wall conceals this passage.",
+        }},
+
+        -- S12.8: Connection to the Chamber of the Vigilant
+        { from = "106_burial_chambers", to = "118_chamber_of_vigilant", properties = {
+            direction = "west",
+            description = "An archway leads to a circular chamber. Faint golden light emanates from within.",
         }},
     },
 }
@@ -4485,6 +5988,28 @@ function M.createEntity(config)
         -- Defensive action slot (S4.9)
         -- Holds a prepared defense: { type = "dodge"|"riposte", card = {...} }
         pendingDefense = nil,
+
+        -- S12.3: Morale system
+        baseMorale = config.baseMorale or 14,  -- Default morale for generic entities
+        moraleModifier = 0,  -- Temporary modifiers from intimidation, rallying, etc.
+
+        -- S12.4: Disposition system
+        disposition = config.disposition or "distaste",  -- Default neutral-negative disposition
+
+        -- Entity type flag
+        isPC = config.isPC or false,
+
+        -- NPC Health/Defense (HD) System (p. 125)
+        -- NPCs use a simplified damage tracking: Defense absorbs first, then Health
+        -- Example: HD 3/5 = 3 Health, 5 Defense
+        -- PCs use the full wound track (armor → talents → staggered → injured → death's door)
+        npcHealth = config.health or config.npcHealth or 3,      -- How much damage before Death's Door
+        npcDefense = config.defense or config.npcDefense or 0,   -- Absorbs wounds before Health
+        npcMaxHealth = config.health or config.npcHealth or 3,   -- For display/reset
+        npcMaxDefense = config.defense or config.npcDefense or 0,
+
+        -- Whether this NPC skips Death's Door on defeat (undead, constructs)
+        instantDestruction = config.instantDestruction or false,
     }
 
     ----------------------------------------------------------------------------
@@ -4614,6 +6139,13 @@ function M.createEntity(config)
             damageType = "normal"
         end
 
+        -- Branch: NPCs use simplified Health/Defense system (p. 125)
+        if not self.isPC then
+            return self:takeWoundNPC(damageType)
+        end
+
+        -- PC WOUND TRACK (full cascade)
+
         -- S7.7: Critical damage skips armor, talents, and staggered
         if damageType == "critical" then
             -- Go straight to injured cascade
@@ -4669,6 +6201,65 @@ function M.createEntity(config)
     end
 
     ----------------------------------------------------------------------------
+    -- NPC HEALTH/DEFENSE SYSTEM (p. 125)
+    -- Simplified damage tracking for GM's characters:
+    -- - Defense reduced first (like armor, scales, thick hide)
+    -- - When Defense = 0, reduce Health
+    -- - Piercing bypasses Defense, hits Health directly
+    -- - Critical bypasses Defense, hits Health directly
+    -- - Health = 0 → Death's Door (or instant destruction for undead/constructs)
+    ----------------------------------------------------------------------------
+
+    function entity:takeWoundNPC(damageType)
+        -- Piercing and Critical bypass Defense, hit Health directly
+        local bypassDefense = (damageType == "piercing" or damageType == "critical")
+
+        -- Normal damage: reduce Defense first
+        if not bypassDefense and self.npcDefense > 0 then
+            self.npcDefense = self.npcDefense - 1
+            return "defense_reduced"
+        end
+
+        -- Reduce Health
+        if self.npcHealth > 0 then
+            self.npcHealth = self.npcHealth - 1
+
+            if self.npcHealth <= 0 then
+                -- Health depleted
+                if self.instantDestruction then
+                    -- Undead, constructs, etc. - skip Death's Door
+                    self.conditions.dead = true
+                    return "destroyed"
+                else
+                    -- Living creatures go to Death's Door
+                    self.conditions.deaths_door = true
+                    return "deaths_door"
+                end
+            end
+            return "health_reduced"
+        end
+
+        -- Already at 0 Health (Death's Door) - another wound is fatal
+        self.conditions.dead = true
+        return "dead"
+    end
+
+    --- Get NPC's current HD string for display (e.g., "HD: 2/3")
+    function entity:getHDString()
+        return string.format("HD: %d/%d", self.npcHealth, self.npcDefense)
+    end
+
+    --- Get NPC's full HD info
+    function entity:getHD()
+        return {
+            health = self.npcHealth,
+            defense = self.npcDefense,
+            maxHealth = self.npcMaxHealth,
+            maxDefense = self.npcMaxDefense,
+        }
+    end
+
+    ----------------------------------------------------------------------------
     -- HEALING
     -- Note: Stress is a "Recovery Gate" (p. 31) - must clear stress first
     ----------------------------------------------------------------------------
@@ -4721,11 +6312,105 @@ function M.createEntity(config)
     end
 
     ----------------------------------------------------------------------------
+    -- S12.3: MORALE SYSTEM
+    ----------------------------------------------------------------------------
+
+    --- Calculate the entity's current wounds taken
+    -- @return number: Total wound levels sustained
+    function entity:getWoundsTaken()
+        local wounds = 0
+        wounds = wounds + self.armorNotches
+        wounds = wounds + self.woundedTalents
+        if self.conditions.staggered then wounds = wounds + 1 end
+        if self.conditions.injured then wounds = wounds + 1 end
+        if self.conditions.deaths_door then wounds = wounds + 1 end
+        return wounds
+    end
+
+    --- Calculate current morale
+    -- @param context table: Optional battle context { allies, enemies, defeatedAllies }
+    -- @return number: Current morale value
+    function entity:getMorale(context)
+        context = context or {}
+
+        local morale = self.baseMorale or 14
+
+        -- Penalty for wounds taken (-2 per wound level)
+        local wounds = self:getWoundsTaken()
+        morale = morale - (wounds * 2)
+
+        -- Penalty for defeated allies (-3 per defeated ally)
+        local defeatedAllies = context.defeatedAllies or 0
+        morale = morale - (defeatedAllies * 3)
+
+        -- Bonus for wounded enemies (+1 per wounded PC)
+        local woundedEnemies = context.woundedEnemies or 0
+        morale = morale + woundedEnemies
+
+        -- Apply temporary modifier (from Intimidate, Rally, etc.)
+        morale = morale + (self.moraleModifier or 0)
+
+        -- Minimum morale of 1 (unless completely broken)
+        return math.max(1, morale)
+    end
+
+    --- Modify morale temporarily (e.g., from Intimidate)
+    -- @param amount number: Amount to add (negative to reduce)
+    function entity:modifyMorale(amount)
+        self.moraleModifier = (self.moraleModifier or 0) + amount
+    end
+
+    --- Clear temporary morale modifiers
+    function entity:clearMoraleModifier()
+        self.moraleModifier = 0
+    end
+
+    ----------------------------------------------------------------------------
+    -- S12.4: DISPOSITION SYSTEM
+    ----------------------------------------------------------------------------
+
+    --- Get current disposition
+    function entity:getDisposition()
+        return self.disposition or "distaste"
+    end
+
+    --- Set disposition directly
+    function entity:setDisposition(newDisposition)
+        self.disposition = newDisposition
+    end
+
+    --- Shift disposition (uses disposition module if available)
+    -- @param direction number: 1 for clockwise, -1 for counter-clockwise
+    -- @param amount number: Steps to shift (default 1)
+    function entity:shiftDisposition(direction, amount)
+        amount = amount or 1
+        -- Simple wheel implementation (full module loaded elsewhere)
+        local wheel = { "anger", "distaste", "sadness", "joy", "surprise", "trust", "fear" }
+        local index = 1
+        for i, d in ipairs(wheel) do
+            if d == self.disposition then
+                index = i
+                break
+            end
+        end
+        index = index + (direction * amount)
+        while index < 1 do index = index + #wheel end
+        while index > #wheel do index = index - #wheel end
+        self.disposition = wheel[index]
+    end
+
+    ----------------------------------------------------------------------------
     -- UTILITY
     ----------------------------------------------------------------------------
 
     --- Get count of available wound absorption slots
     function entity:remainingProtection()
+        -- NPCs use Health/Defense system
+        if not self.isPC then
+            return self.npcDefense + self.npcHealth
+        end
+
+        -- PCs use full wound track
         local remaining = 0
 
         -- Armor slots
@@ -4745,10 +6430,25 @@ function M.createEntity(config)
 
     --- How many wounds until death?
     function entity:woundsUntilDeath()
+        if self.conditions.dead then
+            return 0
+        end
+
         if self.conditions.deaths_door then
             return 0
         end
-        return self:remainingProtection() + 1  -- +1 for death's door itself
+
+        -- NPCs: Defense + Health
+        if not self.isPC then
+            if self.instantDestruction then
+                return self.npcDefense + self.npcHealth
+            else
+                return self.npcDefense + self.npcHealth + 1  -- +1 for death's door
+            end
+        end
+
+        -- PCs: full protection + 1 for death's door
+        return self:remainingProtection() + 1
     end
 
     return entity
@@ -4773,10 +6473,10 @@ return M
 --------------------------------------------------------------------------------
 -- DEPENDENCIES
 --------------------------------------------------------------------------------
-local base_entity = require('base_entity')
-local adventurer_module = require('adventurer')
-local inventory = require('inventory')
-local mob_blueprints = require('blueprints.mobs')
+local base_entity = require('entities.base_entity')
+local adventurer_module = require('entities.adventurer')
+local inventory = require('logic.inventory')
+local mob_blueprints = require('data.blueprints.mobs')
 
 local M = {}
 
@@ -4860,7 +6560,18 @@ function M.createEntity(template_id, overrides)
         wands            = blueprint.attributes.wands,
         armorSlots       = blueprint.armorSlots or 0,
         talentWoundSlots = blueprint.talentWoundSlots or 0,
+        baseMorale       = blueprint.baseMorale or 14,  -- S12.3: Morale system
+        disposition      = overrides.disposition or blueprint.disposition or "distaste",  -- S12.4: Disposition
         location         = overrides.location or nil,
+
+        -- NPC Health/Defense system (p. 125)
+        -- Health = durability before Death's Door
+        -- Defense = protection absorbed first (like armor, scales, hide)
+        health           = blueprint.health or blueprint.npcHealth or 3,
+        defense          = blueprint.defense or blueprint.npcDefense or blueprint.armorSlots or 0,
+        instantDestruction = blueprint.instantDestruction or false,  -- Undead/constructs skip Death's Door
+
+        isPC = false,
     })
 
     -- Mark as NPC
@@ -4993,13 +6704,15 @@ return M
 -- Suits and their actions:
 -- - SWORDS: Melee (requires engagement), Missile (bypasses engagement)
 -- - PENTACLES: Roughhouse (Trip, Disarm, Displace)
--- - CUPS: Defense, healing, social
+-- - CUPS: Support, healing, social
 -- - WANDS: Banter (attacks Morale), magic
 --
 -- Great Success (face cards on matching suit) triggers weapon bonuses
 
 local events = require('logic.events')
+local disposition_module = require('logic.disposition')
 local constants = require('constants')
+local action_registry = require('data.action_registry')
 
 local M = {}
 
@@ -5018,21 +6731,31 @@ M.ACTION_TYPES = {
     GRAPPLE    = "grapple",     -- Establish grapple
 
     -- Cups
-    DEFEND     = "defend",      -- Defensive stance
+    COMMAND    = "command",     -- Command companion actions
     HEAL       = "heal",        -- Healing action
+    PARLEY     = "parley",      -- Social extension
+    RALLY      = "rally",       -- Social extension
     SHIELD     = "shield",      -- Protect another
     AID        = "aid",         -- S7.1: Aid Another (bank bonus for ally)
 
     -- Wands
     BANTER     = "banter",      -- Attack morale
-    CAST       = "cast",        -- Use magic
-    INTIMIDATE = "intimidate",  -- Fear effect
+    SPEAK_INCANTATION = "speak_incantation", -- Rulebook spellcasting action
+    CAST       = "cast",        -- Legacy alias for Speak Incantation
     RECOVER    = "recover",     -- S7.4: Clear negative status effects
 
     -- Special
     FLEE       = "flee",        -- Attempt to escape
     MOVE       = "move",        -- Change zone
     USE_ITEM   = "use_item",    -- Use an item
+    PULL_ITEM  = "pull_item",   -- Pull item from pack
+    PULL_ITEM_BELT = "pull_item_belt", -- Pull item from belt
+    INTERACT   = "interact",    -- Environment interaction
+    BID_LORE   = "bid_lore",    -- Misc rules lookup action
+    GUARD      = "guard",       -- Replace initiative if shielded
+    TEST_FATE  = "test_fate",   -- Mid-challenge test of fate trigger
+    TRIVIAL_ACTION = "trivial_action", -- Simple uncontested action
+    VIGILANCE  = "vigilance",   -- Prepared triggered response
 
     -- Defensive Actions (S4.9)
     DODGE      = "dodge",       -- Adds card value to defense difficulty
@@ -5047,6 +6770,10 @@ M.ACTION_TYPES = {
 
     -- S7.8: Ammunition
     RELOAD     = "reload",      -- Reload a crossbow
+}
+
+M.ACTION_ALIASES = {
+    cast = M.ACTION_TYPES.SPEAK_INCANTATION,
 }
 
 --------------------------------------------------------------------------------
@@ -5139,11 +6866,255 @@ function M.createActionResolver(config)
     local resolver = {
         eventBus   = config.eventBus or events.globalBus,
         zoneSystem = config.zoneSystem,
-        -- S6.3: Track engagements { [entityId] = { [enemyId] = true, ... } }
-        engagements = {},
+        challengeController = config.challengeController,
+        -- S12.1: Engagements now tracked by zoneSystem (zone_system.lua)
+        -- The zoneSystem is the single source of truth for engagement state
         -- S7.1: Track active aids { [targetId] = { val = bonus, source = actorName } }
         activeAids = {},
     }
+
+    ----------------------------------------------------------------------------
+    -- S12.2: ACTION VALIDATION
+    ----------------------------------------------------------------------------
+
+    --- Check if an actor can perform a given action
+    -- @param actor table: The acting entity
+    -- @param actionType string: The action type (e.g., "missile")
+    -- @param actionDef table: Optional action definition from action_registry
+    -- @return boolean, string: can perform, reason if blocked
+    function resolver:canPerformAction(actor, actionType, actionDef)
+        if not actor then return false, "No actor" end
+        actionType = self:normalizeActionType(actionType)
+
+        -- S12.2: Check ranged restriction when engaged
+        local isRanged = actionType == M.ACTION_TYPES.MISSILE
+        if actionDef and actionDef.isRanged then
+            isRanged = true
+        end
+
+        if isRanged and self:hasAnyEngagement(actor) then
+            return false, "Cannot use ranged weapons while engaged"
+        end
+
+        if actionDef then
+            local requirementsOk, requirementReason = action_registry.checkActionRequirements(actionDef, actor)
+            if not requirementsOk then
+                return false, requirementReason or "Action requirements not met"
+            end
+        end
+
+        return true, nil
+    end
+
+    ----------------------------------------------------------------------------
+    -- ACTION HELPERS
+    ----------------------------------------------------------------------------
+
+    local actionSuitToCardSuit = {
+        [action_registry.SUITS.SWORDS]    = constants.SUITS.SWORDS,
+        [action_registry.SUITS.PENTACLES] = constants.SUITS.PENTACLES,
+        [action_registry.SUITS.CUPS]      = constants.SUITS.CUPS,
+        [action_registry.SUITS.WANDS]     = constants.SUITS.WANDS,
+    }
+
+    function resolver:getActionDef(action)
+        if not action then return nil end
+        if action.actionDef then return action.actionDef end
+        if action.type then
+            return action_registry.getAction(action.type)
+        end
+        return nil
+    end
+
+    function resolver:normalizeActionType(actionType)
+        if not actionType then
+            return actionType
+        end
+        return M.ACTION_ALIASES[actionType] or actionType
+    end
+
+    function resolver:usesCardValueOnly(action)
+        if not action then return false end
+        if action.isMinorAction then return true end
+        local actionType = self:normalizeActionType(action.type)
+        if actionType == M.ACTION_TYPES.DODGE or actionType == M.ACTION_TYPES.RIPOSTE then
+            return true
+        end
+        return false
+    end
+
+    function resolver:getActionModifier(action, actionDef)
+        if not action or not action.actor then return 0 end
+        if self:usesCardValueOnly(action) then return 0 end
+
+        if actionDef and actionDef.attribute then
+            return action.actor[actionDef.attribute] or 0
+        end
+
+        -- Fallback for unknown actions: use card suit stat
+        if not actionDef and action.card and action.card.suit then
+            return self:getStatModifier(action.actor, action.card.suit)
+        end
+
+        return 0
+    end
+
+    function resolver:isInitiativeOpposed(actionType)
+        actionType = self:normalizeActionType(actionType)
+        return actionType == M.ACTION_TYPES.MELEE or
+               actionType == M.ACTION_TYPES.MISSILE or
+               actionType == M.ACTION_TYPES.TRIP or
+               actionType == M.ACTION_TYPES.DISARM or
+               actionType == M.ACTION_TYPES.DISPLACE or
+               actionType == M.ACTION_TYPES.GRAPPLE or
+               actionType == M.ACTION_TYPES.SPEAK_INCANTATION or
+               actionType == M.ACTION_TYPES.COMMAND or
+               actionType == M.ACTION_TYPES.USE_ITEM
+    end
+
+    function resolver:getTargetInitiative(target, action)
+        if not target then return nil end
+        if action and action.targetInitiative then
+            return action.targetInitiative
+        end
+
+        local controller = (action and action.challengeController) or self.challengeController
+        if controller and controller.getInitiativeSlot then
+            local slot = controller:getInitiativeSlot(target.id)
+            if slot then
+                if not slot.revealed then
+                    slot.revealed = true
+                    self.eventBus:emit(events.EVENTS.INITIATIVE_REVEALED, {
+                        entity = target,
+                    })
+                end
+                return slot.value or (slot.card and slot.card.value) or nil
+            end
+        end
+
+        return nil
+    end
+
+    function resolver:entityHasShield(entity)
+        if not entity or not entity.inventory or not entity.inventory.getItems then
+            return false
+        end
+
+        local hands = entity.inventory:getItems("hands") or {}
+        for _, item in ipairs(hands) do
+            local props = item.properties
+            if props and props.tags then
+                for _, tag in ipairs(props.tags) do
+                    if tag == "shield" then
+                        return true
+                    end
+                end
+            end
+        end
+
+        return false
+    end
+
+    function resolver:requestTestOfFate(action, actionDef, result)
+        local suitKey = actionDef and actionDef.suit or nil
+        local targetSuit = suitKey and actionSuitToCardSuit[suitKey] or nil
+
+        self.eventBus:emit(events.EVENTS.REQUEST_TEST_OF_FATE, {
+            entity = action.actor,
+            attribute = (actionDef and actionDef.attribute) or "pentacles",
+            targetSuit = targetSuit,
+            description = actionDef and actionDef.name or "Test of Fate",
+        })
+
+        result.pendingTestOfFate = true
+        result.description = "Test of Fate underway."
+        action.result = result
+
+        return result
+    end
+
+    function resolver:resolveTestOfFateOutcome(action, testResult)
+        local result = {
+            success = testResult and testResult.success or false,
+            isGreat = testResult and testResult.isGreat or false,
+            damageDealt = 0,
+            effects = {},
+            description = "",
+            testOfFate = true,
+            testResult = testResult,
+        }
+
+        if result.success then
+            result.description = "Test of Fate succeeded."
+        else
+            result.description = "Test of Fate failed."
+        end
+
+        action.result = result
+        return result
+    end
+
+    function resolver:resolveInitiativeContest(action, result, options)
+        options = options or {}
+        local target = action.target
+
+        if not target then
+            result.success = false
+            result.description = "No target!"
+            return { success = false }
+        end
+
+        local attackValue = result.testValue
+        local baseInitiative = self:getTargetInitiative(target, action) or result.difficulty
+        local tieWins = options.tieWins or false
+        local considerShield = options.considerShield or false
+        local defenderHasShield = considerShield and self:entityHasShield(target) or false
+
+        local riposteTriggered = false
+        local riposteDefense = nil
+
+        if target.hasDefense and target:hasDefense() then
+            local defense = target:getDefense()
+            if defense then
+                if defense.type == "dodge" then
+                    target:consumeDefense()
+                    local dodgeValue = defense.value or 0
+                    local newInitiative = baseInitiative + dodgeValue
+                    result.effects[#result.effects + 1] = "dodge_used"
+
+                    if newInitiative > attackValue then
+                        result.success = false
+                        result.description = "Dodged! "
+                        result.effects[#result.effects + 1] = "dodged"
+                        return {
+                            success = false,
+                            dodged = true,
+                            attackValue = attackValue,
+                            baseInitiative = baseInitiative,
+                        }
+                    else
+                        result.effects[#result.effects + 1] = "dodge_failed"
+                    end
+                elseif defense.type == "riposte" then
+                    riposteTriggered = true
+                    riposteDefense = target:consumeDefense()
+                    result.effects[#result.effects + 1] = "riposte_ready"
+                end
+            end
+        end
+
+        result.success = (attackValue > baseInitiative) or
+                         (tieWins and attackValue == baseInitiative and not defenderHasShield)
+        result.difficulty = baseInitiative
+
+        return {
+            success = result.success,
+            attackValue = attackValue,
+            baseInitiative = baseInitiative,
+            riposteTriggered = riposteTriggered,
+            riposteDefense = riposteDefense,
+        }
+    end
 
     ----------------------------------------------------------------------------
     -- MAIN RESOLUTION ENTRY POINT
@@ -5170,25 +7141,54 @@ function M.createActionResolver(config)
             return result
         end
 
+        -- S12.2: Pre-resolution validation
+        local canPerform, blockReason = self:canPerformAction(action.actor, action.type, action.actionDef)
+        if not canPerform then
+            result.success = false
+            result.description = blockReason or "Action blocked"
+            result.effects[#result.effects + 1] = "action_blocked"
+
+            -- Emit blocked event
+            self.eventBus:emit("action_blocked", {
+                actor = action.actor,
+                actionType = action.type,
+                reason = blockReason,
+            })
+
+            return result
+        end
+
         -- Get card info
         local card = action.card
         result.cardValue = card.value or 0
+        local suit = card.suit
+
+        -- Cache action definition for suit/attribute logic
+        local actionDef = self:getActionDef(action)
+        if actionDef then
+            action.actionDef = actionDef
+        end
 
         -- S4.9: Check for The Fool interrupt
         if M.isFool(card) then
             return self:resolveFoolInterrupt(action, result)
         end
 
-        -- Calculate modifier from actor's stat
-        local suit = card.suit
-        local statMod = self:getStatModifier(action.actor, suit)
+        -- S7.x: Non-combat actions during Challenges can trigger Test of Fate
+        local controller = action.challengeController or self.challengeController
+        if actionDef and actionDef.testOfFate and controller and controller.isActive and controller:isActive() then
+            return self:requestTestOfFate(action, actionDef, result)
+        end
+
+        -- Calculate modifier from action's associated attribute (or card-only rules)
+        local statMod = self:getActionModifier(action, actionDef)
         result.modifier = statMod
 
         -- Total test value
         result.testValue = result.cardValue + result.modifier
 
         -- Get difficulty (target's defense or fixed value)
-        result.difficulty = self:getDifficulty(action)
+        result.difficulty = self:getDifficulty(action, actionDef)
 
         -- Check for success
         result.success = result.testValue >= result.difficulty
@@ -5198,7 +7198,8 @@ function M.createActionResolver(config)
 
         -- Route to specific resolution based on ACTION TYPE (not card suit)
         -- This allows using any card for any action on primary turns
-        local actionType = action.type or "generic"
+        local actionType = self:normalizeActionType(action.type or "generic")
+        action.normalizedType = actionType
 
         -- Swords actions (combat)
         if actionType == M.ACTION_TYPES.MELEE or actionType == M.ACTION_TYPES.MISSILE then
@@ -5209,25 +7210,47 @@ function M.createActionResolver(config)
                actionType == M.ACTION_TYPES.AVOID or actionType == M.ACTION_TYPES.DASH then
             self:resolvePentaclesAction(action, result)
         -- Cups actions (defense/social)
-        elseif actionType == M.ACTION_TYPES.DEFEND or actionType == M.ACTION_TYPES.DODGE or
-               actionType == M.ACTION_TYPES.RIPOSTE or actionType == M.ACTION_TYPES.HEAL or
-               actionType == M.ACTION_TYPES.SHIELD or actionType == M.ACTION_TYPES.AID then
+        elseif actionType == M.ACTION_TYPES.DODGE or actionType == M.ACTION_TYPES.RIPOSTE or
+               actionType == M.ACTION_TYPES.HEAL or actionType == M.ACTION_TYPES.SHIELD or
+               actionType == M.ACTION_TYPES.AID or actionType == M.ACTION_TYPES.COMMAND or
+               actionType == M.ACTION_TYPES.PARLEY or actionType == M.ACTION_TYPES.RALLY or
+               actionType == M.ACTION_TYPES.PULL_ITEM or actionType == M.ACTION_TYPES.USE_ITEM then
             self:resolveCupsAction(action, result)
         -- Wands actions (magic/perception)
-        elseif actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.CAST or
-               actionType == M.ACTION_TYPES.INTIMIDATE or actionType == M.ACTION_TYPES.RECOVER then
+        elseif actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.SPEAK_INCANTATION or
+               actionType == M.ACTION_TYPES.RECOVER then
             self:resolveWandsAction(action, result)
         -- Movement and misc
         elseif actionType == M.ACTION_TYPES.MOVE then
             self:resolveMove(action, result, action.allEntities)
+        elseif actionType == M.ACTION_TYPES.GUARD then
+            self:resolveGuard(action, result)
+        elseif actionType == M.ACTION_TYPES.VIGILANCE then
+            self:resolveVigilance(action, result)
         elseif actionType == M.ACTION_TYPES.FLEE then
+            self:resolveGenericAction(action, result)
+        elseif actionType == M.ACTION_TYPES.BID_LORE or
+               actionType == M.ACTION_TYPES.PULL_ITEM_BELT or
+               actionType == M.ACTION_TYPES.TRIVIAL_ACTION or
+               actionType == M.ACTION_TYPES.TEST_FATE or
+               actionType == M.ACTION_TYPES.INTERACT then
             self:resolveGenericAction(action, result)
         elseif actionType == M.ACTION_TYPES.RELOAD then
             -- S7.8: Reload crossbow
             self:resolveReload(action, result)
         else
-            -- Unknown action type - fall back to suit-based routing
-            if suit == constants.SUITS.SWORDS then
+            -- Unknown action type - fall back to action definition suit when available
+            local fallbackSuit = actionDef and actionDef.suit
+
+            if fallbackSuit == action_registry.SUITS.SWORDS then
+                self:resolveSwordsAction(action, result)
+            elseif fallbackSuit == action_registry.SUITS.PENTACLES then
+                self:resolvePentaclesAction(action, result)
+            elseif fallbackSuit == action_registry.SUITS.CUPS then
+                self:resolveCupsAction(action, result)
+            elseif fallbackSuit == action_registry.SUITS.WANDS then
+                self:resolveWandsAction(action, result)
+            elseif suit == constants.SUITS.SWORDS then
                 self:resolveSwordsAction(action, result)
             elseif suit == constants.SUITS.PENTACLES then
                 self:resolvePentaclesAction(action, result)
@@ -5310,39 +7333,42 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     --- Get the difficulty for an action
-    function resolver:getDifficulty(action)
+    function resolver:getDifficulty(action, actionDef)
         local target = action.target
+        local actionType = self:normalizeActionType(action.type)
 
         -- Default difficulty
         local difficulty = 10
 
         if target then
-            -- Combat: Use target's defense value
-            if action.type == M.ACTION_TYPES.MELEE or
-               action.type == M.ACTION_TYPES.MISSILE then
-                -- Defense = 10 + Pentacles (or custom defense stat)
-                difficulty = 10 + (target.pentacles or 0)
-                if target.conditions and target.conditions.defending then
-                    difficulty = difficulty + 2
+            -- Initiative-opposed actions compare against target Initiative
+            if self:isInitiativeOpposed(actionType) then
+                local initValue = self:getTargetInitiative(target, action)
+                if initValue then
+                    return initValue
                 end
 
-                -- S4.9: Check for Dodge defense
-                if target.hasDefense and target:hasDefense() then
-                    local defense = target:getDefense()
-                    if defense and defense.type == "dodge" then
-                        -- Dodge adds card value to difficulty
-                        difficulty = difficulty + (defense.value or 0)
-                        action.dodgeUsed = true
-                    end
+                -- Fallback: legacy defense if initiative unavailable
+                return 10 + (target.pentacles or 0)
+            end
+
+            if actionType == M.ACTION_TYPES.BANTER then
+                -- S12.3: Banter vs dynamic Morale
+                if target.getMorale then
+                    difficulty = target:getMorale()
+                elseif target.baseMorale then
+                    difficulty = target.baseMorale
+                else
+                    -- Legacy fallback
+                    difficulty = target.morale or (10 + (target.wands or 0))
                 end
-            elseif action.type == M.ACTION_TYPES.BANTER then
-                -- Banter: Attack vs Morale
-                difficulty = target.morale or (10 + (target.wands or 0))
-            elseif action.type == M.ACTION_TYPES.TRIP or
-                   action.type == M.ACTION_TYPES.DISARM or
-                   action.type == M.ACTION_TYPES.DISPLACE then
-                -- Roughhouse: vs Pentacles
-                difficulty = 10 + (target.pentacles or 0)
+            elseif actionType == M.ACTION_TYPES.PARLEY then
+                -- Parley is intentionally slightly harder than Banter
+                if target.getMorale then
+                    difficulty = target:getMorale() + 1
+                elseif target.baseMorale then
+                    difficulty = target.baseMorale + 1
+                end
             end
         end
 
@@ -5374,7 +7400,7 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolveSwordsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.MELEE
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.MELEE)
 
         if actionType == M.ACTION_TYPES.MISSILE then
             self:resolveMissile(action, result)
@@ -5390,8 +7416,28 @@ function M.createActionResolver(config)
         -- S7.1: Apply any active aids to this attack
         self:applyActiveAids(action.actor, result)
 
-        -- Recalculate success after aid bonus
-        result.success = result.testValue >= result.difficulty
+        -- S12.7: Apply Mob Rule bonuses (swarm attack bonuses)
+        if action.mobRuleBonus then
+            local mobBonus = action.mobRuleBonus
+            -- Attack bonus: +1 per additional attacker in same zone
+            if mobBonus.attackBonus and mobBonus.attackBonus > 0 then
+                result.modifier = result.modifier + mobBonus.attackBonus
+                result.testValue = result.cardValue + result.modifier
+                result.description = "(Mob +" .. mobBonus.attackBonus .. ") "
+            end
+            -- Piercing at 3+ attackers
+            if mobBonus.piercing then
+                result.effects[#result.effects + 1] = "piercing"
+            end
+            -- Favor at 2+ attackers (would need deck access for true favor)
+            if mobBonus.favor then
+                result.effects[#result.effects + 1] = "mob_favor"
+            end
+        end
+
+        local attackValue = result.testValue
+        local baseInitiative = result.difficulty
+        local defenderHasShield = target and self:entityHasShield(target)
 
         -- Check engagement (must be in same zone as target)
         if self.zoneSystem and target then
@@ -5414,11 +7460,19 @@ function M.createActionResolver(config)
             local defense = target:getDefense()
             if defense then
                 if defense.type == "dodge" then
-                    -- Dodge was already applied to difficulty, consume it
+                    -- Dodge: add card value to Initiative; if higher than attack value, miss
                     target:consumeDefense()
-                    result.effects[#result.effects + 1] = "dodged"
-                    if not result.success then
+                    local dodgeValue = defense.value or 0
+                    local newInitiative = baseInitiative + dodgeValue
+                    result.effects[#result.effects + 1] = "dodge_used"
+
+                    if newInitiative > attackValue then
+                        result.success = false
                         result.description = "Dodged! "
+                        result.effects[#result.effects + 1] = "dodged"
+                        return
+                    else
+                        result.effects[#result.effects + 1] = "dodge_failed"
                     end
                 elseif defense.type == "riposte" then
                     -- Riposte: will counter-attack after resolution
@@ -5429,9 +7483,13 @@ function M.createActionResolver(config)
             end
         end
 
+        -- Resolve hit against Initiative (ties go to attacker unless defender has shield)
+        result.success = (attackValue > baseInitiative) or
+                         (attackValue == baseInitiative and not defenderHasShield)
+
         -- S7.6: Flail specialization - ties count as success
         if not result.success and action.weapon and M.isWeaponType(action.weapon, "FLAIL") then
-            if result.testValue == result.difficulty then
+            if attackValue == baseInitiative then
                 result.success = true
                 result.description = "Flail tie-breaker! "
                 result.effects[#result.effects + 1] = "flail_tie"
@@ -5490,16 +7548,12 @@ function M.createActionResolver(config)
                 self:applyDamage(target, result.damageDealt, result.effects, action.weapon, action.allEntities)
             end
         else
-            if action.dodgeUsed then
-                result.description = "Dodged! Attack missed."
-            else
-                result.description = "Miss!"
-            end
+            result.description = "Miss!"
         end
 
         -- S4.9: Resolve Riposte counter-attack
         if riposteTriggered and riposteDefense and target then
-            local riposteResult = self:resolveRiposte(target, action.actor, riposteDefense)
+            local riposteResult = self:resolveRiposte(target, action.actor, riposteDefense, attackValue)
             result.riposteResult = riposteResult
             result.description = result.description .. " Riposte! "
             if riposteResult.success then
@@ -5523,8 +7577,43 @@ function M.createActionResolver(config)
             result.effects[#result.effects + 1] = "engaged_ranged_penalty"
         end
 
-        -- Recalculate success after modifiers
-        result.success = result.testValue >= result.difficulty
+        local attackValue = result.testValue
+        local baseInitiative = result.difficulty
+        local target = action.target
+        local defenderHasShield = target and self:entityHasShield(target)
+        local dodged = false
+        local riposteTriggered = false
+        local riposteDefense = nil
+
+        -- Dodge can negate missile attacks
+        if target and target.hasDefense and target:hasDefense() then
+            local defense = target:getDefense()
+            if defense and defense.type == "dodge" then
+                target:consumeDefense()
+                local dodgeValue = defense.value or 0
+                local newInitiative = baseInitiative + dodgeValue
+                result.effects[#result.effects + 1] = "dodge_used"
+
+                if newInitiative > attackValue then
+                    dodged = true
+                    result.success = false
+                    result.description = "Dodged! "
+                    result.effects[#result.effects + 1] = "dodged"
+                else
+                    result.effects[#result.effects + 1] = "dodge_failed"
+                end
+            elseif defense and defense.type == "riposte" then
+                riposteTriggered = true
+                riposteDefense = target:consumeDefense()
+                result.effects[#result.effects + 1] = "riposte_ready"
+            end
+        end
+
+        if not dodged then
+            -- Resolve hit against Initiative (ties go to attacker unless defender has shield)
+            result.success = (attackValue > baseInitiative) or
+                             (attackValue == baseInitiative and not defenderHasShield)
+        end
 
         -- S7.8: Crossbow must be loaded
         if action.weapon and M.isWeaponType(action.weapon, "CROSSBOW") then
@@ -5583,7 +7672,20 @@ function M.createActionResolver(config)
                 self:applyDamage(action.target, result.damageDealt, result.effects)
             end
         else
-            result.description = (result.description or "") .. "Miss!"
+            if not result.description or result.description == "" then
+                result.description = "Miss!"
+            end
+        end
+
+        if riposteTriggered and riposteDefense and target then
+            local riposteResult = self:resolveRiposte(target, action.actor, riposteDefense, attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
         end
     end
 
@@ -5596,7 +7698,7 @@ function M.createActionResolver(config)
     -- @param attacker table: Original attacker being counter-attacked
     -- @param defense table: The consumed defense { type, card, value }
     -- @return table: Result of the riposte attack
-    function resolver:resolveRiposte(defender, attacker, defense)
+    function resolver:resolveRiposte(defender, attacker, defense, attackerValue)
         local riposteResult = {
             success = false,
             isGreat = false,
@@ -5613,14 +7715,17 @@ function M.createActionResolver(config)
         local card = defense.card
         local cardValue = defense.value or (card and card.value) or 0
 
-        -- Stat modifier (Riposte uses Swords for counter-attack)
-        local statMod = defender.swords or 0
-        local testValue = cardValue + statMod
+        -- Riposte uses card value only (no attribute)
+        local testValue = cardValue
 
-        -- Difficulty is attacker's defense
-        local difficulty = 10 + (attacker.pentacles or 0)
+        local compareValue = attackerValue
+        if not compareValue and attacker then
+            compareValue = 10 + (attacker.pentacles or 0)
+        end
 
-        riposteResult.success = testValue >= difficulty
+        local attackerHasShield = attacker and self:entityHasShield(attacker)
+        riposteResult.success = (testValue > compareValue) or
+                                (testValue == compareValue and not attackerHasShield)
 
         if riposteResult.success then
             riposteResult.damageDealt = 1
@@ -5654,7 +7759,7 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolvePentaclesAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.TRIP
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.TRIP)
 
         if actionType == M.ACTION_TYPES.TRIP then
             self:resolveTrip(action, result)
@@ -5677,6 +7782,14 @@ function M.createActionResolver(config)
     end
 
     function resolver:resolveTrip(action, result)
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
+            return
+        end
+
         if result.success then
             result.description = "Knocked down!"
             result.effects[#result.effects + 1] = "prone"
@@ -5687,6 +7800,17 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to trip!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and action.target then
+            local riposteResult = self:resolveRiposte(action.target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     --- S7.3: Disarm with inventory drop
@@ -5696,6 +7820,14 @@ function M.createActionResolver(config)
         if not target then
             result.success = false
             result.description = "No target to disarm!"
+            return
+        end
+
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
             return
         end
 
@@ -5734,6 +7866,17 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to disarm!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and target then
+            local riposteResult = self:resolveRiposte(target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     --- S7.2: Grapple sets rooted condition
@@ -5743,6 +7886,14 @@ function M.createActionResolver(config)
         if not target then
             result.success = false
             result.description = "No target to grapple!"
+            return
+        end
+
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
             return
         end
 
@@ -5763,9 +7914,28 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to grapple!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and target then
+            local riposteResult = self:resolveRiposte(target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     function resolver:resolveDisplace(action, result)
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
+            return
+        end
+
         if result.success then
             result.description = "Pushed back!"
             result.effects[#result.effects + 1] = "displaced"
@@ -5782,24 +7952,27 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to push!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and action.target then
+            local riposteResult = self:resolveRiposte(action.target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     ----------------------------------------------------------------------------
-    -- CUPS RESOLUTION (Defense/Social)
+    -- CUPS RESOLUTION (Support/Social)
     ----------------------------------------------------------------------------
 
     function resolver:resolveCupsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.DEFEND
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.AID)
 
-        if actionType == M.ACTION_TYPES.DEFEND then
-            result.success = true
-            result.description = "Taking defensive stance"
-            result.effects[#result.effects + 1] = "defending"
-
-            if action.actor.conditions then
-                action.actor.conditions.defending = true
-            end
-        elseif actionType == M.ACTION_TYPES.DODGE then
+        if actionType == M.ACTION_TYPES.DODGE then
             -- S4.9: Prepare Dodge defense
             self:resolveDodge(action, result)
         elseif actionType == M.ACTION_TYPES.RIPOSTE then
@@ -5807,6 +7980,16 @@ function M.createActionResolver(config)
             self:resolveRipostePrepare(action, result)
         elseif actionType == M.ACTION_TYPES.HEAL then
             self:resolveHeal(action, result)
+        elseif actionType == M.ACTION_TYPES.COMMAND then
+            self:resolveCommand(action, result)
+        elseif actionType == M.ACTION_TYPES.PARLEY then
+            self:resolveParley(action, result)
+        elseif actionType == M.ACTION_TYPES.RALLY then
+            self:resolveRally(action, result)
+        elseif actionType == M.ACTION_TYPES.USE_ITEM then
+            self:resolveUseItem(action, result)
+        elseif actionType == M.ACTION_TYPES.PULL_ITEM then
+            self:resolvePullItemFromPack(action, result)
         elseif actionType == M.ACTION_TYPES.SHIELD then
             result.success = true
             result.description = "Shielding " .. (action.target and action.target.name or "ally")
@@ -5814,6 +7997,8 @@ function M.createActionResolver(config)
         elseif actionType == M.ACTION_TYPES.AID then
             -- S7.1: Aid Another
             self:resolveAidAnother(action, result)
+        else
+            self:resolveGenericAction(action, result)
         end
     end
 
@@ -5821,7 +8006,6 @@ function M.createActionResolver(config)
     function resolver:resolveAidAnother(action, result)
         local actor = action.actor
         local target = action.target
-        local card = action.card
 
         if not target then
             result.success = false
@@ -5838,16 +8022,160 @@ function M.createActionResolver(config)
         -- Aid always succeeds (no test required)
         result.success = true
 
-        -- Calculate bonus: card value + Cups stat
-        local cardValue = card.value or 0
-        local cupsBonus = actor.cups or 0
-        local totalBonus = cardValue + cupsBonus
+        -- Calculate bonus from resolved action value (respects minor-action rules)
+        local totalBonus = result.testValue or (action.card and action.card.value) or 0
 
         -- Register the aid for the target
         self:registerAid(target, totalBonus, actor.name or "ally")
 
         result.description = "Aided " .. (target.name or "ally") .. "! (+" .. totalBonus .. " to next action)"
         result.effects[#result.effects + 1] = "aid_banked"
+    end
+
+    function resolver:resolveCommand(action, result)
+        local actor = action.actor
+        local target = action.target
+        local hasCompanion = actor and (
+            actor.companion ~= nil or
+            (type(actor.companions) == "table" and next(actor.companions) ~= nil)
+        )
+
+        if not hasCompanion then
+            result.success = false
+            result.description = "No companion to command."
+            return
+        end
+
+        if target then
+            local targetInitiative = result.difficulty
+            local defenderHasShield = self:entityHasShield(target)
+            result.success = (result.testValue > targetInitiative) or
+                             (result.testValue == targetInitiative and not defenderHasShield)
+        else
+            result.success = true
+        end
+
+        if result.success then
+            result.description = "Command issued."
+            result.effects[#result.effects + 1] = "commanded"
+        else
+            result.description = "Command resisted."
+        end
+    end
+
+    function resolver:resolveParley(action, result)
+        local target = action.target
+        if not target then
+            result.success = false
+            result.description = "No target to parley with."
+            return
+        end
+
+        -- Parley requires exceeding the social difficulty, matching Banter semantics.
+        result.success = result.testValue > result.difficulty
+
+        self.eventBus:emit("social_discovery", {
+            target = target,
+            targetId = target.id,
+            discoveries = { "disposition", "morale" },
+        })
+
+        if result.success then
+            local oldDisposition = target.getDisposition and target:getDisposition() or target.disposition
+            local newDisposition = oldDisposition or "distaste"
+
+            if disposition_module and disposition_module.moveToward and disposition_module.DISPOSITIONS then
+                newDisposition = disposition_module.moveToward(
+                    newDisposition,
+                    disposition_module.DISPOSITIONS.TRUST,
+                    1
+                )
+            elseif target.shiftDisposition then
+                target:shiftDisposition(1, 1)
+                newDisposition = target.getDisposition and target:getDisposition() or target.disposition
+            end
+
+            if target.setDisposition then
+                target:setDisposition(newDisposition)
+            else
+                target.disposition = newDisposition
+            end
+
+            result.description = "Parley gains ground."
+            result.effects[#result.effects + 1] = "parley_progress"
+        else
+            if target.shiftDisposition then
+                target:shiftDisposition(-1, 1)
+            end
+            result.description = "Parley fails to persuade."
+        end
+    end
+
+    function resolver:resolveRally(action, result)
+        local target = action.target or action.actor
+        if not target then
+            result.success = false
+            result.description = "No ally to rally."
+            return
+        end
+
+        if not result.success then
+            result.description = "Rally falters."
+            return
+        end
+
+        local cleared = nil
+        if target.conditions then
+            if target.conditions.stressed then
+                target.conditions.stressed = false
+                cleared = "stressed"
+            elseif target.conditions.frightened then
+                target.conditions.frightened = false
+                cleared = "frightened"
+            elseif target.conditions.deaf then
+                target.conditions.deaf = false
+                cleared = "deaf"
+            elseif target.conditions.blind then
+                target.conditions.blind = false
+                cleared = "blind"
+            end
+        end
+
+        if target.modifyMorale then
+            target:modifyMorale(1)
+        end
+
+        if cleared then
+            result.description = "Rallied " .. (target.name or "ally") .. " (" .. cleared .. " cleared)."
+            result.effects[#result.effects + 1] = "rally_" .. cleared
+        else
+            result.description = "Rallied " .. (target.name or "ally") .. "."
+            result.effects[#result.effects + 1] = "rally_boost"
+        end
+    end
+
+    function resolver:resolveUseItem(action, result)
+        if action.target then
+            local targetInitiative = result.difficulty
+            local defenderHasShield = self:entityHasShield(action.target)
+            result.success = (result.testValue > targetInitiative) or
+                             (result.testValue == targetInitiative and not defenderHasShield)
+        else
+            result.success = true
+        end
+
+        if result.success then
+            result.description = action.target and "Item effect lands." or "Item used."
+            result.effects[#result.effects + 1] = "item_used"
+        else
+            result.description = "Item use resisted."
+        end
+    end
+
+    function resolver:resolvePullItemFromPack(action, result)
+        result.success = true
+        result.description = "Pulled item from pack."
+        result.effects[#result.effects + 1] = "item_pulled_pack"
     end
 
     --- Prepare a Dodge defense (S4.9)
@@ -5874,7 +8202,7 @@ function M.createActionResolver(config)
 
         if success then
             result.success = true
-            result.description = "Preparing to dodge! (+" .. (card.value or 0) .. " to defense)"
+            result.description = "Preparing to dodge! (+" .. (card.value or 0) .. " to Initiative)"
             result.effects[#result.effects + 1] = "dodge_prepared"
 
             self.eventBus:emit("defense_prepared", {
@@ -5950,14 +8278,12 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolveWandsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.BANTER
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.BANTER)
 
         if actionType == M.ACTION_TYPES.BANTER then
             self:resolveBanter(action, result)
-        elseif actionType == M.ACTION_TYPES.CAST then
-            self:resolveCast(action, result)
-        elseif actionType == M.ACTION_TYPES.INTIMIDATE then
-            self:resolveIntimidate(action, result)
+        elseif actionType == M.ACTION_TYPES.SPEAK_INCANTATION then
+            self:resolveSpeakIncantation(action, result)
         elseif actionType == M.ACTION_TYPES.RECOVER then
             -- S7.4: Recover action
             self:resolveRecover(action, result)
@@ -6012,60 +8338,195 @@ function M.createActionResolver(config)
     end
 
     --- Resolve Banter (attacks Morale instead of Health)
+    -- S12.3: Updated to use dynamic morale calculation
+    -- S12.4: Applies disposition modifiers and shifts disposition
     function resolver:resolveBanter(action, result)
         -- Banter compares vs target's Morale (p. 119)
-        -- On success, deal "morale damage"
+        -- Difficulty = target's current morale + disposition modifier
+
+        local target = action.target
+        if not target then
+            result.description = "No target for banter!"
+            return
+        end
+
+        -- S12.3: Get target's current morale (dynamically calculated)
+        local targetMorale = 10  -- Default fallback
+        if target.getMorale then
+            targetMorale = target:getMorale()
+        elseif target.baseMorale then
+            targetMorale = target.baseMorale
+        end
+
+        -- S12.4: Apply disposition modifier
+        local dispositionMod = 0
+        local targetDisposition = target.disposition or "distaste"
+        if disposition_module then
+            dispositionMod = disposition_module.getSocialModifier(targetDisposition, "banter")
+        end
+
+        -- Override difficulty with morale + disposition modifier
+        result.difficulty = targetMorale + dispositionMod
+
+        -- Recalculate success based on morale difficulty
+        result.success = result.testValue > result.difficulty
+
+        -- Reveal disposition and morale on ANY banter attempt (you learn by trying)
+        self.eventBus:emit("social_discovery", {
+            target = target,
+            targetId = target.id,
+            discoveries = { "disposition", "morale" },
+        })
 
         if result.success then
             result.description = "Verbal hit! "
             result.effects[#result.effects + 1] = "morale_damage"
 
-            if action.target then
-                -- Reduce target's morale
-                local moraleDamage = 1
-                if result.isGreat then
-                    moraleDamage = 2
-                    result.description = result.description .. "Great Success! "
+            -- Apply morale damage via modifier
+            local moraleDamage = 2  -- Base banter damage
+            if result.isGreat then
+                moraleDamage = 4  -- Great success deals double
+                result.description = result.description .. "Great Success! "
+
+                -- Great success also reveals likes/dislikes
+                self.eventBus:emit("social_discovery", {
+                    target = target,
+                    targetId = target.id,
+                    discoveries = { "hates", "wants" },
+                })
+            end
+
+            -- S12.3: Apply morale damage as temporary modifier
+            if target.modifyMorale then
+                target:modifyMorale(-moraleDamage)
+            end
+
+            -- S12.4: Shift disposition on success (toward fear/sadness)
+            if target.shiftDisposition then
+                local shiftAmount = result.isGreat and 2 or 1
+                target:shiftDisposition(1, shiftAmount)  -- Clockwise toward fear
+            end
+
+            result.moraleDamage = moraleDamage
+
+            -- Check for morale break (morale drops to 0 or below)
+            local newMorale = 10
+            if target.getMorale then
+                newMorale = target:getMorale()
+            end
+
+            if newMorale <= 0 then
+                result.effects[#result.effects + 1] = "morale_broken"
+                result.description = result.description .. "Morale broken!"
+
+                if target.conditions then
+                    target.conditions.fleeing = true
                 end
-
-                action.target.morale = (action.target.morale or 10) - moraleDamage
-
-                -- Check for morale break
-                if action.target.morale <= 0 then
-                    result.effects[#result.effects + 1] = "morale_broken"
-                    result.description = result.description .. "Morale broken!"
-
-                    if action.target.conditions then
-                        action.target.conditions.fleeing = true
-                    end
-                end
+            else
+                result.description = result.description .. string.format("Morale: %d -> %d", targetMorale, newMorale)
             end
         else
-            result.description = "Banter ineffective!"
+            -- S12.4: Failed banter can anger the target
+            if target.shiftDisposition then
+                target:shiftDisposition(-1, 1)  -- Counter-clockwise toward anger
+            end
+            result.description = string.format("Banter ineffective! (needed %d, got %d)", result.difficulty, result.testValue)
         end
     end
 
-    function resolver:resolveCast(action, result)
-        -- Magic would be spell-specific
+    function resolver:resolveSpeakIncantation(action, result)
+        local target = action.target
+
+        if target then
+            local spellValue = result.testValue
+            local targetInitiative = result.difficulty
+            local defenderHasShield = self:entityHasShield(target)
+            result.success = (spellValue > targetInitiative) or
+                             (spellValue == targetInitiative and not defenderHasShield)
+        else
+            result.success = true
+        end
+
         if result.success then
-            result.description = "Spell cast successfully!"
+            result.description = "Incantation takes effect!"
             result.effects[#result.effects + 1] = "spell_cast"
         else
-            result.description = "Spell fizzled!"
+            result.description = "Incantation resisted."
         end
     end
 
-    function resolver:resolveIntimidate(action, result)
-        if result.success then
-            result.description = "Target is frightened!"
-            result.effects[#result.effects + 1] = "frightened"
+    -- Backward-compatible wrapper
+    function resolver:resolveCast(action, result)
+        self:resolveSpeakIncantation(action, result)
+    end
 
-            if action.target and action.target.conditions then
-                action.target.conditions.frightened = true
-            end
-        else
-            result.description = "Intimidation failed!"
+    function resolver:resolveGuard(action, result)
+        local actor = action.actor
+        if not actor then
+            result.success = false
+            result.description = "No actor for Guard."
+            return
         end
+
+        if not self:entityHasShield(actor) then
+            result.success = false
+            result.description = "Guard requires a shield."
+            return
+        end
+
+        local controller = action.challengeController or self.challengeController
+        if not controller or not controller.getInitiativeSlot then
+            result.success = false
+            result.description = "No initiative slot available."
+            return
+        end
+
+        local slot = controller:getInitiativeSlot(actor.id)
+        if not slot then
+            result.success = false
+            result.description = "No initiative to replace."
+            return
+        end
+
+        local oldValue = slot.value or (slot.card and slot.card.value) or 0
+        slot.card = action.card
+        slot.value = action.card and action.card.value or oldValue
+        slot.revealed = true
+
+        self.eventBus:emit(events.EVENTS.INITIATIVE_REVEALED, {
+            entity = actor,
+        })
+
+        result.success = true
+        result.description = "Guard set Initiative from " .. oldValue .. " to " .. slot.value .. "."
+        result.effects[#result.effects + 1] = "guarded"
+    end
+
+    function resolver:resolveVigilance(action, result)
+        local actor = action.actor
+        if not actor then
+            result.success = false
+            result.description = "No actor for Vigilance."
+            return
+        end
+
+        -- Full triggered-action binding is UI-driven and may provide follow-up payload later.
+        actor.pendingVigilance = {
+            card = action.card,
+            trigger = action.trigger or action.triggerAction,
+            followUpAction = action.followUpAction,
+            target = action.target,
+        }
+
+        self.eventBus:emit("vigilance_prepared", {
+            actor = actor,
+            trigger = actor.pendingVigilance.trigger,
+            followUpAction = actor.pendingVigilance.followUpAction,
+        })
+
+        result.success = true
+        result.description = "Vigilance prepared."
+        result.effects[#result.effects + 1] = "vigilance_prepared"
     end
 
     ----------------------------------------------------------------------------
@@ -6073,8 +8534,27 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolveGenericAction(action, result)
+        local actionDef = action.actionDef or self:getActionDef(action)
+        local actionType = self:normalizeActionType(action.type)
+
+        if actionDef and actionDef.autoSuccess then
+            result.success = true
+        end
+
         if result.success then
-            result.description = "Action succeeded!"
+            if actionType == M.ACTION_TYPES.BID_LORE then
+                result.description = "Lore bid offered."
+                result.effects[#result.effects + 1] = "lore_bid"
+            elseif actionType == M.ACTION_TYPES.TRIVIAL_ACTION then
+                result.description = "Trivial action completed."
+            elseif actionType == M.ACTION_TYPES.PULL_ITEM_BELT then
+                result.description = "Pulled item from belt."
+                result.effects[#result.effects + 1] = "item_pulled_belt"
+            elseif actionType == M.ACTION_TYPES.TEST_FATE then
+                result.description = "Test of Fate requested."
+            else
+                result.description = "Action succeeded!"
+            end
         else
             result.description = "Action failed!"
         end
@@ -6087,7 +8567,14 @@ function M.createActionResolver(config)
     --- Resolve reload action for crossbows
     function resolver:resolveReload(action, result)
         local actor = action.actor
-        local weapon = actor.weapon
+        local weapon = action.weapon
+
+        if not weapon and actor and actor.inventory and actor.inventory.getWieldedWeapon then
+            weapon = actor.inventory:getWieldedWeapon()
+        end
+        if not weapon then
+            weapon = actor.weapon
+        end
 
         -- Must have a crossbow equipped
         if not weapon or not M.isWeaponType(weapon, "CROSSBOW") then
@@ -6111,35 +8598,24 @@ function M.createActionResolver(config)
     end
 
     ----------------------------------------------------------------------------
-    -- S6.3: ENGAGEMENT SYSTEM
+    -- S6.3/S12.1: ENGAGEMENT SYSTEM
+    -- Delegates to zoneSystem as single source of truth
     ----------------------------------------------------------------------------
 
     --- Form engagement between two entities
     function resolver:formEngagement(entity1, entity2)
         if not entity1 or not entity2 then return end
 
-        local id1 = entity1.id
-        local id2 = entity2.id
+        -- S12.1: Delegate to zoneSystem
+        if self.zoneSystem then
+            self.zoneSystem:engage(entity1.id, entity2.id)
+        end
 
-        -- Initialize engagement tables if needed
-        self.engagements[id1] = self.engagements[id1] or {}
-        self.engagements[id2] = self.engagements[id2] or {}
-
-        -- Set mutual engagement
-        self.engagements[id1][id2] = true
-        self.engagements[id2][id1] = true
-
-        -- Set is_engaged flag on entities
+        -- Set is_engaged flag on entities (convenience flag)
         entity1.is_engaged = true
         entity2.is_engaged = true
 
-        -- Emit event for UI
-        self.eventBus:emit(events.EVENTS.ENTITIES_ENGAGED, {
-            entity1 = entity1,
-            entity2 = entity2,
-        })
-
-        -- Also emit arena event
+        -- Emit arena event for visual feedback
         self.eventBus:emit("engagement_formed", {
             entity1 = entity1,
             entity2 = entity2,
@@ -6150,28 +8626,16 @@ function M.createActionResolver(config)
     function resolver:breakEngagement(entity1, entity2)
         if not entity1 or not entity2 then return end
 
-        local id1 = entity1.id
-        local id2 = entity2.id
-
-        -- Clear mutual engagement
-        if self.engagements[id1] then
-            self.engagements[id1][id2] = nil
-        end
-        if self.engagements[id2] then
-            self.engagements[id2][id1] = nil
+        -- S12.1: Delegate to zoneSystem
+        if self.zoneSystem then
+            self.zoneSystem:disengage(entity1.id, entity2.id)
         end
 
         -- Update is_engaged flag based on remaining engagements
         entity1.is_engaged = self:hasAnyEngagement(entity1)
         entity2.is_engaged = self:hasAnyEngagement(entity2)
 
-        -- Emit event for UI
-        self.eventBus:emit(events.EVENTS.ENTITIES_DISENGAGED, {
-            entity1 = entity1,
-            entity2 = entity2,
-        })
-
-        -- Also emit arena event
+        -- Emit arena event for visual feedback
         self.eventBus:emit("engagement_broken", {
             entity1 = entity1,
             entity2 = entity2,
@@ -6182,18 +8646,9 @@ function M.createActionResolver(config)
     function resolver:clearAllEngagements(entity)
         if not entity then return end
 
-        local id = entity.id
-        local engaged = self.engagements[id]
-
-        if engaged then
-            -- Break each engagement
-            for enemyId, _ in pairs(engaged) do
-                -- Find the enemy entity and clear their side too
-                if self.engagements[enemyId] then
-                    self.engagements[enemyId][id] = nil
-                end
-            end
-            self.engagements[id] = nil
+        -- S12.1: Delegate to zoneSystem
+        if self.zoneSystem then
+            self.zoneSystem:disengageAll(entity.id)
         end
 
         entity.is_engaged = false
@@ -6203,11 +8658,9 @@ function M.createActionResolver(config)
     function resolver:hasAnyEngagement(entity)
         if not entity then return false end
 
-        local engaged = self.engagements[entity.id]
-        if not engaged then return false end
-
-        for _ in pairs(engaged) do
-            return true  -- At least one engagement exists
+        -- S12.1: Delegate to zoneSystem
+        if self.zoneSystem then
+            return self.zoneSystem:isEngaged(entity.id)
         end
         return false
     end
@@ -6216,8 +8669,11 @@ function M.createActionResolver(config)
     function resolver:areEngaged(entity1, entity2)
         if not entity1 or not entity2 then return false end
 
-        local engaged = self.engagements[entity1.id]
-        return engaged and engaged[entity2.id] == true
+        -- S12.1: Delegate to zoneSystem
+        if self.zoneSystem then
+            return self.zoneSystem:areEngaged(entity1.id, entity2.id)
+        end
+        return false
     end
 
     --- Get all entities engaged with a given entity
@@ -6227,12 +8683,21 @@ function M.createActionResolver(config)
     function resolver:getEngagedEnemies(entity, allEntities)
         if not entity then return {} end
 
-        local engaged = self.engagements[entity.id]
-        if not engaged then return {} end
+        -- S12.1: Get engaged IDs from zoneSystem
+        local engagedIds = {}
+        if self.zoneSystem then
+            engagedIds = self.zoneSystem:getEngagedWith(entity.id)
+        end
 
+        -- Convert IDs to entity references
         local enemies = {}
+        local idSet = {}
+        for _, id in ipairs(engagedIds) do
+            idSet[id] = true
+        end
+
         for _, e in ipairs(allEntities or {}) do
-            if engaged[e.id] then
+            if idSet[e.id] then
                 enemies[#enemies + 1] = e
             end
         end
@@ -6258,12 +8723,21 @@ function M.createActionResolver(config)
             return result
         end
 
-        -- Find all engaged enemies in the same zone
-        local engaged = self.engagements[entity.id]
-        if not engaged then return result end
+        -- S12.1: Get engaged enemies from zoneSystem
+        local engagedIds = {}
+        if self.zoneSystem then
+            engagedIds = self.zoneSystem:getEngagedWith(entity.id)
+        end
 
+        -- Convert to a set for fast lookup
+        local engagedSet = {}
+        for _, id in ipairs(engagedIds) do
+            engagedSet[id] = true
+        end
+
+        -- Find all engaged enemies in the same zone
         for _, e in ipairs(allEntities or {}) do
-            if engaged[e.id] and e.zone == entity.zone then
+            if engagedSet[e.id] and e.zone == entity.zone then
                 -- Enemy gets a free parting blow
                 result.attackers[#result.attackers + 1] = e
                 result.wounds = result.wounds + 1
@@ -6399,43 +8873,46 @@ function M.createActionResolver(config)
             return
         end
 
-        -- Calculate test value
-        local statMod = actor.pentacles or 0
-        local testValue = (card.value or 0) + statMod
+        local avoidValue = result.testValue or ((card.value or 0) + (actor.pentacles or 0))
+        local engagedEnemies = self:getEngagedEnemies(actor, action.allEntities)
+        local failures = 0
 
-        -- Difficulty: 10 (or based on number of engaged enemies)
-        local difficulty = 10
-        local engagedCount = 0
-        local engaged = self.engagements[actor.id]
-        if engaged then
-            for _ in pairs(engaged) do
-                engagedCount = engagedCount + 1
+        for _, enemy in ipairs(engagedEnemies) do
+            local enemyInit = self:getTargetInitiative(enemy, action) or (10 + (enemy.pentacles or 0))
+            if avoidValue < enemyInit then
+                failures = failures + 1
+
+                local woundResult = actor:takeWound(false)
+                self.eventBus:emit(events.EVENTS.WOUND_TAKEN, {
+                    entity = actor,
+                    result = woundResult,
+                    source = "avoid_failed",
+                })
             end
         end
-        difficulty = difficulty + (engagedCount - 1) * 2  -- +2 per additional engaged enemy
 
-        result.testValue = testValue
-        result.difficulty = difficulty
-        result.success = testValue >= difficulty
-
+        result.success = (failures == 0)
         if result.success then
-            result.description = "Slipped away! Ready to move safely."
+            result.description = "Avoided successfully."
             result.effects[#result.effects + 1] = "avoid_success"
-
-            -- Set flag that allows next move without parting blows
-            actor.avoidedThisTurn = true
-
-            -- Clear engagements immediately
-            self:clearAllEngagements(actor)
-
-            -- Can now move without taking parting blows
-            if action.destinationZone then
-                actor.zone = action.destinationZone
-                result.description = result.description .. " Moved to " .. action.destinationZone
-            end
         else
-            result.description = "Failed to disengage!"
+            result.description = "Avoided, but took " .. failures .. " Wound(s)."
             result.effects[#result.effects + 1] = "avoid_failed"
+        end
+
+        -- Clear engagements and move regardless of success
+        self:clearAllEngagements(actor)
+
+        if action.destinationZone then
+            local oldZone = actor.zone
+            actor.zone = action.destinationZone
+            result.description = result.description .. " Moved to " .. action.destinationZone
+
+            self.eventBus:emit("entity_zone_changed", {
+                entity = actor,
+                oldZone = oldZone,
+                newZone = action.destinationZone,
+            })
         end
     end
 
@@ -7751,7 +10228,7 @@ local MINOR_ACTION_WINDOW_DURATION = 2.0  -- seconds
 --------------------------------------------------------------------------------
 
 --- Create a new ChallengeController
--- @param config table: { eventBus, playerDeck, gmDeck, guild }
+-- @param config table: { eventBus, playerDeck, gmDeck, guild, zoneSystem, gameClock }
 -- @return ChallengeController instance
 function M.createChallengeController(config)
     config = config or {}
@@ -7760,7 +10237,9 @@ function M.createChallengeController(config)
         eventBus   = config.eventBus or events.globalBus,
         playerDeck = config.playerDeck,
         gmDeck     = config.gmDeck,
+        gameClock  = config.gameClock,
         guild      = config.guild or {},  -- PC entities
+        zoneSystem = config.zoneSystem,   -- S12.1: Zone registry for engagement tracking
 
         -- Challenge state
         state           = M.STATES.IDLE,
@@ -7894,6 +10373,17 @@ function M.createChallengeController(config)
         self.state = M.STATES.IDLE
         self.currentRound = 0
         self.activeEntity = nil
+
+        -- S12.1: Clear all engagements when challenge ends
+        if self.zoneSystem then
+            self.zoneSystem:clearAllEngagements()
+        end
+
+        -- Clear is_engaged flag on all combatants
+        for _, entity in ipairs(self.allCombatants) do
+            entity.is_engaged = false
+        end
+
         self.pcs = {}
         self.npcs = {}
         self.allCombatants = {}
@@ -8077,6 +10567,15 @@ function M.createChallengeController(config)
         -- Round complete when count exceeds 14 (King)
         if self.currentCount > MAX_TURNS then
             print("[Challenge] Round " .. self.currentRound .. " complete!")
+            self.eventBus:emit(events.EVENTS.CHALLENGE_ROUND_END, {
+                round = self.currentRound,
+            })
+            if self.gameClock and self.gameClock.endRound then
+                local reshuffled = self.gameClock:endRound()
+                if reshuffled then
+                    print("[Challenge] The Fool reshuffled both decks at round end.")
+                end
+            end
             self:startNewRound()
             return
         end
@@ -8232,6 +10731,7 @@ function M.createChallengeController(config)
         action.actor = self.activeEntity
         action.round = self.currentRound
         action.count = self.currentCount
+        action.challengeController = self
 
         -- Move to resolving state
         self.state = M.STATES.RESOLVING
@@ -8239,10 +10739,6 @@ function M.createChallengeController(config)
 
         -- Emit action event for resolution
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
-
-        -- Resolution happens in action resolver, which will call back
-        -- For now, simulate immediate resolution
-        self:resolveAction(action)
 
         return true
     end
@@ -8449,6 +10945,7 @@ function M.createChallengeController(config)
         fullAction.actor = minor.entity
         fullAction.card = minor.card
         fullAction.isMinorAction = true  -- Flag for resolver (uses face value only)
+        fullAction.challengeController = self
 
         -- Emit action for resolution
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, fullAction)
@@ -8708,6 +11205,467 @@ return M
 
 ---
 
+## File: src/logic/deck.lua
+
+```lua
+-- deck.lua
+-- Deck Lifecycle Manager for Majesty
+-- Ticket T1_2: Manages draw_pile, discard_pile, shuffle, draw, and discard operations
+
+local M = {}
+
+--------------------------------------------------------------------------------
+-- DEEP COPY HELPER
+-- Prevents the "reference trap" where modifying a drawn card affects the registry
+--------------------------------------------------------------------------------
+local function deepCopyCard(card)
+    return {
+        name     = card.name,
+        suit     = card.suit,
+        value    = card.value,
+        is_major = card.is_major,
+        -- S12.6: Greater/Lesser Doom classification
+        isGreaterDoom = card.isGreaterDoom,
+        isLesserDoom  = card.isLesserDoom,
+    }
+end
+
+--------------------------------------------------------------------------------
+-- S12.6: GREATER / LESSER DOOM HELPERS
+-- Greater Doom: Major Arcana I-XIV (The Magician through Temperance)
+-- Lesser Doom: Major Arcana XV-XXI (The Devil through The World)
+--------------------------------------------------------------------------------
+
+--- Check if a card is a Greater Doom (Major Arcana 1-14)
+function M.isGreaterDoom(card)
+    if not card or not card.is_major then return false end
+    return card.value >= 1 and card.value <= 14
+end
+
+--- Check if a card is a Lesser Doom (Major Arcana 15-21)
+function M.isLesserDoom(card)
+    if not card or not card.is_major then return false end
+    return card.value >= 15 and card.value <= 21
+end
+
+--- Get the Doom classification of a card
+-- @param card table: The card to check
+-- @return string: "greater", "lesser", or nil if not Major Arcana
+function M.getDoomType(card)
+    if not card or not card.is_major then return nil end
+    if card.value >= 1 and card.value <= 14 then
+        return "greater"
+    elseif card.value >= 15 and card.value <= 21 then
+        return "lesser"
+    end
+    return nil
+end
+
+local function deepCopyCards(cards)
+    local copy = {}
+    for i, card in ipairs(cards) do
+        copy[i] = deepCopyCard(card)
+    end
+    return copy
+end
+
+--------------------------------------------------------------------------------
+-- FISHER-YATES SHUFFLE (in-place)
+-- Note: Random seed must be initialized via game_clock:init() before use
+--------------------------------------------------------------------------------
+local function fisherYatesShuffle(t)
+    for i = #t, 2, -1 do
+        local j = math.random(1, i)
+        t[i], t[j] = t[j], t[i]
+    end
+    return t
+end
+
+--------------------------------------------------------------------------------
+-- DECK FACTORY
+--------------------------------------------------------------------------------
+
+--- Create a new Deck instance
+-- @param cards table: Array of card data from constants.lua (MinorArcana or MajorArcana)
+-- @return Deck instance with draw_pile, discard_pile, and methods
+function M.createDeck(cards)
+    local deck = {
+        draw_pile    = {},
+        discard_pile = {},
+        onDraw       = nil,
+    }
+
+    -- Deep copy cards into draw pile (avoid reference trap)
+    if cards and #cards > 0 then
+        deck.draw_pile = deepCopyCards(cards)
+    end
+
+    ----------------------------------------------------------------------------
+    -- SHUFFLE: Randomize the draw pile in-place
+    ----------------------------------------------------------------------------
+    function deck:shuffle()
+        fisherYatesShuffle(self.draw_pile)
+        return self
+    end
+
+    ----------------------------------------------------------------------------
+    -- DRAW: Remove and return the top card from draw pile
+    -- Auto-reshuffles discard into draw pile if draw pile is empty
+    ----------------------------------------------------------------------------
+    function deck:draw()
+        -- If draw pile is empty, check discard pile
+        if #self.draw_pile == 0 then
+            if #self.discard_pile == 0 then
+                -- Both piles empty, nothing to draw
+                return nil
+            end
+
+            -- Move discard pile to draw pile and shuffle
+            self.draw_pile = self.discard_pile
+            self.discard_pile = {}
+            self:shuffle()
+        end
+
+        -- Remove and return top card (last element for O(1) removal)
+        local card = table.remove(self.draw_pile)
+        if card and self.onDraw then
+            self.onDraw(card)
+        end
+        return card
+    end
+
+    ----------------------------------------------------------------------------
+    -- DISCARD: Move a card to the discard pile
+    ----------------------------------------------------------------------------
+    function deck:discard(card)
+        if card then
+            self.discard_pile[#self.discard_pile + 1] = card
+        end
+        return self
+    end
+
+    ----------------------------------------------------------------------------
+    -- UTILITY: Get counts for debugging/UI
+    ----------------------------------------------------------------------------
+    function deck:drawPileCount()
+        return #self.draw_pile
+    end
+
+    function deck:discardPileCount()
+        return #self.discard_pile
+    end
+
+    function deck:totalCards()
+        return #self.draw_pile + #self.discard_pile
+    end
+
+    ----------------------------------------------------------------------------
+    -- UTILITY: Peek at top of discard pile (some rules check this)
+    ----------------------------------------------------------------------------
+    function deck:peekDiscard()
+        if #self.discard_pile == 0 then
+            return nil
+        end
+        return self.discard_pile[#self.discard_pile]
+    end
+
+    ----------------------------------------------------------------------------
+    -- RESET: Return all cards to draw pile and shuffle (full reshuffle)
+    ----------------------------------------------------------------------------
+    function deck:reset()
+        -- Move all discarded cards back to draw pile
+        for i = 1, #self.discard_pile do
+            self.draw_pile[#self.draw_pile + 1] = self.discard_pile[i]
+        end
+        self.discard_pile = {}
+        self:shuffle()
+        return self
+    end
+
+    return deck
+end
+
+--------------------------------------------------------------------------------
+-- CONVENIENCE CONSTRUCTORS
+--------------------------------------------------------------------------------
+
+--- Create the Player's Deck (Minor Arcana + The Fool)
+-- @param constants table: The constants module from constants.lua
+function M.createPlayerDeck(constants)
+    local deck = M.createDeck(constants.MinorArcana)
+    deck:shuffle()
+    return deck
+end
+
+--- Create the GM's Deck (Major Arcana, I-XXI)
+-- @param constants table: The constants module from constants.lua
+function M.createGMDeck(constants)
+    local deck = M.createDeck(constants.MajorArcana)
+    deck:shuffle()
+    return deck
+end
+
+return M
+
+```
+
+---
+
+## File: src/logic/disposition.lua
+
+```lua
+-- disposition.lua
+-- Disposition System for Majesty
+-- Ticket S12.4: 7-disposition emotional wheel for NPCs
+--
+-- The disposition wheel (from HMTW rulebook):
+--   ANGER → DISTASTE → SADNESS → JOY → SURPRISE → TRUST → FEAR → (back to ANGER)
+--
+-- Dispositions affect:
+--   - NPC reactions to social actions
+--   - Available negotiation options
+--   - Banter and Parley effectiveness
+
+local M = {}
+
+--------------------------------------------------------------------------------
+-- DISPOSITION CONSTANTS
+--------------------------------------------------------------------------------
+
+M.DISPOSITIONS = {
+    ANGER     = "anger",
+    DISTASTE  = "distaste",
+    SADNESS   = "sadness",
+    JOY       = "joy",
+    SURPRISE  = "surprise",
+    TRUST     = "trust",
+    FEAR      = "fear",
+}
+
+-- Ordered wheel (for transitions)
+M.WHEEL = {
+    "anger",
+    "distaste",
+    "sadness",
+    "joy",
+    "surprise",
+    "trust",
+    "fear",
+}
+
+-- Wheel position lookup
+M.WHEEL_INDEX = {}
+for i, disp in ipairs(M.WHEEL) do
+    M.WHEEL_INDEX[disp] = i
+end
+
+--------------------------------------------------------------------------------
+-- DISPOSITION PROPERTIES
+-- Each disposition has properties that affect social interactions
+--------------------------------------------------------------------------------
+
+M.PROPERTIES = {
+    anger = {
+        name = "Anger",
+        description = "Hostile and aggressive. May attack or refuse to negotiate.",
+        combatLikelihood = 0.8,  -- 80% likely to fight
+        negotiable = false,      -- Cannot parley while angry
+        banterDifficulty = -2,   -- Easier to banter (they're distracted by rage)
+    },
+    distaste = {
+        name = "Distaste",
+        description = "Dismissive and contemptuous. May ignore or insult.",
+        combatLikelihood = 0.4,
+        negotiable = true,
+        banterDifficulty = 0,
+    },
+    sadness = {
+        name = "Sadness",
+        description = "Melancholy and withdrawn. May be susceptible to sympathy.",
+        combatLikelihood = 0.2,
+        negotiable = true,
+        banterDifficulty = 2,    -- Harder to banter (they don't care)
+    },
+    joy = {
+        name = "Joy",
+        description = "Happy and generous. Most likely to negotiate or help.",
+        combatLikelihood = 0.1,
+        negotiable = true,
+        banterDifficulty = 2,    -- Harder to banter (good mood)
+    },
+    surprise = {
+        name = "Surprise",
+        description = "Startled and uncertain. Reactions are unpredictable.",
+        combatLikelihood = 0.5,
+        negotiable = true,
+        banterDifficulty = 0,
+    },
+    trust = {
+        name = "Trust",
+        description = "Open and believing. May reveal information or provide aid.",
+        combatLikelihood = 0.1,
+        negotiable = true,
+        banterDifficulty = 4,    -- Very hard to banter (they trust you)
+    },
+    fear = {
+        name = "Fear",
+        description = "Frightened and defensive. May flee or submit.",
+        combatLikelihood = 0.3,  -- Might fight from desperation
+        negotiable = true,
+        banterDifficulty = 0,
+    },
+}
+
+--------------------------------------------------------------------------------
+-- DISPOSITION TRANSITIONS
+-- How actions shift disposition around the wheel
+--------------------------------------------------------------------------------
+
+-- Shift directions
+M.SHIFT = {
+    CLOCKWISE = 1,
+    COUNTER_CLOCKWISE = -1,
+}
+
+-- What causes disposition shifts
+M.TRIGGERS = {
+    -- Successful banter: shifts toward Fear/Sadness (clockwise from most)
+    banter_success = { direction = M.SHIFT.CLOCKWISE, amount = 1 },
+    banter_great = { direction = M.SHIFT.CLOCKWISE, amount = 2 },
+
+    -- Failed banter: shifts toward Anger (counter-clockwise)
+    banter_fail = { direction = M.SHIFT.COUNTER_CLOCKWISE, amount = 1 },
+
+    -- Combat damage: shifts toward Anger or Fear (based on advantage)
+    damage_dealt = { direction = M.SHIFT.COUNTER_CLOCKWISE, amount = 1 },  -- NPC angry
+    damage_taken = { direction = M.SHIFT.CLOCKWISE, amount = 1 },          -- NPC fearful
+
+    -- Gifts/Aid: shifts toward Trust/Joy
+    gift_given = { target = "trust", amount = 1 },
+    ally_helped = { target = "joy", amount = 1 },
+
+    -- Parley success: stabilizes toward Trust
+    parley_success = { target = "trust", amount = 1 },
+}
+
+--------------------------------------------------------------------------------
+-- UTILITY FUNCTIONS
+--------------------------------------------------------------------------------
+
+--- Get the next disposition in the wheel
+-- @param current string: Current disposition
+-- @param direction number: SHIFT.CLOCKWISE or SHIFT.COUNTER_CLOCKWISE
+-- @return string: New disposition
+function M.getNextDisposition(current, direction)
+    local index = M.WHEEL_INDEX[current]
+    if not index then return current end
+
+    local newIndex = index + direction
+    if newIndex < 1 then newIndex = #M.WHEEL end
+    if newIndex > #M.WHEEL then newIndex = 1 end
+
+    return M.WHEEL[newIndex]
+end
+
+--- Shift a disposition by amount in a direction
+-- @param current string: Current disposition
+-- @param direction number: SHIFT.CLOCKWISE or SHIFT.COUNTER_CLOCKWISE
+-- @param amount number: How many steps to shift
+-- @return string: New disposition
+function M.shiftDisposition(current, direction, amount)
+    local result = current
+    for _ = 1, amount do
+        result = M.getNextDisposition(result, direction)
+    end
+    return result
+end
+
+--- Move disposition toward a target disposition
+-- @param current string: Current disposition
+-- @param target string: Target disposition
+-- @param amount number: Maximum steps to move
+-- @return string: New disposition (may not reach target)
+function M.moveToward(current, target, amount)
+    if current == target then return current end
+
+    local currentIndex = M.WHEEL_INDEX[current]
+    local targetIndex = M.WHEEL_INDEX[target]
+    if not currentIndex or not targetIndex then return current end
+
+    -- Calculate shortest path around the wheel
+    local clockwiseDist = (targetIndex - currentIndex) % #M.WHEEL
+    local counterClockwiseDist = (currentIndex - targetIndex) % #M.WHEEL
+
+    local direction
+    if clockwiseDist <= counterClockwiseDist then
+        direction = M.SHIFT.CLOCKWISE
+    else
+        direction = M.SHIFT.COUNTER_CLOCKWISE
+    end
+
+    return M.shiftDisposition(current, direction, math.min(amount, math.min(clockwiseDist, counterClockwiseDist)))
+end
+
+--- Apply a trigger to shift disposition
+-- @param current string: Current disposition
+-- @param triggerName string: Name of the trigger (from M.TRIGGERS)
+-- @return string: New disposition
+function M.applyTrigger(current, triggerName)
+    local trigger = M.TRIGGERS[triggerName]
+    if not trigger then return current end
+
+    if trigger.target then
+        -- Move toward specific disposition
+        return M.moveToward(current, trigger.target, trigger.amount)
+    elseif trigger.direction then
+        -- Shift in direction
+        return M.shiftDisposition(current, trigger.direction, trigger.amount)
+    end
+
+    return current
+end
+
+--- Get properties for a disposition
+-- @param disposition string: The disposition
+-- @return table: Properties table
+function M.getProperties(disposition)
+    return M.PROPERTIES[disposition] or M.PROPERTIES.distaste
+end
+
+--- Check if NPC is willing to negotiate
+-- @param disposition string: The disposition
+-- @return boolean: Can negotiate
+function M.canNegotiate(disposition)
+    local props = M.getProperties(disposition)
+    return props.negotiable
+end
+
+--- Get combat likelihood (0-1)
+-- @param disposition string: The disposition
+-- @return number: Probability of combat
+function M.getCombatLikelihood(disposition)
+    local props = M.getProperties(disposition)
+    return props.combatLikelihood
+end
+
+--- Get difficulty modifier for social actions
+-- @param disposition string: The disposition
+-- @param actionType string: "banter"
+-- @return number: Modifier to add to difficulty
+function M.getSocialModifier(disposition, actionType)
+    local props = M.getProperties(disposition)
+    if actionType == "banter" then
+        return props.banterDifficulty or 0
+    end
+    return 0
+end
+
+return M
+
+```
+
+---
+
 ## File: src/logic/environment_manager.lua
 
 ```lua
@@ -8791,7 +11749,7 @@ function M.createEnvironmentManager(config)
         end)
 
         -- Subscribe to darkness (prolonged darkness causes stress)
-        self.eventBus:on("darkness_fell", function(data)
+        self.eventBus:on(events.EVENTS.DARKNESS_FELL, function(data)
             -- Note: Darkness stress happens over time, not immediately
             -- This is tracked separately via watch count in darkness
         end)
@@ -9066,10 +12024,12 @@ M.EVENTS = {
     -- Combat/Challenge
     CHALLENGE_START       = "challenge_start",
     CHALLENGE_END         = "challenge_end",
+    CHALLENGE_ROUND_END   = "challenge_round_end",
     CHALLENGE_TURN_START  = "challenge_turn_start",
     CHALLENGE_TURN_END    = "challenge_turn_end",
     CHALLENGE_ACTION      = "challenge_action",
     CHALLENGE_RESOLUTION  = "challenge_resolution",
+    INITIATIVE_REVEALED   = "initiative_revealed",
     MINOR_ACTION_WINDOW   = "minor_action_window",
     MINOR_ACTION_USED     = "minor_action_used",
     UI_SEQUENCE_COMPLETE  = "ui_sequence_complete",
@@ -9088,6 +12048,7 @@ M.EVENTS = {
     ZONE_CHANGED        = "zone_changed",
     ENTITIES_ENGAGED    = "entities_engaged",
     ENTITIES_DISENGAGED = "entities_disengaged",
+    ENGAGEMENT_CHANGED  = "engagement_changed",  -- S12.1: Full engagement state update for UI
     PARTING_BLOW        = "parting_blow",
 
     -- Room Features (T2_5)
@@ -9096,6 +12057,9 @@ M.EVENTS = {
 
     -- Interaction (T2_6)
     INTERACTION = "interaction",
+
+    -- Item Use (S11.3+)
+    USE_ITEM_ON_POI   = "use_item_on_poi",   -- Drag item from equipment onto POI
 
     -- POI Info-Gating (T2_8)
     POI_DISCOVERED      = "poi_discovered",
@@ -9109,17 +12073,45 @@ M.EVENTS = {
     TRAP_DETECTED         = "trap_detected",
     ITEM_DAMAGE_ABSORBED  = "item_damage_absorbed",
 
+    -- Light System
+    LANTERN_BROKEN        = "lantern_broken",
+    ENTITY_LIGHT_CHANGED  = "entity_light_changed",
+    PARTY_LIGHT_CHANGED   = "light_level_changed",
+    LIGHT_FLICKERED       = "light_flickered",
+    LIGHT_DESTROYED       = "light_destroyed",
+    LIGHT_EXTINGUISHED    = "light_extinguished",
+    DARKNESS_FELL         = "darkness_fell",
+    DARKNESS_LIFTED       = "darkness_lifted",
+    LIGHT_SOURCE_TOGGLED  = "light_source_toggled",
+
+    -- Inventory
+    INVENTORY_CHANGED     = "inventory_changed",
+
+    -- Active PC
+    ACTIVE_PC_CHANGED     = "active_pc_changed",
+
     -- UI Input (T2_11)
     DRAG_BEGIN       = "drag_begin",
     DRAG_CANCELLED   = "drag_cancelled",
     DROP_ON_TARGET   = "drop_on_target",
     POI_CLICKED      = "poi_clicked",
+    POI_ACTION_SELECTED = "poi_action_selected",
     BUTTON_CLICKED   = "button_clicked",
+    ARENA_ENTITY_CLICKED = "arena_entity_clicked",
+    ARENA_ZONE_CLICKED   = "arena_zone_clicked",
 
     -- Focus Menu (T2_13)
     SCRUTINY_SELECTED = "scrutiny_selected",
     MENU_OPENED       = "menu_opened",
     MENU_CLOSED       = "menu_closed",
+
+    -- S12.5: Test of Fate
+    REQUEST_TEST_OF_FATE  = "request_test_of_fate",
+    TEST_OF_FATE_COMPLETE = "test_of_fate_complete",
+    TEST_FATE_PUSHED      = "test_fate_pushed",
+
+    -- Bound by Fate (Crawl UI)
+    BOUND_BY_FATE_BLOCKED = "bound_by_fate_blocked",
 }
 
 --------------------------------------------------------------------------------
@@ -9229,6 +12221,169 @@ end
 -- GLOBAL EVENT BUS (singleton for convenience)
 --------------------------------------------------------------------------------
 M.globalBus = M.createEventBus()
+
+return M
+
+```
+
+---
+
+## File: src/logic/game_clock.lua
+
+```lua
+-- game_clock.lua
+-- Game State and Round Manager for Majesty
+-- Ticket T1_3: Tracks game phase and handles end-of-round triggers (Fool reshuffle)
+
+local M = {}
+
+--------------------------------------------------------------------------------
+-- GLOBAL INITIALIZATION
+-- Call once at game startup, before creating any decks
+--------------------------------------------------------------------------------
+local initialized = false
+
+--- Initialize the random seed for the entire game
+-- Must be called once before any deck shuffling occurs
+-- Uses a combination of time and a high-precision counter to avoid
+-- identical shuffles when multiple decks are created in the same millisecond
+function M.init()
+    if not initialized then
+        -- Combine os.time() with os.clock() for better entropy
+        local seed = os.time() + math.floor(os.clock() * 1000)
+        math.randomseed(seed)
+        -- Warm up the generator (first few values can be predictable)
+        for _ = 1, 10 do math.random() end
+        initialized = true
+    end
+end
+
+--- Check if the system has been initialized
+function M.isInitialized()
+    return initialized
+end
+
+--------------------------------------------------------------------------------
+-- PHASE CONSTANTS
+--------------------------------------------------------------------------------
+M.PHASES = {
+    CRAWL     = 1,
+    CHALLENGE = 2,
+    CAMP      = 3,
+    CITY      = 4,
+}
+
+M.PHASE_NAMES = {
+    [1] = "Crawl",
+    [2] = "Challenge",
+    [3] = "Camp",
+    [4] = "City",
+}
+
+--------------------------------------------------------------------------------
+-- GAME CLOCK FACTORY
+--------------------------------------------------------------------------------
+
+--- Create a new GameClock instance
+-- @param playerDeck Deck: The player's deck (Minor Arcana + Fool)
+-- @param gmDeck Deck: The GM's deck (Major Arcana)
+-- @return GameClock instance
+function M.createGameClock(playerDeck, gmDeck)
+    local clock = {
+        currentPhase    = M.PHASES.CITY,  -- Games typically start in City phase
+        pendingReshuffle = false,
+        playerDeck      = playerDeck,
+        gmDeck          = gmDeck,
+        roundNumber     = 0,
+    }
+
+    ----------------------------------------------------------------------------
+    -- PHASE MANAGEMENT
+    ----------------------------------------------------------------------------
+
+    --- Set the current game phase
+    -- @param phase number: One of PHASES constants
+    function clock:setPhase(phase)
+        self.currentPhase = phase
+        return self
+    end
+
+    --- Get the current phase
+    function clock:getPhase()
+        return self.currentPhase
+    end
+
+    --- Get the current phase name (for display/debugging)
+    function clock:getPhaseName()
+        return M.PHASE_NAMES[self.currentPhase] or "Unknown"
+    end
+
+    ----------------------------------------------------------------------------
+    -- CARD DRAWN LISTENER
+    -- Called whenever a card is drawn; checks for The Fool
+    ----------------------------------------------------------------------------
+
+    --- Notify the clock that a card was drawn
+    -- If The Fool is drawn, sets pendingReshuffle flag
+    -- @param card table: The card that was drawn
+    -- @return card table: Returns the same card (for chaining/passthrough)
+    function clock:onCardDrawn(card)
+        if card and (card.name == "The Fool" or (card.is_major and card.value == 0)) then
+            self.pendingReshuffle = true
+        end
+        -- Return the card unchanged - Fool's value (0) is still used for resolution
+        return card
+    end
+
+    ----------------------------------------------------------------------------
+    -- END OF ROUND
+    -- Handles the Fool-triggered dual-deck reshuffle
+    ----------------------------------------------------------------------------
+
+    --- End the current round
+    -- If The Fool was drawn this round, reshuffles both decks
+    -- @return boolean: true if reshuffle occurred, false otherwise
+    function clock:endRound()
+        self.roundNumber = self.roundNumber + 1
+
+        if self.pendingReshuffle then
+            -- Reset both decks: move all discards back and shuffle
+            if self.playerDeck then
+                self.playerDeck:reset()
+            end
+            if self.gmDeck then
+                self.gmDeck:reset()
+            end
+
+            self.pendingReshuffle = false
+            return true  -- Reshuffle occurred
+        end
+
+        return false  -- No reshuffle needed
+    end
+
+    ----------------------------------------------------------------------------
+    -- UTILITY
+    ----------------------------------------------------------------------------
+
+    --- Check if a reshuffle is pending
+    function clock:isReshufflePending()
+        return self.pendingReshuffle
+    end
+
+    --- Get current round number
+    function clock:getRoundNumber()
+        return self.roundNumber
+    end
+
+    --- Manually trigger reshuffle (for edge cases/testing)
+    function clock:forceReshuffle()
+        self.pendingReshuffle = true
+        return self
+    end
+
+    return clock
+end
 
 return M
 
@@ -9824,11 +12979,38 @@ function M.createItem(config)
         -- Armor flag (worn armor uses belt slots)
         isArmor = config.isArmor or false,
 
+        -- S11.3: Key properties for locks
+        keyId = config.keyId or nil,  -- What locks this key opens
+
+        -- Template reference
+        templateId = config.templateId or nil,
+
         -- Custom properties
         properties = config.properties or {},
     }
 
     return item
+end
+
+--- Deep-copy table values so item instances never share mutable template state.
+local function deepCopy(value, seen)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    seen = seen or {}
+    if seen[value] then
+        return seen[value]
+    end
+
+    local copy = {}
+    seen[value] = copy
+
+    for k, v in pairs(value) do
+        copy[deepCopy(k, seen)] = deepCopy(v, seen)
+    end
+
+    return copy
 end
 
 --- S11.3: Create an item from a template ID
@@ -9846,13 +13028,10 @@ function M.createItemFromTemplate(templateId, overrides)
     end
 
     -- Merge template with overrides
-    local config = {}
-    for k, v in pairs(template) do
-        config[k] = v
-    end
+    local config = deepCopy(template)
     if overrides then
         for k, v in pairs(overrides) do
-            config[k] = v
+            config[k] = deepCopy(v)
         end
     end
 
@@ -10203,6 +13382,29 @@ function M.createInventory(config)
             end
         end
         return all
+    end
+
+    --- Get the currently wielded weapon from hands
+    -- Returns the first weapon found in hands, or nil if none
+    function inventory:getWieldedWeapon()
+        for _, item in ipairs(self.hands) do
+            if item.isWeapon then
+                return item
+            end
+        end
+        return nil
+    end
+
+    --- Check if entity has a ranged weapon in hands
+    function inventory:hasRangedWeaponInHands()
+        local weapon = self:getWieldedWeapon()
+        return weapon and weapon.isRanged
+    end
+
+    --- Check if entity has a melee weapon in hands
+    function inventory:hasMeleeWeaponInHands()
+        local weapon = self:getWieldedWeapon()
+        return weapon and (weapon.isMelee or (weapon.isWeapon and not weapon.isRanged))
     end
 
     return inventory
@@ -10711,9 +13913,14 @@ return M
 -- light_system.lua
 -- Light Economy System for Majesty
 -- Ticket T3_2: Torch flickering and darkness penalties
+-- Rework: Per-adventurer light levels with torch/lantern distinction
 --
--- Major Arcana I-V (Torches Gutter) causes light sources to degrade.
--- When no light source exists in a Zone, all entities gain BLIND effect.
+-- New Rules:
+-- - BRIGHT: You have a light source in hands, OR a lantern on belt
+-- - DIM: Someone else in the party has a light source in hands (but not you)
+-- - DARK: No one has a light source AND no environmental light
+-- - Lantern special: Works from belt, but breaks when you take a Wound while belted
+-- - Torch rule: Must be in hands to count (belt doesn't work)
 
 local events = require('logic.events')
 local inventory = require('logic.inventory')
@@ -10722,23 +13929,46 @@ local M = {}
 
 --------------------------------------------------------------------------------
 -- LIGHT SOURCE DEFINITIONS
--- Items that can provide light and their flicker capacities
+-- Items that can provide light and their properties
 --------------------------------------------------------------------------------
 M.LIGHT_SOURCES = {
-    ["Torch"]       = { flicker_max = 3, consumable = true },
-    ["Lantern"]     = { flicker_max = 6, consumable = false },  -- Uses oil
-    ["Candle"]      = { flicker_max = 2, consumable = true },
-    ["Glowstone"]   = { flicker_max = 0, consumable = false },  -- Never gutters
+    ["Torch"]       = {
+        flicker_max = 3,
+        consumable = true,
+        requires_hands = true,       -- Must be in hands to provide light
+        provides_belt_light = false, -- Does NOT work from belt
+        fragile_on_belt = false,
+    },
+    ["Lantern"]     = {
+        flicker_max = 6,
+        consumable = false,          -- Uses oil
+        requires_hands = false,      -- Works from hands OR belt
+        provides_belt_light = true,  -- Works from belt
+        fragile_on_belt = true,      -- Breaks when taking wound while on belt
+    },
+    ["Candle"]      = {
+        flicker_max = 2,
+        consumable = true,
+        requires_hands = true,
+        provides_belt_light = false,
+        fragile_on_belt = false,
+    },
+    ["Glowstone"]   = {
+        flicker_max = 0,             -- Never gutters
+        consumable = false,
+        requires_hands = false,      -- Works from anywhere
+        provides_belt_light = true,
+        fragile_on_belt = false,     -- Magical, doesn't break
+    },
 }
 
 --------------------------------------------------------------------------------
--- LIGHT LEVELS
+-- LIGHT LEVELS (simplified - removed NORMAL)
 --------------------------------------------------------------------------------
 M.LIGHT_LEVELS = {
-    BRIGHT = "bright",       -- Multiple light sources
-    NORMAL = "normal",       -- One active light source
-    DIM    = "dim",          -- Light source low on flickers
-    DARK   = "dark",         -- No light source
+    BRIGHT = "bright",       -- You have a working light source
+    DIM    = "dim",          -- Someone else has light, or environmental light
+    DARK   = "dark",         -- No light source anywhere
 }
 
 --------------------------------------------------------------------------------
@@ -10756,8 +13986,11 @@ function M.createLightSystem(config)
         guild      = config.guild or {},    -- Array of adventurers with inventories
         zoneSystem = config.zoneSystem,     -- Optional: for zone-based darkness
 
-        -- Track current light level per zone
-        zoneLightLevels = {},
+        -- Track light level per entity (new system)
+        entityLightLevels = {},
+
+        -- Track current party-wide light level (for backward compatibility)
+        currentLightLevel = nil,
 
         -- UI callback for darkness effect
         onDarknessChanged = config.onDarknessChanged,
@@ -10774,13 +14007,75 @@ function M.createLightSystem(config)
             self:handleTorchesGutter(data)
         end)
 
+        -- Subscribe to wound taken events for lantern breaking
+        self.eventBus:on(events.EVENTS.WOUND_TAKEN, function(data)
+            self:handleWoundTaken(data)
+        end)
+
+        -- Subscribe to inventory changes (items moved between slots)
+        self.eventBus:on(events.EVENTS.INVENTORY_CHANGED, function(data)
+            self:recalculateLightLevels()
+        end)
+
+        -- Legacy/auxiliary UI source: explicit light toggles
+        self.eventBus:on(events.EVENTS.LIGHT_SOURCE_TOGGLED, function(data)
+            self:handleLightSourceToggled(data)
+        end)
+
         -- Initial light check
-        self:recalculateLightLevel()
+        self:recalculateLightLevels()
     end
 
     ----------------------------------------------------------------------------
     -- LIGHT SOURCE TRACKING
     ----------------------------------------------------------------------------
+
+    --- Read lit state from either canonical or legacy field names.
+    function system:getItemLitState(item)
+        if not item or not item.properties then
+            return true
+        end
+        if item.properties.isLit ~= nil then
+            return item.properties.isLit
+        end
+        if item.properties.is_lit ~= nil then
+            return item.properties.is_lit
+        end
+        return true
+    end
+
+    --- Write lit state to canonical and legacy field names for compatibility.
+    function system:setItemLitState(item, isLit)
+        if not item.properties then
+            item.properties = {}
+        end
+        item.properties.isLit = isLit
+        item.properties.is_lit = isLit
+    end
+
+    --- Build a normalized light config from item properties.
+    function system:buildLightConfigFromProperties(item)
+        local props = item and item.properties or {}
+        local source = props and props.light_source
+
+        local config = {
+            flicker_max = props.flicker_count or 3,
+            consumable = props.consumable ~= false,
+            requires_hands = props.requires_hands ~= false,
+            provides_belt_light = props.provides_belt_light == true,
+            fragile_on_belt = props.fragile_on_belt == true,
+        }
+
+        if type(source) == "table" then
+            if source.flicker_max ~= nil then config.flicker_max = source.flicker_max end
+            if source.consumable ~= nil then config.consumable = source.consumable end
+            if source.requires_hands ~= nil then config.requires_hands = source.requires_hands end
+            if source.provides_belt_light ~= nil then config.provides_belt_light = source.provides_belt_light end
+            if source.fragile_on_belt ~= nil then config.fragile_on_belt = source.fragile_on_belt end
+        end
+
+        return config
+    end
 
     --- Check if an item is a light source
     -- @param item table: Inventory item
@@ -10797,10 +14092,164 @@ function M.createLightSystem(config)
 
         -- Check for light_source property on custom items
         if item.properties and item.properties.light_source then
-            return true, item.properties.light_source
+            return true, self:buildLightConfigFromProperties(item)
         end
 
         return false, nil
+    end
+
+    --- Check if a light source is active (lit, has flickers remaining, not extinguished)
+    -- @param item table: The light source item
+    -- @param lightConfig table: The light source configuration
+    -- @return boolean
+    function system:isLightActive(item, lightConfig)
+        if item.destroyed then
+            return false
+        end
+
+        if item.properties and item.properties.extinguished then
+            return false
+        end
+
+        -- Check if explicitly lit (defaults to true if not set, for backward compat)
+        if self:getItemLitState(item) == false then
+            return false
+        end
+
+        -- Check flicker count
+        local flickerCount = item.properties and item.properties.flicker_count
+        local infiniteSource = lightConfig and (lightConfig.flicker_max or 0) <= 0
+        if not infiniteSource and flickerCount and flickerCount <= 0 then
+            return false
+        end
+
+        return true
+    end
+
+    --- Light a light source (set isLit = true)
+    -- @param item table: The light source item
+    -- @return boolean: success
+    function system:lightItem(item)
+        local isLight, lightConfig = self:isLightSource(item)
+        if not isLight then
+            return false
+        end
+
+        if item.destroyed then
+            return false
+        end
+
+        if not item.properties then
+            item.properties = {}
+        end
+
+        self:setItemLitState(item, true)
+        item.properties.extinguished = false
+
+        -- Initialize flicker count if not set
+        if not item.properties.flicker_count then
+            item.properties.flicker_count = lightConfig.flicker_max
+        end
+
+        self:recalculateLightLevels()
+        return true
+    end
+
+    --- Extinguish/douse a light source (set isLit = false)
+    -- @param item table: The light source item
+    -- @return boolean: success
+    function system:extinguishItem(item)
+        local isLight = self:isLightSource(item)
+        if not isLight then
+            return false
+        end
+
+        if not item.properties then
+            item.properties = {}
+        end
+
+        self:setItemLitState(item, false)
+
+        self:recalculateLightLevels()
+        return true
+    end
+
+    --- Handle explicit light source toggle events from UI layers.
+    -- @param data table: { item, lit }
+    function system:handleLightSourceToggled(data)
+        local item = data and data.item
+        if not item then
+            return
+        end
+
+        if data.lit == true then
+            self:lightItem(item)
+        elseif data.lit == false then
+            self:extinguishItem(item)
+        else
+            self:recalculateLightLevels()
+        end
+    end
+
+    --- Check if an entity has a light source in their hands
+    -- @param entity table: The entity to check
+    -- @return boolean, table: hasLight, lightItem
+    function system:hasHandsLight(entity)
+        if not entity.inventory then
+            return false, nil
+        end
+
+        local handsItems = entity.inventory:getItems(inventory.LOCATIONS.HANDS)
+        for _, item in ipairs(handsItems) do
+            local isLight, lightConfig = self:isLightSource(item)
+            if isLight and self:isLightActive(item, lightConfig) then
+                return true, item
+            end
+        end
+
+        return false, nil
+    end
+
+    --- Check if an entity has a belt lantern (provides_belt_light)
+    -- @param entity table: The entity to check
+    -- @return boolean, table: hasLight, lightItem
+    function system:hasBeltLight(entity)
+        if not entity.inventory then
+            return false, nil
+        end
+
+        local beltItems = entity.inventory:getItems(inventory.LOCATIONS.BELT)
+        for _, item in ipairs(beltItems) do
+            local isLight, lightConfig = self:isLightSource(item)
+            if isLight and lightConfig and lightConfig.provides_belt_light then
+                if self:isLightActive(item, lightConfig) then
+                    return true, item
+                end
+            end
+        end
+
+        return false, nil
+    end
+
+    --- Check if anyone in the party has an active light source (hands or belt lantern)
+    -- @param excludeEntity table: Optional entity to exclude from check
+    -- @return boolean
+    function system:hasPartyLight(excludeEntity)
+        for _, entity in ipairs(self.guild) do
+            if entity ~= excludeEntity then
+                -- Check hands
+                local hasHandsLight = self:hasHandsLight(entity)
+                if hasHandsLight then
+                    return true
+                end
+                -- Check belt (lanterns)
+                local hasBeltLight = self:hasBeltLight(entity)
+                if hasBeltLight then
+                    return true
+                end
+            end
+        end
+        return false
     end
 
     --- Find all active light sources in the guild
@@ -10810,22 +14259,32 @@ function M.createLightSystem(config)
 
         for _, entity in ipairs(self.guild) do
             if entity.inventory then
-                -- Only check hands and belt (active locations)
-                for _, loc in ipairs({ "hands", "belt" }) do
-                    local items = entity.inventory:getItems(loc)
-                    for _, item in ipairs(items) do
-                        local isLight, lightConfig = self:isLightSource(item)
-                        if isLight then
-                            -- Check if light has flickers remaining
-                            local flickerCount = item.properties and item.properties.flicker_count
-                            if not flickerCount or flickerCount > 0 then
-                                sources[#sources + 1] = {
-                                    entity      = entity,
-                                    item        = item,
-                                    location    = loc,
-                                    lightConfig = lightConfig,
-                                }
-                            end
+                -- Check hands
+                local handsItems = entity.inventory:getItems(inventory.LOCATIONS.HANDS)
+                for _, item in ipairs(handsItems) do
+                    local isLight, lightConfig = self:isLightSource(item)
+                    if isLight and self:isLightActive(item, lightConfig) then
+                        sources[#sources + 1] = {
+                            entity      = entity,
+                            item        = item,
+                            location    = "hands",
+                            lightConfig = lightConfig,
+                        }
+                    end
+                end
+
+                -- Check belt (only for provides_belt_light items)
+                local beltItems = entity.inventory:getItems(inventory.LOCATIONS.BELT)
+                for _, item in ipairs(beltItems) do
+                    local isLight, lightConfig = self:isLightSource(item)
+                    if isLight and lightConfig and lightConfig.provides_belt_light then
+                        if self:isLightActive(item, lightConfig) then
+                            sources[#sources + 1] = {
+                                entity      = entity,
+                                item        = item,
+                                location    = "belt",
+                                lightConfig = lightConfig,
+                            }
                         end
                     end
                 end
@@ -10844,16 +14303,22 @@ function M.createLightSystem(config)
     -- @param data table: { card, category, value }
     function system:handleTorchesGutter(data)
         local sources = self:findActiveLightSources()
+        local degradableSources = {}
+        for _, source in ipairs(sources) do
+            if source.lightConfig and (source.lightConfig.flicker_max or 0) > 0 then
+                degradableSources[#degradableSources + 1] = source
+            end
+        end
 
-        if #sources == 0 then
+        if #degradableSources == 0 then
             -- No light sources to degrade - darkness intensifies
-            self:recalculateLightLevel()
+            self:recalculateLightLevels()
             return
         end
 
         -- Find the primary light holder (first adventurer holding light in hands)
         local primarySource = nil
-        for _, source in ipairs(sources) do
+        for _, source in ipairs(degradableSources) do
             if source.location == "hands" then
                 primarySource = source
                 break
@@ -10862,7 +14327,7 @@ function M.createLightSystem(config)
 
         -- Fall back to first available source
         if not primarySource then
-            primarySource = sources[1]
+            primarySource = degradableSources[1]
         end
 
         -- Decrement flicker count
@@ -10881,7 +14346,7 @@ function M.createLightSystem(config)
         item.properties.flicker_count = item.properties.flicker_count - 1
 
         -- Emit event for UI updates
-        self.eventBus:emit("light_flickered", {
+        self.eventBus:emit(events.EVENTS.LIGHT_FLICKERED, {
             entity       = primarySource.entity,
             item         = item,
             remaining    = item.properties.flicker_count,
@@ -10893,8 +14358,8 @@ function M.createLightSystem(config)
             self:extinguishLight(primarySource)
         end
 
-        -- Recalculate overall light level
-        self:recalculateLightLevel()
+        -- Recalculate overall light levels
+        self:recalculateLightLevels()
     end
 
     --- Extinguish a light source
@@ -10902,13 +14367,17 @@ function M.createLightSystem(config)
     function system:extinguishLight(source)
         local item = source.item
         local lightConfig = source.lightConfig
+        if not item.properties then
+            item.properties = {}
+        end
+        self:setItemLitState(item, false)
 
         if lightConfig.consumable then
             -- Consumable lights are destroyed (torches, candles)
             item.destroyed = true
             item.properties.extinguished = true
 
-            self.eventBus:emit("light_destroyed", {
+            self.eventBus:emit(events.EVENTS.LIGHT_DESTROYED, {
                 entity = source.entity,
                 item   = item,
             })
@@ -10916,7 +14385,7 @@ function M.createLightSystem(config)
             -- Non-consumable lights need refueling (lanterns)
             item.properties.extinguished = true
 
-            self.eventBus:emit("light_extinguished", {
+            self.eventBus:emit(events.EVENTS.LIGHT_EXTINGUISHED, {
                 entity = source.entity,
                 item   = item,
                 needsFuel = true,
@@ -10925,85 +14394,218 @@ function M.createLightSystem(config)
     end
 
     ----------------------------------------------------------------------------
-    -- LIGHT LEVEL CALCULATION
+    -- LANTERN BREAKING ON WOUND
+    -- When a PC takes a Wound with a fragile lantern on belt, it breaks
     ----------------------------------------------------------------------------
 
-    --- Recalculate the current light level for the party
-    function system:recalculateLightLevel()
-        local sources = self:findActiveLightSources()
+    --- Handle wound taken event - check for lantern breaking
+    -- @param data table: { entity, result, ... }
+    function system:handleWoundTaken(data)
+        local entity = data.entity
 
-        local previousLevel = self.currentLightLevel
-        local newLevel
-
-        if #sources == 0 then
-            newLevel = M.LIGHT_LEVELS.DARK
-        elseif #sources == 1 then
-            -- Check if the single source is running low
-            local source = sources[1]
-            local remaining = source.item.properties and source.item.properties.flicker_count
-            local max = source.lightConfig.flicker_max
-            if remaining and max > 0 and remaining <= math.floor(max / 3) then
-                newLevel = M.LIGHT_LEVELS.DIM
-            else
-                newLevel = M.LIGHT_LEVELS.NORMAL
-            end
-        else
-            newLevel = M.LIGHT_LEVELS.BRIGHT
+        -- Only check PCs
+        if not entity or not entity.isPC then
+            return
         end
 
-        self.currentLightLevel = newLevel
+        -- Check if entity has inventory
+        if not entity.inventory then
+            return
+        end
 
-        -- Emit change event if level changed
-        if previousLevel ~= newLevel then
-            self.eventBus:emit("light_level_changed", {
-                previous = previousLevel,
-                current  = newLevel,
+        -- Check belt for fragile light sources
+        local beltItems = entity.inventory:getItems(inventory.LOCATIONS.BELT)
+        for _, item in ipairs(beltItems) do
+            local isLight, lightConfig = self:isLightSource(item)
+            if isLight and lightConfig and lightConfig.fragile_on_belt then
+                -- Break the lantern!
+                self:breakLantern(entity, item)
+            end
+        end
+    end
+
+    --- Break a lantern (called when wound taken with fragile item on belt)
+    -- @param entity table: The entity whose lantern broke
+    -- @param item table: The lantern item
+    function system:breakLantern(entity, item)
+        -- Mark as destroyed
+        item.destroyed = true
+        if not item.properties then
+            item.properties = {}
+        end
+        item.properties.broken = true
+        item.properties.extinguished = true
+        self:setItemLitState(item, false)
+
+        -- Emit lantern broken event
+        self.eventBus:emit(events.EVENTS.LANTERN_BROKEN, {
+            entity = entity,
+            item   = item,
+        })
+
+        -- Recalculate light levels
+        self:recalculateLightLevels()
+    end
+
+    ----------------------------------------------------------------------------
+    -- LIGHT LEVEL CALCULATION (Per-Entity)
+    ----------------------------------------------------------------------------
+
+    --- Get the light level for a specific entity
+    -- @param entity table: The entity to check
+    -- @return string: One of LIGHT_LEVELS (BRIGHT/DIM/DARK)
+    function system:getLightLevelForEntity(entity)
+        -- 1. Check entity's hands for any active light source → BRIGHT
+        local hasHandsLight = self:hasHandsLight(entity)
+        if hasHandsLight then
+            return M.LIGHT_LEVELS.BRIGHT
+        end
+
+        -- 2. Check entity's belt for lantern with provides_belt_light → BRIGHT
+        local hasBeltLight = self:hasBeltLight(entity)
+        if hasBeltLight then
+            return M.LIGHT_LEVELS.BRIGHT
+        end
+
+        -- 3. Check if any OTHER entity has an active light source → DIM
+        if self:hasPartyLight(entity) then
+            return M.LIGHT_LEVELS.DIM
+        end
+
+        -- 4. Check environmental light (future stub) → DIM
+        -- TODO: Check zone/room for environmental light sources
+        -- if self:hasEnvironmentalLight(entity) then
+        --     return M.LIGHT_LEVELS.DIM
+        -- end
+
+        -- 5. Otherwise → DARK
+        return M.LIGHT_LEVELS.DARK
+    end
+
+    --- Recalculate light levels for all entities
+    function system:recalculateLightLevels()
+        -- Calculate new levels for each entity
+        for _, entity in ipairs(self.guild) do
+            local entityId = entity.id or tostring(entity)
+            local newLevel = self:getLightLevelForEntity(entity)
+            local previousLevel = self.entityLightLevels[entityId]
+
+            self.entityLightLevels[entityId] = newLevel
+
+            -- Emit change event if level changed for this entity
+            if previousLevel ~= newLevel then
+                self.eventBus:emit(events.EVENTS.ENTITY_LIGHT_CHANGED, {
+                    entity   = entity,
+                    previous = previousLevel,
+                    current  = newLevel,
+                })
+            end
+        end
+
+        -- Update party-wide level (worst level for backward compatibility)
+        local previousPartyLevel = self.currentLightLevel
+        self.currentLightLevel = self:getWorstLightLevel()
+
+        -- Emit party-wide change event if level changed
+        if previousPartyLevel ~= self.currentLightLevel then
+            local sources = self:findActiveLightSources()
+
+            self.eventBus:emit(events.EVENTS.PARTY_LIGHT_CHANGED, {
+                previous = previousPartyLevel,
+                current  = self.currentLightLevel,
                 sources  = #sources,
             })
 
             -- Apply darkness penalties if now dark
-            if newLevel == M.LIGHT_LEVELS.DARK then
+            if self.currentLightLevel == M.LIGHT_LEVELS.DARK then
                 self:applyDarknessPenalty()
-            elseif previousLevel == M.LIGHT_LEVELS.DARK then
+            elseif previousPartyLevel == M.LIGHT_LEVELS.DARK then
                 self:removeDarknessPenalty()
             end
 
             -- Notify UI callback
             if self.onDarknessChanged then
-                self.onDarknessChanged(newLevel)
+                self.onDarknessChanged(self.currentLightLevel)
             end
+        end
+    end
+
+    --- Get the worst (darkest) light level across all entities
+    -- @return string: One of LIGHT_LEVELS
+    function system:getWorstLightLevel()
+        local hasDark = false
+        local hasDim = false
+
+        for _, entity in ipairs(self.guild) do
+            local entityId = entity.id or tostring(entity)
+            local level = self.entityLightLevels[entityId]
+
+            if level == M.LIGHT_LEVELS.DARK then
+                hasDark = true
+            elseif level == M.LIGHT_LEVELS.DIM then
+                hasDim = true
+            end
+        end
+
+        if hasDark then
+            return M.LIGHT_LEVELS.DARK
+        elseif hasDim then
+            return M.LIGHT_LEVELS.DIM
+        else
+            return M.LIGHT_LEVELS.BRIGHT
         end
     end
 
     ----------------------------------------------------------------------------
     -- DARKNESS PENALTIES
-    -- When in darkness, all entities gain BLIND effect
+    -- When in darkness, entities gain BLIND effect
     ----------------------------------------------------------------------------
 
-    --- Apply darkness penalty (BLIND) to all guild members
+    --- Apply darkness penalty (BLIND) to entities in the dark
     function system:applyDarknessPenalty()
+        local darkCount = 0
+
         for _, entity in ipairs(self.guild) do
-            if entity.conditions then
-                entity.conditions.blind = true
+            local entityId = entity.id or tostring(entity)
+            local level = self.entityLightLevels[entityId]
+
+            if level == M.LIGHT_LEVELS.DARK then
+                if entity.conditions then
+                    entity.conditions.blind = true
+                end
+                darkCount = darkCount + 1
             end
         end
 
-        self.eventBus:emit("darkness_fell", {
-            affectedCount = #self.guild,
-        })
+        if darkCount > 0 then
+            self.eventBus:emit(events.EVENTS.DARKNESS_FELL, {
+                affectedCount = darkCount,
+            })
+        end
     end
 
     --- Remove darkness penalty when light is restored
     function system:removeDarknessPenalty()
+        local restoredCount = 0
+
         for _, entity in ipairs(self.guild) do
-            if entity.conditions then
-                entity.conditions.blind = false
+            local entityId = entity.id or tostring(entity)
+            local level = self.entityLightLevels[entityId]
+
+            -- Only remove blind if they now have light
+            if level ~= M.LIGHT_LEVELS.DARK then
+                if entity.conditions and entity.conditions.blind then
+                    entity.conditions.blind = false
+                    restoredCount = restoredCount + 1
+                end
             end
         end
 
-        self.eventBus:emit("darkness_lifted", {
-            affectedCount = #self.guild,
-        })
+        if restoredCount > 0 then
+            self.eventBus:emit(events.EVENTS.DARKNESS_LIFTED, {
+                affectedCount = restoredCount,
+            })
+        end
     end
 
     ----------------------------------------------------------------------------
@@ -11029,8 +14631,9 @@ function M.createLightSystem(config)
 
         item.properties.flicker_count = lightConfig.flicker_max
         item.properties.extinguished = false
+        self:setItemLitState(item, true)
 
-        self:recalculateLightLevel()
+        self:recalculateLightLevels()
         return true
     end
 
@@ -11060,8 +14663,9 @@ function M.createLightSystem(config)
         end
         lantern.properties.flicker_count = M.LIGHT_SOURCES["Lantern"].flicker_max
         lantern.properties.extinguished = false
+        self:setItemLitState(lantern, true)
 
-        self:recalculateLightLevel()
+        self:recalculateLightLevels()
         return true
     end
 
@@ -11069,14 +14673,27 @@ function M.createLightSystem(config)
     -- QUERIES
     ----------------------------------------------------------------------------
 
-    --- Get the current light level
+    --- Get the current party-wide light level (backward compatibility)
+    -- Returns the worst (darkest) level across all entities
     function system:getLightLevel()
         return self.currentLightLevel or M.LIGHT_LEVELS.DARK
     end
 
-    --- Check if party is in darkness
+    --- Check if party has anyone in darkness
     function system:isDark()
         return self.currentLightLevel == M.LIGHT_LEVELS.DARK
+    end
+
+    --- Check if a specific entity is in darkness
+    function system:isEntityDark(entity)
+        local entityId = entity.id or tostring(entity)
+        return self.entityLightLevels[entityId] == M.LIGHT_LEVELS.DARK
+    end
+
+    --- Get light level for a specific entity
+    function system:getEntityLightLevel(entity)
+        local entityId = entity.id or tostring(entity)
+        return self.entityLightLevels[entityId] or M.LIGHT_LEVELS.DARK
     end
 
     --- Get total remaining flickers across all light sources
@@ -11099,7 +14716,7 @@ function M.createLightSystem(config)
     --- Set the guild (for updates during gameplay)
     function system:setGuild(guildMembers)
         self.guild = guildMembers
-        self:recalculateLightLevel()
+        self:recalculateLightLevels()
     end
 
     return system
@@ -11477,10 +15094,14 @@ M.RANKS = {
 }
 
 --------------------------------------------------------------------------------
--- GREATER DOOM THRESHOLD
--- Major Arcana cards 15-21 (Devil through World) are "Greater Dooms"
+-- S12.6: DOOM CARD CLASSIFICATION
+-- Greater Doom: Major Arcana 1-14 (Magician through Temperance) - Standard NPC cards
+-- Lesser Doom:  Major Arcana 15-21 (Devil through World) - Powerful special cards
+--
+-- Elite/Lord NPCs can use Lesser Dooms for devastating attacks
 --------------------------------------------------------------------------------
-local GREATER_DOOM_MIN = 15
+local GREATER_DOOM_MAX = 14  -- Cards 1-14 are Greater Doom (common)
+local LESSER_DOOM_MIN = 15   -- Cards 15-21 are Lesser Doom (powerful)
 
 --------------------------------------------------------------------------------
 -- NPC AI FACTORY
@@ -11695,14 +15316,18 @@ function M.createNPCAI(config)
 
         local rank = npc.rank or M.RANKS.SOLDIER
 
-        -- Step 1: Check for Greater Doom usage (Elite/Lord only)
+        -- Step 1: Check for Lesser Doom usage (Elite/Lord only)
+        -- S12.6: Lesser Doom (15-21) are the powerful devastating cards
         if rank == M.RANKS.ELITE or rank == M.RANKS.LORD then
-            local greaterDoomIndex = self:findGreaterDoom()
-            if greaterDoomIndex then
+            local lesserDoomIndex = self:findLesserDoom()
+            if lesserDoomIndex then
                 local target = self:selectTarget(npc, pcs, true)  -- melee only
                 if target then
-                    local card = self:useCard(greaterDoomIndex)
-                    return self:createAttackAction(npc, target, card)
+                    local card = self:useCard(lesserDoomIndex)
+                    -- Mark this as a Lesser Doom attack for special effects
+                    local action = self:createAttackAction(npc, target, card)
+                    action.isLesserDoom = true
+                    return action
                 end
             end
         end
@@ -11742,11 +15367,24 @@ function M.createNPCAI(config)
     -- CARD SELECTION
     ----------------------------------------------------------------------------
 
-    --- Find a Greater Doom (15-21) in hand
+    --- S12.6: Find a Greater Doom (1-14) in hand
+    -- Greater Dooms are the standard Major Arcana cards for NPC actions
     -- @return number|nil: Index of Greater Doom card, or nil
     function ai:findGreaterDoom()
         for i, card in ipairs(self.hand) do
-            if card.is_major and card.value >= GREATER_DOOM_MIN then
+            if card.is_major and card.value >= 1 and card.value <= GREATER_DOOM_MAX then
+                return i
+            end
+        end
+        return nil
+    end
+
+    --- S12.6: Find a Lesser Doom (15-21) in hand
+    -- Lesser Dooms are powerful cards, only Elite/Lord NPCs use them aggressively
+    -- @return number|nil: Index of Lesser Doom card, or nil
+    function ai:findLesserDoom()
+        for i, card in ipairs(self.hand) do
+            if card.is_major and card.value >= LESSER_DOOM_MIN then
                 return i
             end
         end
@@ -11854,11 +15492,6 @@ function M.createNPCAI(config)
             defense = defense + 2
         end
 
-        -- Defensive stance
-        if pc.conditions and pc.conditions.defending then
-            defense = defense + 2
-        end
-
         -- Wounded penalty
         if pc.conditions then
             if pc.conditions.staggered then
@@ -11886,7 +15519,7 @@ function M.createNPCAI(config)
             target = target,
             card = card,
             type = action_resolver.ACTION_TYPES.MELEE,
-            weapon = npc.weapon,
+            weapon = (npc.inventory and npc.inventory:getWieldedWeapon()) or { name = "Claws", isMelee = true },
             allEntities = self.challengeController and self.challengeController.allCombatants,
         }
 
@@ -11912,24 +15545,21 @@ function M.createNPCAI(config)
     end
 
     ----------------------------------------------------------------------------
-    -- MOB RULE
-    -- When multiple mobs are in the same zone, they gain bonuses
+    -- S12.7: MOB RULE (SWARM BONUSES)
+    -- When multiple mobs target the same adventurer, they gain bonuses:
+    -- - +1 to hit per additional attacker in same zone
+    -- - Piercing damage at 3+ attackers
+    -- - Favor (advantage) at 2+ attackers
     ----------------------------------------------------------------------------
 
-    --- Check for Mob Rule bonuses
+    --- Check for Mob Rule (swarm) bonuses
     -- @param npc table: The attacking NPC
-    -- @param target table: The target
-    -- @return table|nil: Bonus info { favor, piercing }
+    -- @param target table: The target being attacked
+    -- @return table|nil: Bonus info { favor, piercing, attackBonus, alliesCount }
     function ai:checkMobRule(npc, target)
-        if not self.zoneSystem then
-            return nil
-        end
-
-        -- Count other NPCs in the same zone as the target
+        -- Count other NPCs in the same zone as the target (surrounding them)
         local alliesInZone = 0
 
-        -- This would require access to all NPCs in the challenge
-        -- For now, simplified implementation
         if self.challengeController then
             local npcs = self.challengeController.npcs or {}
             for _, otherNpc in ipairs(npcs) do
@@ -11943,13 +15573,32 @@ function M.createNPCAI(config)
 
         if alliesInZone > 0 then
             return {
-                favor = true,          -- Attack with Favor (advantage)
-                piercing = alliesInZone >= 2,  -- Pierce armor if 2+ allies
+                -- S12.7: Swarm bonuses scale with number of attackers
+                attackBonus = alliesInZone,          -- +1 per additional attacker
+                favor = alliesInZone >= 1,           -- Favor at 2+ total (self + 1)
+                piercing = alliesInZone >= 2,        -- Piercing at 3+ total (self + 2)
                 alliesCount = alliesInZone,
             }
         end
 
         return nil
+    end
+
+    --- S12.7: Get count of NPCs engaged with a specific target
+    -- Used for tracking swarm attacks within a round
+    function ai:getAttackersOnTarget(target)
+        if not self.challengeController then return 0 end
+
+        local count = 0
+        local npcs = self.challengeController.npcs or {}
+        for _, npc in ipairs(npcs) do
+            if npc.zone == target.zone then
+                if not (npc.conditions and npc.conditions.dead) then
+                    count = count + 1
+                end
+            end
+        end
+        return count
     end
 
     ----------------------------------------------------------------------------
@@ -11978,6 +15627,154 @@ function M.createNPCAI(config)
     end
 
     return ai
+end
+
+return M
+
+```
+
+---
+
+## File: src/logic/resolver.lua
+
+```lua
+-- resolver.lua
+-- Test of Fate Resolution Logic for Majesty
+-- Ticket T1_4: Pure function library for resolving Tests of Fate and Pushing Fate
+--
+-- This module is STATELESS - it knows nothing about Decks or Players.
+-- It just takes numbers and cards and returns results.
+
+local M = {}
+
+--------------------------------------------------------------------------------
+-- RESULT TYPES
+--------------------------------------------------------------------------------
+M.RESULTS = {
+    SUCCESS       = "success",
+    GREAT_SUCCESS = "great_success",
+    FAILURE       = "failure",
+    GREAT_FAILURE = "great_failure",
+}
+
+--------------------------------------------------------------------------------
+-- CONSTANTS
+--------------------------------------------------------------------------------
+local TARGET_VALUE = 14  -- Threshold for success
+local FAVOR_BONUS = 3    -- Bonus/penalty for favor/disfavor
+
+--------------------------------------------------------------------------------
+-- RESULT FACTORY
+-- Creates a standardized result object
+--------------------------------------------------------------------------------
+local function createResult(resultType, total, cards)
+    local isSuccess = (resultType == M.RESULTS.SUCCESS or resultType == M.RESULTS.GREAT_SUCCESS)
+    local isGreat = (resultType == M.RESULTS.GREAT_SUCCESS or resultType == M.RESULTS.GREAT_FAILURE)
+
+    return {
+        result   = resultType,
+        success  = isSuccess,
+        isGreat  = isGreat,
+        total    = total,
+        cards    = cards or {},
+    }
+end
+
+--------------------------------------------------------------------------------
+-- RESOLVE INITIAL TEST
+-- Called when an adventurer draws a card for a Test of Fate
+--
+-- @param attribute number: The adventurer's attribute value (1-4)
+-- @param targetSuit number: The suit being tested (from constants.SUITS)
+-- @param card table: The drawn card { name, suit, value, is_major }
+-- @param favor boolean|nil: true = favor (+3), false = disfavor (-3), nil = neither
+-- @return Result object
+--------------------------------------------------------------------------------
+function M.resolveTest(attribute, targetSuit, card, favor)
+    local total = card.value + attribute
+
+    -- Apply favor/disfavor (non-cumulative, binary)
+    if favor == true then
+        total = total + FAVOR_BONUS
+    elseif favor == false then
+        total = total - FAVOR_BONUS
+    end
+
+    local cards = { card }
+
+    if total >= TARGET_VALUE then
+        -- Success! Check for Great Success
+        -- Great Success requires: matching suit on INITIAL draw (not push)
+        if card.suit == targetSuit then
+            return createResult(M.RESULTS.GREAT_SUCCESS, total, cards)
+        else
+            return createResult(M.RESULTS.SUCCESS, total, cards)
+        end
+    else
+        -- Failure (can be pushed)
+        return createResult(M.RESULTS.FAILURE, total, cards)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- RESOLVE PUSH
+-- Called when an adventurer pushes fate after an initial failure
+--
+-- @param previousTotal number: The total from the initial test (before push)
+-- @param previousCards table: Array of cards from initial test
+-- @param pushCard table: The second card drawn when pushing
+-- @return Result object
+--
+-- Rules:
+-- - If pushCard is The Fool → Great Failure (automatic)
+-- - If new total >= 14 → Success (NEVER Great Success)
+-- - If new total < 14 → Great Failure
+--------------------------------------------------------------------------------
+function M.resolvePush(previousTotal, previousCards, pushCard)
+    local cards = {}
+    for _, c in ipairs(previousCards) do
+        cards[#cards + 1] = c
+    end
+    cards[#cards + 1] = pushCard
+
+    -- The Fool when pushing = automatic Great Failure
+    if pushCard.name == "The Fool" then
+        -- Total includes Fool's value (0), but it's still Great Failure
+        local total = previousTotal + pushCard.value
+        return createResult(M.RESULTS.GREAT_FAILURE, total, cards)
+    end
+
+    local total = previousTotal + pushCard.value
+
+    if total >= TARGET_VALUE then
+        -- Success (never Great Success from pushing)
+        return createResult(M.RESULTS.SUCCESS, total, cards)
+    else
+        -- Great Failure
+        return createResult(M.RESULTS.GREAT_FAILURE, total, cards)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- UTILITY: Check if a result can be pushed
+-- Only failures (not great failures) can be pushed
+--------------------------------------------------------------------------------
+function M.canPush(result)
+    return result.result == M.RESULTS.FAILURE
+end
+
+--------------------------------------------------------------------------------
+-- UTILITY: Calculate minimum card value needed for success
+-- Useful for UI hints
+--------------------------------------------------------------------------------
+function M.minimumCardNeeded(attribute, favor)
+    local bonus = 0
+    if favor == true then
+        bonus = FAVOR_BONUS
+    elseif favor == false then
+        bonus = -FAVOR_BONUS
+    end
+    return TARGET_VALUE - attribute - bonus
 end
 
 return M
@@ -12335,13 +16132,91 @@ function M.createRoomManager(config)
 
     -- Internal state for POI discovery
     local discoveredPOIs = {}      -- poi_id -> { layer -> revealed }
+    local boundByFate = {}         -- room_id -> poi_id -> test_key -> { itemKey, circumstance, result }
     local scrutinizeCount = 0      -- Track for time cost
     local SCRUTINIZE_TIME_COST = 3 -- Every N scrutinizes triggers Meatgrinder check
 
     --- Reset POI discovery state (call at start of new Crawl)
     function manager:resetPOIDiscovery()
         discoveredPOIs = {}
+        boundByFate = {}
         scrutinizeCount = 0
+    end
+
+    local function getItemKey(item)
+        if not item then return nil end
+        return item.id or item.name
+    end
+
+    local function getCircumstanceSignature(feature)
+        if not feature then return "none" end
+        local state = tostring(feature.state or "none")
+        local trapDetected = "none"
+        local trapDisarmed = "none"
+        if feature.trap then
+            trapDetected = tostring(feature.trap.detected or false)
+            trapDisarmed = tostring(feature.trap.disarmed or false)
+        end
+        return state .. "|trap_detected:" .. trapDetected .. "|trap_disarmed:" .. trapDisarmed
+    end
+
+    --- Check whether a Test of Fate can be attempted (Bound by Fate)
+    -- @param roomId string
+    -- @param poiId string
+    -- @param testKey string: identifier for the test type (e.g., "investigate", "item_unlock")
+    -- @param context table: { item }
+    -- @return table: { allowed, reason, entry }
+    function manager:getBoundByFateStatus(roomId, poiId, testKey, context)
+        local roomEntry = boundByFate[roomId]
+        if not roomEntry then
+            return { allowed = true }
+        end
+        local poiEntry = roomEntry[poiId]
+        if not poiEntry then
+            return { allowed = true }
+        end
+        local entry = poiEntry[testKey]
+        if not entry then
+            return { allowed = true }
+        end
+
+        local feature = self:getFeature(roomId, poiId)
+        local circumstance = getCircumstanceSignature(feature)
+        local itemKey = getItemKey(context and context.item or nil)
+
+        if entry.itemKey ~= itemKey then
+            return { allowed = true, reason = "item_changed", entry = entry }
+        end
+
+        if entry.circumstance ~= circumstance then
+            return { allowed = true, reason = "circumstance_changed", entry = entry }
+        end
+
+        return { allowed = false, reason = "result_stands", entry = entry }
+    end
+
+    --- Record a Test of Fate outcome (Bound by Fate)
+    -- @param roomId string
+    -- @param poiId string
+    -- @param testKey string
+    -- @param context table: { item }
+    -- @param result table: Test of Fate result
+    function manager:recordBoundByFate(roomId, poiId, testKey, context, result)
+        local feature = self:getFeature(roomId, poiId)
+        if not feature then
+            return false
+        end
+
+        boundByFate[roomId] = boundByFate[roomId] or {}
+        boundByFate[roomId][poiId] = boundByFate[roomId][poiId] or {}
+
+        boundByFate[roomId][poiId][testKey] = {
+            itemKey = getItemKey(context and context.item or nil),
+            circumstance = getCircumstanceSignature(feature),
+            result = result,
+        }
+
+        return true
     end
 
     --- Check if a POI layer has been discovered
@@ -12525,6 +16400,62 @@ function M.createRoomManager(config)
     -- Items can provide bonuses, auto-success, or take damage as proxy
     ----------------------------------------------------------------------------
 
+    --- Compute Test of Fate parameters for a POI investigation
+    -- @param adventurer table: The adventurer entity
+    -- @param roomId string
+    -- @param poiId string
+    -- @param item table: Optional item being used for investigation
+    -- @return table|nil: { attribute, suitId, attributeValue, favor, difficulty }
+    function manager:computeInvestigationTest(adventurer, roomId, poiId, item)
+        local feature = self:getFeature(roomId, poiId)
+        if not feature then
+            return nil
+        end
+
+        local testConfig = feature.investigate_test or {}
+        local attribute = testConfig.attribute or "pentacles"
+        local difficulty = testConfig.difficulty or 14
+
+        -- Get adventurer's attribute value
+        local constants = require('constants')
+        local suitId = constants.SUITS[string.upper(attribute)] or constants.SUITS.PENTACLES
+        local attributeValue = 0
+        if adventurer and adventurer.getAttribute then
+            attributeValue = adventurer:getAttribute(suitId)
+        end
+
+        -- Check favor/disfavor based on scrutiny
+        local favor = nil
+        if self:isPOIDiscovered(poiId, "scrutinize") then
+            favor = nil  -- Neutral - they scrutinized first
+        else
+            favor = false  -- Disfavor - investigating blind
+        end
+
+        -- T2_14: Item provides favor bonus
+        if item then
+            local itemBonus = self:getItemInvestigationBonus(item, feature)
+            if itemBonus == "favor" then
+                favor = true  -- Item grants favor
+            elseif itemBonus == "negate_disfavor" and favor == false then
+                favor = nil  -- Item negates disfavor from not scrutinizing
+            end
+        end
+
+        -- Additional favor from adventurer motifs or abilities
+        if testConfig.favor_condition then
+            favor = testConfig.favor_condition(adventurer) or favor
+        end
+
+        return {
+            attribute = attribute,
+            suitId = suitId,
+            attributeValue = attributeValue,
+            favor = favor,
+            difficulty = difficulty,
+        }
+    end
+
     --- Conduct an investigation test on a POI
     -- @param adventurer table: The adventurer entity
     -- @param roomId string
@@ -12532,8 +16463,10 @@ function M.createRoomManager(config)
     -- @param drawnCard table: The card drawn from the deck (nil if item auto-success)
     -- @param resolver table: The resolver module
     -- @param item table: Optional item being used for investigation
+    -- @param options table: { testResult }
     -- @return table: { result, stateChange, trapTriggered, description, itemNotched, itemDestroyed }
-    function manager:conductInvestigation(adventurer, roomId, poiId, drawnCard, resolver, item)
+    function manager:conductInvestigation(adventurer, roomId, poiId, drawnCard, resolver, item, options)
+        options = options or {}
         local feature = self:getFeature(roomId, poiId)
         if not feature then
             return {
@@ -12554,7 +16487,7 @@ function M.createRoomManager(config)
         -- T2_14: Check for key_item_id automatic success
         -- If POI has a key_item_id and that item is used, skip test and succeed
         if item and feature.key_item_id then
-            local itemKeyId = item.properties and item.properties.key_id
+            local itemKeyId = item.keyId or (item.properties and (item.properties.key_id or item.properties.keyId))
             if itemKeyId == feature.key_item_id or item.name == feature.key_item_id then
                 -- Auto-success with the right item!
                 self:discoverPOI(poiId, "investigate")
@@ -12585,40 +16518,19 @@ function M.createRoomManager(config)
 
         -- Determine test parameters from POI
         local testConfig = feature.investigate_test or {}
-        local attribute = testConfig.attribute or "pentacles"
-        local difficulty = testConfig.difficulty or 14
+        local testInfo = self:computeInvestigationTest(adventurer, roomId, poiId, item)
 
-        -- Get adventurer's attribute value
-        local constants = require('constants')
-        local suitId = constants.SUITS[string.upper(attribute)] or constants.SUITS.PENTACLES
-        local attributeValue = adventurer:getAttribute(suitId)
-
-        -- Check favor/disfavor based on scrutiny
-        local favor = nil
-        if self:isPOIDiscovered(poiId, "scrutinize") then
-            favor = nil  -- Neutral - they scrutinized first
-        else
-            favor = false  -- Disfavor - investigating blind
-        end
-
-        -- T2_14: Item provides favor bonus
-        -- Certain items give favor when used appropriately
-        if item then
-            local itemBonus = self:getItemInvestigationBonus(item, feature)
-            if itemBonus == "favor" then
-                favor = true  -- Item grants favor
-            elseif itemBonus == "negate_disfavor" and favor == false then
-                favor = nil  -- Item negates disfavor from not scrutinizing
+        -- Resolve the test (or use provided override)
+        local testResult = options.testResult
+        if not testResult then
+            if not resolver or not drawnCard or not testInfo then
+                return {
+                    result = nil,
+                    description = "You cannot draw a card right now.",
+                }
             end
+            testResult = resolver.resolveTest(testInfo.attributeValue, testInfo.suitId, drawnCard, testInfo.favor)
         end
-
-        -- Additional favor from adventurer motifs or abilities
-        if testConfig.favor_condition then
-            favor = testConfig.favor_condition(adventurer) or favor
-        end
-
-        -- Resolve the test
-        local testResult = resolver.resolveTest(attributeValue, suitId, drawnCard, favor)
         result.result = testResult
 
         -- Handle results
@@ -12702,6 +16614,11 @@ function M.createRoomManager(config)
                     testConfig.failure_callback(adventurer, feature, self)
                 end
             end
+        end
+
+        -- Record Bound by Fate (result stands unless circumstances change)
+        if testResult then
+            self:recordBoundByFate(roomId, poiId, "investigate", { item = item }, testResult)
         end
 
         -- Emit investigation event
@@ -13578,10 +17495,16 @@ M.COLORS = {
     zone_border     = { 0.35, 0.30, 0.25, 1.0 },    -- Dark ink
     zone_active     = { 0.90, 0.80, 0.30, 0.3 },    -- Gold highlight for active zone
     zone_hover      = { 0.70, 0.85, 0.70, 0.3 },    -- Green for valid drop target
+    zone_adjacent   = { 0.50, 0.70, 0.85, 0.4 },    -- S13.3: Blue highlight for adjacent zones
 
-    -- Zone labels
+    -- Zone labels and descriptions
     label_bg        = { 0.25, 0.22, 0.18, 0.9 },
     label_text      = { 0.90, 0.85, 0.75, 1.0 },
+    desc_text       = { 0.25, 0.22, 0.18, 0.9 },    -- S13.4: Inline description text (dark ink on parchment)
+
+    -- S13.3: Zone adjacency lines
+    adjacency_line  = { 0.45, 0.40, 0.35, 0.5 },    -- Subtle connection line
+    adjacency_hover = { 0.60, 0.75, 0.90, 0.7 },    -- Highlighted when showing adjacency
 
     -- Tactical tokens
     token_pc        = { 0.25, 0.45, 0.35, 1.0 },    -- Green for PCs
@@ -13618,7 +17541,7 @@ M.ZONE_MIN_HEIGHT = 120
 --------------------------------------------------------------------------------
 
 --- Create a new ArenaView
--- @param config table: { eventBus, x, y, width, height }
+-- @param config table: { eventBus, x, y, width, height, inspectPanel, zoneSystem }
 -- @return ArenaView instance
 function M.createArenaView(config)
     config = config or {}
@@ -13641,7 +17564,7 @@ function M.createArenaView(config)
 
         -- Interaction
         hoveredZone = nil,
-        hoveredEntity = nil,     -- S10.2: Entity under mouse
+        hoveredEntity = nil,     -- S10.2/S13.7: Entity under mouse (always tracked now)
         draggedEntity = nil,
         dragOffsetX = 0,
         dragOffsetY = 0,
@@ -13654,7 +17577,14 @@ function M.createArenaView(config)
         validTargets = {},       -- Array of valid target entity IDs
         targetReticleTimer = 0,  -- For animation
 
+        -- S13.7: Inspect panel reference for enemy tooltips
+        inspectPanel = config.inspectPanel,
+
+        -- S13.3: Zone system for adjacency queries
+        zoneSystem = config.zoneSystem,
+
         colors = M.COLORS,
+        alpha = 1,
     }
 
     ----------------------------------------------------------------------------
@@ -13686,6 +17616,11 @@ function M.createArenaView(config)
 
         self.eventBus:on("engagement_broken", function(data)
             self:removeEngagement(data.entity1, data.entity2)
+        end)
+
+        -- S12.1: Listen for full engagement state sync from zone_system
+        self.eventBus:on(events.EVENTS.ENGAGEMENT_CHANGED, function(data)
+            self:syncEngagements(data.pairs or {})
         end)
 
         -- Listen for zone changes (from action resolver)
@@ -13787,11 +17722,38 @@ function M.createArenaView(config)
                 end
             end
         end
+
+        -- Preserve entity assignments after relayout
+        if next(self.entities) then
+            self:rebuildZoneEntities()
+        end
     end
 
     ----------------------------------------------------------------------------
     -- ENTITY MANAGEMENT
     ----------------------------------------------------------------------------
+
+    --- Rebuild zone entity buckets after relayout
+    function arena:rebuildZoneEntities()
+        for _, zone in pairs(self.zones) do
+            zone.entities = {}
+        end
+
+        for _, data in pairs(self.entities) do
+            local zoneId = data.zoneId or (data.entity and data.entity.zone) or "main"
+            local zone = self.zones[zoneId]
+            if not zone then
+                local fallbackId = next(self.zones)
+                zone = fallbackId and self.zones[fallbackId] or nil
+                zoneId = zone and zone.id or zoneId
+            end
+            if zone and data.entity then
+                zone.entities[#zone.entities + 1] = data.entity
+                data.zoneId = zoneId
+                data.entity.zone = zoneId
+            end
+        end
+    end
 
     --- Add an entity to a zone
     function arena:addEntity(entity, zoneId)
@@ -13920,6 +17882,18 @@ function M.createArenaView(config)
         end
     end
 
+    --- S12.1: Sync engagements from zone_system's authoritative state
+    -- @param pairs table: Array of { entityA_id, entityB_id } pairs
+    function arena:syncEngagements(pairs)
+        -- Clear existing engagements and rebuild from authoritative source
+        self.engagements = {}
+        for _, pair in ipairs(pairs) do
+            local id1, id2 = pair[1], pair[2]
+            local key = (id1 < id2) and (id1 .. "_" .. id2) or (id2 .. "_" .. id1)
+            self.engagements[key] = true
+        end
+    end
+
     ----------------------------------------------------------------------------
     -- VISIBILITY
     ----------------------------------------------------------------------------
@@ -13934,6 +17908,13 @@ function M.createArenaView(config)
         self.entities = {}
         self.engagements = {}
         self.activeEntityId = nil
+
+        -- S13.7: Clear tooltip when arena hides
+        if self.inspectPanel then
+            self.inspectPanel:onHoverEnd()
+            self.inspectPanel:hide()
+        end
+        self.hoveredEntity = nil
     end
 
     function arena:setPosition(x, y)
@@ -13958,6 +17939,11 @@ function M.createArenaView(config)
         end
     end
 
+    --- S13.7: Set inspect panel reference (for late binding)
+    function arena:setInspectPanel(panel)
+        self.inspectPanel = panel
+    end
+
     ----------------------------------------------------------------------------
     -- UPDATE
     ----------------------------------------------------------------------------
@@ -13973,8 +17959,21 @@ function M.createArenaView(config)
     -- RENDERING
     ----------------------------------------------------------------------------
 
+    function arena:setColor(color)
+        local alpha = (color[4] or 1) * (self.alpha or 1)
+        love.graphics.setColor(color[1], color[2], color[3], alpha)
+    end
+
+    function arena:setColorRGBA(r, g, b, a)
+        local alpha = (a or 1) * (self.alpha or 1)
+        love.graphics.setColor(r, g, b, alpha)
+    end
+
     function arena:draw()
-        if not love or not self.isVisible then return end
+        if not love or not self.isVisible or (self.alpha or 0) <= 0 then return end
+
+        -- S13.3: Draw zone adjacency lines (behind zones)
+        self:drawAdjacencyLines()
 
         -- Draw zone buckets
         for _, zone in pairs(self.zones) do
@@ -13998,6 +17997,9 @@ function M.createArenaView(config)
         if self.draggedEntity then
             self:drawDragGhost()
         end
+
+        -- S13.4: Draw zone tooltip if hovering (after everything else)
+        self:drawZoneTooltip()
     end
 
     --- Draw a zone bucket
@@ -14014,18 +18016,31 @@ function M.createArenaView(config)
             end
         end
 
+        -- S13.3: Check if this zone is adjacent to the hovered zone
+        local isAdjacentToHovered = false
+        if self.hoveredZone and self.hoveredZone ~= zone.id then
+            if self.zoneSystem then
+                isAdjacentToHovered = self.zoneSystem:areZonesAdjacent(self.hoveredZone, zone.id)
+            else
+                -- Fallback: assume all adjacent
+                isAdjacentToHovered = true
+            end
+        end
+
         -- Background
         if hasActiveEntity then
-            love.graphics.setColor(colors.zone_active)
+            self:setColor(colors.zone_active)
         elseif isHovered and self.draggedEntity then
-            love.graphics.setColor(colors.zone_hover)
+            self:setColor(colors.zone_hover)
+        elseif isAdjacentToHovered then
+            self:setColor(colors.zone_adjacent)
         else
-            love.graphics.setColor(colors.zone_bg)
+            self:setColor(colors.zone_bg)
         end
         love.graphics.rectangle("fill", zone.x, zone.y, zone.width, zone.height, 6, 6)
 
         -- Border
-        love.graphics.setColor(colors.zone_border)
+        self:setColor(colors.zone_border)
         love.graphics.setLineWidth(2)
         love.graphics.rectangle("line", zone.x, zone.y, zone.width, zone.height, 6, 6)
         love.graphics.setLineWidth(1)
@@ -14034,7 +18049,8 @@ function M.createArenaView(config)
         self:drawZoneLabel(zone)
     end
 
-    --- Draw zone label
+    --- Draw zone label and description
+    -- S13.4: Descriptions now shown inline within the zone
     function arena:drawZoneLabel(zone)
         local colors = self.colors
         local labelWidth = math.min(zone.width - 20, 120)
@@ -14042,19 +18058,42 @@ function M.createArenaView(config)
         local labelY = zone.y + 5
 
         -- Label background
-        love.graphics.setColor(colors.label_bg)
+        self:setColor(colors.label_bg)
         love.graphics.rectangle("fill", labelX, labelY, labelWidth, M.ZONE_LABEL_HEIGHT, 3, 3)
 
         -- Label text
-        love.graphics.setColor(colors.label_text)
+        self:setColor(colors.label_text)
         love.graphics.printf(zone.name, labelX, labelY + 4, labelWidth, "center")
+
+        -- S13.4: Draw description below label (if present)
+        if zone.description then
+            local descX = zone.x + M.ZONE_PADDING
+            local descY = zone.y + M.ZONE_LABEL_HEIGHT + 12
+            local descWidth = zone.width - M.ZONE_PADDING * 2
+
+            -- Draw description text (dark ink on parchment background)
+            self:setColor(colors.desc_text)
+            love.graphics.printf(zone.description, descX, descY, descWidth, "left")
+
+            -- Calculate description height for entity positioning
+            local font = love.graphics.getFont()
+            local _, wrappedText = font:getWrap(zone.description, descWidth)
+            zone._descHeight = #wrappedText * font:getHeight() + 8
+        else
+            zone._descHeight = 0
+        end
     end
 
     --- Draw entities in a zone
+    -- S13.4: Tokens now positioned below inline description
     function arena:drawZoneEntities(zone)
         local tokenSize = M.TOKEN_SIZE
         local spacing = M.TOKEN_SPACING
-        local startY = zone.y + M.ZONE_LABEL_HEIGHT + 15
+
+        -- S13.4: Account for description height when positioning tokens
+        local descHeight = zone._descHeight or 0
+        local startY = zone.y + M.ZONE_LABEL_HEIGHT + 15 + descHeight
+
         local contentWidth = zone.width - M.ZONE_PADDING * 2
         local contentX = zone.x + M.ZONE_PADDING
 
@@ -14088,34 +18127,34 @@ function M.createArenaView(config)
 
         -- Active glow
         if isActive then
-            love.graphics.setColor(colors.token_active)
+            self:setColor(colors.token_active)
             love.graphics.circle("fill", x + size/2, y + size/2, size/2 + 4)
         end
 
         -- Token background
         if isDead then
-            love.graphics.setColor(0.3, 0.3, 0.3, 0.7)
+            self:setColorRGBA(0.3, 0.3, 0.3, 0.7)
         elseif isPC then
-            love.graphics.setColor(colors.token_pc)
+            self:setColor(colors.token_pc)
         else
-            love.graphics.setColor(colors.token_npc)
+            self:setColor(colors.token_npc)
         end
         love.graphics.circle("fill", x + size/2, y + size/2, size/2)
 
         -- Border
-        love.graphics.setColor(colors.token_border)
+        self:setColor(colors.token_border)
         love.graphics.setLineWidth(2)
         love.graphics.circle("line", x + size/2, y + size/2, size/2)
         love.graphics.setLineWidth(1)
 
         -- Initials or short name
         local initials = self:getInitials(entity.name or "??")
-        love.graphics.setColor(colors.token_text)
+        self:setColor(colors.token_text)
         love.graphics.printf(initials, x, y + size/2 - 8, size, "center")
 
         -- Dead X
         if isDead then
-            love.graphics.setColor(0.8, 0.2, 0.2, 0.9)
+            self:setColorRGBA(0.8, 0.2, 0.2, 0.9)
             love.graphics.setLineWidth(3)
             love.graphics.line(x + 5, y + 5, x + size - 5, y + size - 5)
             love.graphics.line(x + size - 5, y + 5, x + 5, y + size - 5)
@@ -14159,7 +18198,7 @@ function M.createArenaView(config)
                     local y2 = e2._tokenY + M.TOKEN_SIZE / 2
 
                     -- Draw clash line
-                    love.graphics.setColor(colors.clash_line)
+                    self:setColor(colors.clash_line)
                     love.graphics.setLineWidth(3)
                     love.graphics.line(x1, y1, x2, y2)
 
@@ -14167,14 +18206,14 @@ function M.createArenaView(config)
                     local midX = (x1 + x2) / 2
                     local midY = (y1 + y2) / 2
 
-                    love.graphics.setColor(colors.clash_icon)
+                    self:setColor(colors.clash_icon)
                     love.graphics.circle("fill", midX, midY, 8)
-                    love.graphics.setColor(colors.token_border)
+                    self:setColor(colors.token_border)
                     love.graphics.setLineWidth(2)
                     love.graphics.circle("line", midX, midY, 8)
 
                     -- Crossed swords icon (simplified)
-                    love.graphics.setColor(1, 1, 1, 1)
+                    self:setColorRGBA(1, 1, 1, 1)
                     love.graphics.line(midX - 4, midY - 4, midX + 4, midY + 4)
                     love.graphics.line(midX + 4, midY - 4, midX - 4, midY + 4)
 
@@ -14192,8 +18231,86 @@ function M.createArenaView(config)
         local x = mx - self.dragOffsetX
         local y = my - self.dragOffsetY
 
-        love.graphics.setColor(self.colors.drag_ghost)
+        self:setColor(self.colors.drag_ghost)
         self:drawToken(self.draggedEntity, x, y, M.TOKEN_SIZE)
+    end
+
+    --- S13.3: Draw adjacency lines between connected zones
+    function arena:drawAdjacencyLines()
+        local colors = self.colors
+        local drawnPairs = {}  -- Track which pairs we've already drawn
+
+        for zoneIdA, zoneA in pairs(self.zones) do
+            -- Get adjacent zones (from zone_system if available, otherwise assume all adjacent)
+            local adjacentZones = {}
+            if self.zoneSystem then
+                adjacentZones = self.zoneSystem:getAdjacentZones(zoneIdA)
+            else
+                -- Fallback: all zones are adjacent to each other
+                for zoneIdB, _ in pairs(self.zones) do
+                    if zoneIdB ~= zoneIdA then
+                        adjacentZones[#adjacentZones + 1] = zoneIdB
+                    end
+                end
+            end
+
+            for _, zoneIdB in ipairs(adjacentZones) do
+                local zoneB = self.zones[zoneIdB]
+                if zoneB then
+                    -- Create unique key for this pair to avoid drawing twice
+                    local pairKey = (zoneIdA < zoneIdB) and (zoneIdA .. "_" .. zoneIdB) or (zoneIdB .. "_" .. zoneIdA)
+
+                    if not drawnPairs[pairKey] then
+                        drawnPairs[pairKey] = true
+
+                        -- Calculate center points of each zone
+                        local ax = zoneA.x + zoneA.width / 2
+                        local ay = zoneA.y + zoneA.height / 2
+                        local bx = zoneB.x + zoneB.width / 2
+                        local by = zoneB.y + zoneB.height / 2
+
+                        -- Check if either zone is hovered (highlight the line)
+                        local isHighlighted = (self.hoveredZone == zoneIdA or self.hoveredZone == zoneIdB)
+
+                        if isHighlighted then
+                            self:setColor(colors.adjacency_hover)
+                            love.graphics.setLineWidth(3)
+                        else
+                            self:setColor(colors.adjacency_line)
+                            love.graphics.setLineWidth(2)
+                        end
+
+                        -- Draw dashed line effect
+                        local dashLength = 8
+                        local gapLength = 4
+                        local dx = bx - ax
+                        local dy = by - ay
+                        local dist = math.sqrt(dx * dx + dy * dy)
+                        local ux, uy = dx / dist, dy / dist
+
+                        local pos = 0
+                        while pos < dist do
+                            local endPos = math.min(pos + dashLength, dist)
+                            love.graphics.line(
+                                ax + ux * pos, ay + uy * pos,
+                                ax + ux * endPos, ay + uy * endPos
+                            )
+                            pos = endPos + gapLength
+                        end
+
+                        love.graphics.setLineWidth(1)
+                    end
+                end
+            end
+        end
+    end
+
+    --- S13.4: Draw tooltip for hovered zone (only for zones without inline descriptions)
+    -- Note: Most zones now show descriptions inline; this is kept for POI/interaction hints
+    function arena:drawZoneTooltip()
+        -- S13.4: Descriptions now displayed inline within zones
+        -- This tooltip could be used for additional info like POIs in the zone
+        -- For now, no-op since descriptions are always visible
     end
 
     ----------------------------------------------------------------------------
@@ -14202,19 +18319,47 @@ function M.createArenaView(config)
 
     function arena:mousepressed(x, y, button)
         if not self.isVisible then return false end
+
+        -- S13.7: Right-click to show entity tooltip immediately
+        if button == 2 then
+            local entity = self:getEntityAt(x, y)
+            if entity and self.inspectPanel then
+                local tokenX = entity._tokenX or x
+                local tokenY = entity._tokenY or y
+                self.inspectPanel:onRightClick(entity, "entity", tokenX + M.TOKEN_SIZE + 5, tokenY)
+                return true
+            end
+            return false
+        end
+
         if button ~= 1 then return false end
 
         -- Check if clicking on a token
-        for _, zone in pairs(self.zones) do
-            for _, entity in ipairs(zone.entities) do
-                if entity._tokenX and self:isInsideToken(x, y, entity._tokenX, entity._tokenY) then
-                    -- Start dragging
-                    self.draggedEntity = entity
-                    self.dragOffsetX = x - entity._tokenX
-                    self.dragOffsetY = y - entity._tokenY
-                    return true
-                end
+        local entity = self:getEntityAt(x, y)
+        if entity then
+            -- S13.7: Hide tooltip when clicking a token
+            if self.inspectPanel then
+                self.inspectPanel:onHoverEnd()
+                self.inspectPanel:hide()
             end
+
+            self.eventBus:emit(events.EVENTS.ARENA_ENTITY_CLICKED, {
+                entity = entity,
+                x = x,
+                y = y,
+            })
+            return true
+        end
+
+        -- Check if clicking on a zone (for move selection)
+        local zoneId = self:getZoneAt(x, y)
+        if zoneId then
+            self.eventBus:emit(events.EVENTS.ARENA_ZONE_CLICKED, {
+                zoneId = zoneId,
+                x = x,
+                y = y,
+            })
+            return true
         end
 
         return false
@@ -14224,43 +18369,32 @@ function M.createArenaView(config)
         if not self.isVisible then return false end
         if button ~= 1 then return false end
 
-        if self.draggedEntity then
-            -- Check if dropped on a different zone
-            local targetZone = self:getZoneAt(x, y)
-            if targetZone and targetZone ~= self.entities[self.draggedEntity.id].zoneId then
-                -- Emit move intent (logic will handle parting blows etc.)
-                self.eventBus:emit("entity_move_intent", {
-                    entity = self.draggedEntity,
-                    fromZone = self.entities[self.draggedEntity.id].zoneId,
-                    toZone = targetZone,
-                })
-
-                -- For now, just move directly (S6.3 will add parting blow checks)
-                self:moveEntity(self.draggedEntity, targetZone)
-            end
-
-            self.draggedEntity = nil
-            self.hoveredZone = nil
-            return true
-        end
-
         return false
     end
 
     function arena:mousemoved(x, y, dx, dy)
         if not self.isVisible then return end
 
-        -- Update hovered zone for drop target highlighting
-        if self.draggedEntity then
-            self.hoveredZone = self:getZoneAt(x, y)
+        -- S13.3/S13.4: Always track hovered zone for adjacency highlighting and tooltips
+        self.hoveredZone = self:getZoneAt(x, y)
+
+        -- S13.7: Always track hovered entity for tooltips (not just targeting mode)
+        local newHoveredEntity = self:getEntityAt(x, y)
+
+        -- Notify inspect panel of hover changes
+        if newHoveredEntity ~= self.hoveredEntity then
+            if newHoveredEntity and self.inspectPanel then
+                -- Started hovering over an entity
+                local tokenX = newHoveredEntity._tokenX or x
+                local tokenY = newHoveredEntity._tokenY or y
+                self.inspectPanel:onHover(newHoveredEntity, "entity", tokenX + M.TOKEN_SIZE + 5, tokenY)
+            elseif self.hoveredEntity and self.inspectPanel then
+                -- Stopped hovering
+                self.inspectPanel:onHoverEnd()
+            end
         end
 
-        -- S10.2: Track hovered entity for targeting mode
-        if self.targetingMode then
-            self.hoveredEntity = self:getEntityAt(x, y)
-        else
-            self.hoveredEntity = nil
-        end
+        self.hoveredEntity = newHoveredEntity
     end
 
     --- Check if a point is inside a token
@@ -14313,16 +18447,16 @@ function M.createArenaView(config)
     end
 
     --- Get entity at position
+    -- S13.7: Fixed to iterate properly and use stored token positions
     function arena:getEntityAt(x, y)
-        for _, entity in ipairs(self.entities) do
-            local zoneId = entity.zone or "main"
-            local zone = self.zones[zoneId]
-            if zone then
-                -- Calculate entity's screen position in zone
-                local tokenIndex = self:getEntityIndexInZone(entity, zoneId)
-                local tokenX, tokenY = self:getTokenPosition(zone, tokenIndex)
-                if self:isInsideToken(x, y, tokenX, tokenY) then
-                    return entity
+        -- Iterate through all zones and their entities
+        for _, zone in pairs(self.zones) do
+            for _, entity in ipairs(zone.entities) do
+                -- Use stored token positions from last draw
+                if entity._tokenX and entity._tokenY then
+                    if self:isInsideToken(x, y, entity._tokenX, entity._tokenY) then
+                        return entity
+                    end
                 end
             end
         end
@@ -14356,13 +18490,13 @@ function M.createArenaView(config)
         local color = isValid and self.colors.target_valid or self.colors.target_reticle
 
         -- Outer ring (pulsing)
-        love.graphics.setColor(color[1], color[2], color[3], color[4] * pulse)
+        self:setColorRGBA(color[1], color[2], color[3], (color[4] or 1) * pulse)
         love.graphics.setLineWidth(3)
         love.graphics.circle("line", cx, cy, radius)
 
         -- Crosshairs
         local crossSize = 8
-        love.graphics.setColor(color[1], color[2], color[3], color[4])
+        self:setColorRGBA(color[1], color[2], color[3], color[4] or 1)
         love.graphics.setLineWidth(2)
         -- Top
         love.graphics.line(cx, cy - radius - 5, cx, cy - radius + crossSize)
@@ -14394,10 +18528,10 @@ function M.createArenaView(config)
                         local cy = tokenY + M.TOKEN_SIZE / 2
                         local pulse = math.sin(self.targetReticleTimer * 4) * 0.3 + 0.7
 
-                        love.graphics.setColor(self.colors.target_valid[1],
-                                               self.colors.target_valid[2],
-                                               self.colors.target_valid[3],
-                                               pulse * 0.5)
+                        self:setColorRGBA(self.colors.target_valid[1],
+                                          self.colors.target_valid[2],
+                                          self.colors.target_valid[3],
+                                          pulse * 0.5)
                         love.graphics.circle("fill", cx, cy, M.TOKEN_SIZE / 2 + 6)
                     end
                 end
@@ -14480,7 +18614,15 @@ function M.createBeltHotbar(config)
     ----------------------------------------------------------------------------
 
     function hotbar:init()
-        -- Listen for PC selection changes if we add that later
+        -- Sync with global active PC state
+        if gameState and gameState.activePCIndex then
+            self.selectedPC = gameState.activePCIndex
+        end
+
+        -- Listen for active PC changes
+        self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
+            self.selectedPC = data.newIndex
+        end)
     end
 
     ----------------------------------------------------------------------------
@@ -14505,6 +18647,22 @@ function M.createBeltHotbar(config)
     ----------------------------------------------------------------------------
     -- ITEM USE
     ----------------------------------------------------------------------------
+
+    local function isItemLit(item)
+        local props = item and item.properties
+        if not props then return false end
+        if props.isLit ~= nil then return props.isLit end
+        if props.is_lit ~= nil then return props.is_lit end
+        return false
+    end
+
+    local function setItemLit(item, lit)
+        if not item.properties then
+            item.properties = {}
+        end
+        item.properties.isLit = lit
+        item.properties.is_lit = lit
+    end
 
     --- Use an item from the belt
     -- @param slotIndex number: 1-4 belt slot
@@ -14543,18 +18701,18 @@ function M.createBeltHotbar(config)
         local flickerCount = item.properties.flicker_count or 3
 
         -- Check if already lit
-        if item.properties.is_lit then
+        if isItemLit(item) then
             print("[HOTBAR] " .. pc.name .. " extinguishes " .. item.name)
-            item.properties.is_lit = false
-            self.eventBus:emit("light_source_toggled", {
+            setItemLit(item, false)
+            self.eventBus:emit(events.EVENTS.LIGHT_SOURCE_TOGGLED, {
                 entity = pc,
                 item = item,
                 lit = false,
             })
         else
             print("[HOTBAR] " .. pc.name .. " lights " .. item.name .. " (" .. flickerCount .. " flickers remaining)")
-            item.properties.is_lit = true
-            self.eventBus:emit("light_source_toggled", {
+            setItemLit(item, true)
+            self.eventBus:emit(events.EVENTS.LIGHT_SOURCE_TOGGLED, {
                 entity = pc,
                 item = item,
                 lit = true,
@@ -14697,7 +18855,7 @@ function M.createBeltHotbar(config)
         local iconColor = { 0.6, 0.6, 0.6 }
 
         if item.properties and item.properties.light_source then
-            if item.properties.is_lit then
+            if isItemLit(item) then
                 iconColor = { 1, 0.8, 0.3 }  -- Lit torch = orange/yellow
             else
                 iconColor = { 0.7, 0.4, 0.2 }  -- Unlit torch = brown
@@ -14724,7 +18882,7 @@ function M.createBeltHotbar(config)
         end
 
         -- Draw lit indicator
-        if item.properties and item.properties.is_lit then
+        if item.properties and isItemLit(item) then
             love.graphics.setColor(1, 0.9, 0.3, 0.8)
             love.graphics.circle("fill", x + size - 8, y + 8, 4)
         end
@@ -14804,9 +18962,14 @@ function M.createBeltHotbar(config)
             return self:useItem(keyNum)
         end
 
-        -- Tab to cycle selected PC
-        if key == "tab" then
-            self.selectedPC = (self.selectedPC % #self.guild) + 1
+        -- Backtick (`) to cycle selected PC (Tab is reserved for character sheet)
+        if key == "`" then
+            -- Use global cycleActivePC if available, otherwise fallback to local
+            if cycleActivePC then
+                cycleActivePC()
+            else
+                self.selectedPC = (self.selectedPC % #self.guild) + 1
+            end
             return true
         end
 
@@ -14867,6 +19030,10 @@ M.COLORS = {
     -- Bond colors (S9.1)
     bond_charged  = { 0.70, 0.55, 0.85, 1.0 },   -- Purple glow for charged
     bond_spent    = { 0.40, 0.40, 0.45, 0.5 },   -- Grey for spent
+
+    -- Active PC highlight
+    active_glow   = { 0.85, 0.75, 0.45, 1.0 },   -- Golden highlight for active PC
+    active_border = { 0.90, 0.80, 0.40, 1.0 },   -- Gold border
 }
 
 --------------------------------------------------------------------------------
@@ -15041,6 +19208,9 @@ function M.createCharacterPlate(config)
         talentDotSize   = 8,
         padding         = 6,
 
+        -- Active PC state
+        isActive = config.isActive or false,
+
         -- Animation state
         highlightTarget = nil,    -- "stressed", "talent_3", etc.
         highlightTimer  = 0,
@@ -15074,6 +19244,10 @@ function M.createCharacterPlate(config)
     function plate:setPosition(x, y)
         self.x = x
         self.y = y
+    end
+
+    function plate:setActive(isActive)
+        self.isActive = isActive
     end
 
     ----------------------------------------------------------------------------
@@ -15128,6 +19302,20 @@ function M.createCharacterPlate(config)
 
         local e = self.entity
         local y = self.y
+
+        -- Draw active PC highlight background
+        if self.isActive then
+            local plateHeight = self:getHeight()
+            -- Subtle golden glow behind the entire plate
+            love.graphics.setColor(self.colors.active_glow[1], self.colors.active_glow[2],
+                                   self.colors.active_glow[3], 0.15)
+            love.graphics.rectangle("fill", self.x - 4, y - 4, self.width + 8, plateHeight + 8, 4, 4)
+            -- Golden border
+            love.graphics.setColor(self.colors.active_border)
+            love.graphics.setLineWidth(2)
+            love.graphics.rectangle("line", self.x - 4, y - 4, self.width + 8, plateHeight + 8, 4, 4)
+            love.graphics.setLineWidth(1)
+        end
 
         -- Portrait
         self:drawPortrait(self.x, y)
@@ -15505,6 +19693,13 @@ function M.createCombatDisplay(config)
             self:triggerInitiativeFlips(data.count)
         end)
 
+        -- Reveal initiative when an opposed action targets someone
+        self.eventBus:on(events.EVENTS.INITIATIVE_REVEALED, function(data)
+            if data.entity then
+                self:triggerInitiativeReveal(data.entity)
+            end
+        end)
+
         -- Listen for defense prepared
         self.eventBus:on("defense_prepared", function(data)
             -- Could add visual feedback here
@@ -15577,6 +19772,14 @@ function M.createCombatDisplay(config)
                 duration = M.FLIP_DURATION,
             }
         end
+    end
+
+    function display:triggerInitiativeReveal(entity)
+        if not entity or not entity.id then return end
+        self.flipAnimations[entity.id] = {
+            progress = 0,
+            duration = M.FLIP_DURATION,
+        }
     end
 
     --- Trigger defense card reveal animation
@@ -16042,12 +20245,13 @@ function M.createCommandBoard(config)
     --- Calculate total board height based on max column length
     function board:calculateHeight()
         local maxActions = 0
+        local filter = { challengeOnly = true, commandBoardOnly = true }
         local suits = { action_registry.SUITS.SWORDS, action_registry.SUITS.PENTACLES,
                         action_registry.SUITS.CUPS, action_registry.SUITS.WANDS,
                         action_registry.SUITS.MISC }
 
         for _, suit in ipairs(suits) do
-            local actions = action_registry.getActionsForSuit(suit)
+            local actions = action_registry.getActionsForSuit(suit, filter)
             maxActions = math.max(maxActions, #actions)
         end
 
@@ -16068,10 +20272,11 @@ function M.createCommandBoard(config)
         }
 
         local cardSuit = action_registry.cardSuitToActionSuit(self.selectedCard.suit)
+        local filter = { challengeOnly = true, commandBoardOnly = true }
 
         for col, suitInfo in ipairs(suits) do
             local colX = self.x + M.BOARD_PADDING + (col - 1) * (M.COLUMN_WIDTH + M.BUTTON_PADDING)
-            local actions = action_registry.getActionsForSuit(suitInfo.id)
+            local actions = action_registry.getActionsForSuit(suitInfo.id, filter)
 
             -- Column is enabled if:
             -- 1. It's the primary turn (all columns enabled)
@@ -16088,12 +20293,25 @@ function M.createCommandBoard(config)
                              (i - 1) * (M.BUTTON_HEIGHT + M.BUTTON_PADDING)
 
                 local enabled = columnEnabled
+                local disabledReason = nil
 
-                -- Additional requirements check
-                if enabled and action.requiresWeaponType then
-                    local entity = self.selectedEntity
-                    if not entity or not entity.weapon or entity.weapon.type ~= action.requiresWeaponType then
+                if enabled then
+                    local requirementsOk, requirementReason = action_registry.checkActionRequirements(
+                        action,
+                        self.selectedEntity
+                    )
+                    if not requirementsOk then
                         enabled = false
+                        disabledReason = requirementReason or "Requirements not met"
+                    end
+                end
+
+                -- S12.2: Ranged restriction when engaged
+                if enabled and action.isRanged then
+                    local entity = self.selectedEntity
+                    if entity and entity.is_engaged then
+                        enabled = false
+                        disabledReason = "Cannot use ranged weapons while engaged"
                     end
                 end
 
@@ -16104,6 +20322,7 @@ function M.createCommandBoard(config)
                     width = M.COLUMN_WIDTH,
                     height = M.BUTTON_HEIGHT,
                     enabled = enabled,
+                    disabledReason = disabledReason,  -- S12.2: Tooltip for why disabled
                     suitColor = suitInfo.color,
                 }
             end
@@ -16228,6 +20447,7 @@ function M.createCommandBoard(config)
     --- Draw tooltip for hovered action
     function board:drawTooltip()
         local action = self.hoveredAction
+        local button = self.hoveredButton
         if not action then return end
 
         local mx, my = love.mouse.getPosition()
@@ -16238,18 +20458,27 @@ function M.createCommandBoard(config)
         lines[#lines + 1] = { text = "", color = self.colors.tooltip_text }  -- Spacer
         lines[#lines + 1] = { text = action.description, color = self.colors.tooltip_text, wrap = true }
 
-        -- Calculate total value
-        if action.attribute and self.selectedEntity then
+        -- S12.2: Show disabled reason if action is blocked
+        if button and not button.enabled and button.disabledReason then
             lines[#lines + 1] = { text = "", color = self.colors.tooltip_text }  -- Spacer
-            local cardVal = self.selectedCard.value or 0
-            local attrVal = self.selectedEntity[action.attribute] or 0
-            local total = cardVal + attrVal
-            local attrName = action.attribute:sub(1, 1):upper() .. action.attribute:sub(2)
-            local calcText = string.format("Card (%d) + %s (%d) = %d", cardVal, attrName, attrVal, total)
-            lines[#lines + 1] = { text = calcText, color = self.colors.tooltip_value }
-        elseif not action.attribute then
-            lines[#lines + 1] = { text = "", color = self.colors.tooltip_text }
-            lines[#lines + 1] = { text = "Face value only", color = self.colors.tooltip_value }
+            lines[#lines + 1] = { text = "UNAVAILABLE:", color = { 0.9, 0.3, 0.3, 1.0 } }
+            lines[#lines + 1] = { text = button.disabledReason, color = { 0.9, 0.5, 0.5, 1.0 }, wrap = true }
+        end
+
+        -- Calculate total value (only for enabled actions)
+        if button and button.enabled then
+            if action.attribute and self.selectedEntity then
+                lines[#lines + 1] = { text = "", color = self.colors.tooltip_text }  -- Spacer
+                local cardVal = self.selectedCard.value or 0
+                local attrVal = self.selectedEntity[action.attribute] or 0
+                local total = cardVal + attrVal
+                local attrName = action.attribute:sub(1, 1):upper() .. action.attribute:sub(2)
+                local calcText = string.format("Card (%d) + %s (%d) = %d", cardVal, attrName, attrVal, total)
+                lines[#lines + 1] = { text = calcText, color = self.colors.tooltip_value }
+            elseif not action.attribute then
+                lines[#lines + 1] = { text = "", color = self.colors.tooltip_text }
+                lines[#lines + 1] = { text = "Face value only", color = self.colors.tooltip_value }
+            end
         end
 
         -- Calculate tooltip height
@@ -16340,13 +20569,15 @@ function M.createCommandBoard(config)
     function board:mousemoved(x, y, dx, dy)
         if not self.isVisible then return end
 
-        -- Update hovered action
+        -- Update hovered action (including disabled ones for tooltip)
         self.hoveredAction = nil
+        self.hoveredButton = nil  -- S12.2: Track full button for disabled reason
         for _, btn in ipairs(self.buttons) do
-            if btn.action and btn.enabled then
+            if btn.action then
                 if x >= btn.x and x <= btn.x + btn.width and
                    y >= btn.y and y <= btn.y + btn.height then
                     self.hoveredAction = btn.action
+                    self.hoveredButton = btn
                     break
                 end
             end
@@ -16366,6 +20597,579 @@ function M.createCommandBoard(config)
     end
 
     return board
+end
+
+return M
+
+```
+
+---
+
+## File: src/ui/equipment_bar.lua
+
+```lua
+-- equipment_bar.lua
+-- Equipment Bar HUD for Majesty
+-- Shows Hands (2 slots) and Belt (4 slots) for the selected PC
+-- Items can be dragged from here onto POIs to interact with the world
+--
+-- Design: Pack items cannot be used directly - only hands/belt items
+-- can interact with POIs via drag-and-drop.
+
+local M = {}
+
+local events = require('logic.events')
+
+--------------------------------------------------------------------------------
+-- CONSTANTS
+--------------------------------------------------------------------------------
+
+M.SLOT_SIZE = 44
+M.SLOT_SPACING = 4
+M.SECTION_SPACING = 16  -- Gap between hands and belt sections
+M.PADDING = 10
+
+M.HANDS_SLOTS = 2
+M.BELT_SLOTS = 4
+
+local function isItemLit(item)
+    local props = item and item.properties
+    if not props then return false end
+    if props.isLit ~= nil then return props.isLit end
+    if props.is_lit ~= nil then return props.is_lit end
+    return false
+end
+
+--------------------------------------------------------------------------------
+-- COLORS
+--------------------------------------------------------------------------------
+
+M.COLORS = {
+    panel_bg = { 0.12, 0.11, 0.10, 0.95 },
+    panel_border = { 0.4, 0.35, 0.3, 1 },
+
+    hands_bg = { 0.18, 0.15, 0.12, 1 },
+    hands_label = { 0.9, 0.8, 0.6, 1 },
+
+    belt_bg = { 0.15, 0.14, 0.12, 1 },
+    belt_label = { 0.7, 0.7, 0.65, 1 },
+
+    slot_empty = { 0.1, 0.1, 0.12, 1 },
+    slot_filled = { 0.22, 0.2, 0.18, 1 },
+    slot_hover = { 0.35, 0.3, 0.25, 1 },
+    slot_dragging = { 0.4, 0.35, 0.25, 0.5 },
+
+    slot_border = { 0.4, 0.35, 0.3, 0.8 },
+    slot_border_hover = { 0.9, 0.8, 0.5, 1 },
+
+    text = { 0.9, 0.88, 0.82, 1 },
+    text_dim = { 0.6, 0.58, 0.55, 1 },
+    text_quantity = { 1, 1, 1, 0.9 },
+}
+
+--------------------------------------------------------------------------------
+-- EQUIPMENT BAR FACTORY
+--------------------------------------------------------------------------------
+
+function M.createEquipmentBar(config)
+    config = config or {}
+
+    local bar = {
+        eventBus = config.eventBus or events.globalBus,
+        inputManager = config.inputManager,
+        guild = config.guild or {},
+
+        -- Position (set by crawl_screen layout)
+        x = config.x or 0,
+        y = config.y or 0,
+
+        -- Selected PC
+        selectedPC = 1,
+
+        -- Hover/drag state
+        hoveredSlot = nil,      -- { location = "hands"|"belt", index = 1-N }
+        dragging = nil,         -- { item, location, index, startX, startY }
+        dragOffsetX = 0,
+        dragOffsetY = 0,
+
+        -- Calculated dimensions
+        width = 0,
+        height = 0,
+
+        -- Slot bounds for hit detection
+        slotBounds = {},  -- [location_index] = { x, y, w, h, location, index }
+
+        isVisible = true,
+        alpha = 1,
+    }
+
+    ----------------------------------------------------------------------------
+    -- LAYOUT CALCULATION
+    ----------------------------------------------------------------------------
+
+    function bar:calculateLayout()
+        -- Total width: hands section + spacing + belt section
+        local handsWidth = M.HANDS_SLOTS * (M.SLOT_SIZE + M.SLOT_SPACING) - M.SLOT_SPACING
+        local beltWidth = M.BELT_SLOTS * (M.SLOT_SIZE + M.SLOT_SPACING) - M.SLOT_SPACING
+
+        self.width = M.PADDING * 2 + handsWidth + M.SECTION_SPACING + beltWidth
+        self.height = M.PADDING * 2 + 18 + M.SLOT_SIZE  -- label + slots
+
+        -- Calculate slot bounds
+        self.slotBounds = {}
+
+        local slotY = self.y + M.PADDING + 18
+
+        -- Hands slots
+        local handsStartX = self.x + M.PADDING
+        for i = 1, M.HANDS_SLOTS do
+            local slotX = handsStartX + (i - 1) * (M.SLOT_SIZE + M.SLOT_SPACING)
+            local key = "hands_" .. i
+            self.slotBounds[key] = {
+                x = slotX,
+                y = slotY,
+                w = M.SLOT_SIZE,
+                h = M.SLOT_SIZE,
+                location = "hands",
+                index = i,
+            }
+        end
+
+        -- Belt slots
+        local beltStartX = handsStartX + handsWidth + M.SECTION_SPACING
+        for i = 1, M.BELT_SLOTS do
+            local slotX = beltStartX + (i - 1) * (M.SLOT_SIZE + M.SLOT_SPACING)
+            local key = "belt_" .. i
+            self.slotBounds[key] = {
+                x = slotX,
+                y = slotY,
+                w = M.SLOT_SIZE,
+                h = M.SLOT_SIZE,
+                location = "belt",
+                index = i,
+            }
+        end
+    end
+
+    ----------------------------------------------------------------------------
+    -- PC SELECTION
+    ----------------------------------------------------------------------------
+
+    function bar:setSelectedPC(index)
+        if index >= 1 and index <= #self.guild then
+            self.selectedPC = index
+        end
+    end
+
+    function bar:getSelectedPC()
+        if self.selectedPC >= 1 and self.selectedPC <= #self.guild then
+            return self.guild[self.selectedPC]
+        end
+        return nil
+    end
+
+    ----------------------------------------------------------------------------
+    -- ITEM ACCESS
+    ----------------------------------------------------------------------------
+
+    function bar:getItemAt(location, index)
+        local pc = self:getSelectedPC()
+        if not pc or not pc.inventory then return nil end
+
+        local items = pc.inventory:getItems(location)
+        return items[index]
+    end
+
+    ----------------------------------------------------------------------------
+    -- DRAGGING
+    ----------------------------------------------------------------------------
+
+    function bar:startDrag(location, index, mouseX, mouseY)
+        local item = self:getItemAt(location, index)
+        if not item then return false end
+
+        local key = location .. "_" .. index
+        local bounds = self.slotBounds[key]
+        if not bounds then return false end
+
+        self.dragging = {
+            item = item,
+            location = location,
+            index = index,
+            startX = bounds.x,
+            startY = bounds.y,
+        }
+
+        self.dragOffsetX = mouseX - bounds.x
+        self.dragOffsetY = mouseY - bounds.y
+
+        -- Notify input manager that we're dragging an item
+        if self.inputManager then
+            self.inputManager:beginDrag(item, "item", mouseX, mouseY)
+        end
+
+        return true
+    end
+
+    function bar:updateDrag(mouseX, mouseY)
+        if not self.dragging then return end
+
+        -- Update input manager drag position
+        if self.inputManager then
+            self.inputManager:updateDrag(mouseX, mouseY)
+        end
+    end
+
+    function bar:endDrag(mouseX, mouseY)
+        if not self.dragging then return nil end
+
+        local dragData = self.dragging
+        self.dragging = nil
+
+        -- Check if dropped on a POI via input manager
+        if self.inputManager then
+            -- Get drop target (POI) at mouse position
+            local target = nil
+            if self.inputManager.getDropTarget then
+                target = self.inputManager:getDropTarget(mouseX, mouseY)
+            end
+
+            if target and target.type == "poi" then
+                -- Emit item-use event
+                self.eventBus:emit(events.EVENTS.USE_ITEM_ON_POI, {
+                    item = dragData.item,
+                    itemLocation = dragData.location,
+                    poiId = target.id,
+                    poi = target.data,
+                    user = self:getSelectedPC(),
+                })
+
+                -- Clear drag state without emitting DROP_ON_TARGET (we handled it)
+                self.inputManager:clearDragState()
+                return { action = "use_on_poi", target = target }
+            end
+
+            -- No valid target - item snaps back to origin slot (visual only)
+            self.inputManager:clearDragState()
+        end
+
+        -- Dropped on empty space - item returns to its slot automatically
+        return nil
+    end
+
+    function bar:cancelDrag()
+        self.dragging = nil
+        if self.inputManager then
+            self.inputManager:cancelDrag()
+        end
+    end
+
+    ----------------------------------------------------------------------------
+    -- HIT TESTING
+    ----------------------------------------------------------------------------
+
+    function bar:getSlotAt(x, y)
+        for key, bounds in pairs(self.slotBounds) do
+            if x >= bounds.x and x < bounds.x + bounds.w and
+               y >= bounds.y and y < bounds.y + bounds.h then
+                return bounds.location, bounds.index, key
+            end
+        end
+        return nil, nil, nil
+    end
+
+    function bar:isPointInside(x, y)
+        return x >= self.x and x < self.x + self.width and
+               y >= self.y and y < self.y + self.height
+    end
+
+    ----------------------------------------------------------------------------
+    -- UPDATE
+    ----------------------------------------------------------------------------
+
+    function bar:update(dt)
+        if not self.isVisible then return end
+        if not love then return end
+
+        local mouseX, mouseY = love.mouse.getPosition()
+
+        -- Update hover state (only if not dragging)
+        if not self.dragging then
+            local loc, idx = self:getSlotAt(mouseX, mouseY)
+            if loc then
+                self.hoveredSlot = { location = loc, index = idx }
+            else
+                self.hoveredSlot = nil
+            end
+        end
+
+        -- Update drag position
+        if self.dragging then
+            self:updateDrag(mouseX, mouseY)
+        end
+    end
+
+    ----------------------------------------------------------------------------
+    -- DRAW
+    ----------------------------------------------------------------------------
+
+    function bar:applyColor(color)
+        local alpha = (color[4] or 1) * (self.alpha or 1)
+        love.graphics.setColor(color[1], color[2], color[3], alpha)
+    end
+
+    function bar:applyColorRGBA(r, g, b, a)
+        local alpha = (a or 1) * (self.alpha or 1)
+        love.graphics.setColor(r, g, b, alpha)
+    end
+
+    function bar:draw()
+        if not self.isVisible or (self.alpha or 0) <= 0 then return end
+        if not love then return end
+
+        local pc = self:getSelectedPC()
+        if not pc then return end
+
+        -- Panel background
+        self:applyColor(M.COLORS.panel_bg)
+        love.graphics.rectangle("fill", self.x, self.y, self.width, self.height, 6, 6)
+
+        self:applyColor(M.COLORS.panel_border)
+        love.graphics.setLineWidth(1)
+        love.graphics.rectangle("line", self.x, self.y, self.width, self.height, 6, 6)
+
+        -- Get items
+        local handsItems = {}
+        local beltItems = {}
+        if pc.inventory then
+            handsItems = pc.inventory:getItems("hands")
+            beltItems = pc.inventory:getItems("belt")
+        end
+
+        -- Draw hands section
+        self:drawSection("hands", "Hands", handsItems, M.HANDS_SLOTS, M.COLORS.hands_label)
+
+        -- Draw belt section
+        self:drawSection("belt", "Belt", beltItems, M.BELT_SLOTS, M.COLORS.belt_label)
+
+        -- Draw PC name
+        self:applyColor(M.COLORS.text_dim)
+        love.graphics.print(pc.name, self.x + self.width - 60, self.y + 4)
+
+        -- Draw drag ghost
+        self:drawDragGhost()
+    end
+
+    function bar:drawSection(location, label, items, maxSlots, labelColor)
+        -- Find first slot of this section for positioning
+        local firstKey = location .. "_1"
+        local firstBounds = self.slotBounds[firstKey]
+        if not firstBounds then return end
+
+        -- Section label
+        self:applyColor(labelColor)
+        love.graphics.print(label, firstBounds.x, self.y + M.PADDING)
+
+        -- Draw slots
+        for i = 1, maxSlots do
+            local key = location .. "_" .. i
+            local bounds = self.slotBounds[key]
+            if bounds then
+                local item = items[i]
+                self:drawSlot(bounds, item, location, i)
+            end
+        end
+    end
+
+    function bar:drawSlot(bounds, item, location, index)
+        local isHovered = self.hoveredSlot and
+                          self.hoveredSlot.location == location and
+                          self.hoveredSlot.index == index
+        local isDragSource = self.dragging and
+                             self.dragging.location == location and
+                             self.dragging.index == index
+
+        -- Slot background
+        if isDragSource then
+            self:applyColor(M.COLORS.slot_dragging)
+        elseif item and isHovered then
+            self:applyColor(M.COLORS.slot_hover)
+        elseif item then
+            self:applyColor(M.COLORS.slot_filled)
+        else
+            self:applyColor(M.COLORS.slot_empty)
+        end
+        love.graphics.rectangle("fill", bounds.x, bounds.y, bounds.w, bounds.h, 4, 4)
+
+        -- Slot border
+        if isHovered and item and not isDragSource then
+            self:applyColor(M.COLORS.slot_border_hover)
+            love.graphics.setLineWidth(2)
+        else
+            self:applyColor(M.COLORS.slot_border)
+            love.graphics.setLineWidth(1)
+        end
+        love.graphics.rectangle("line", bounds.x, bounds.y, bounds.w, bounds.h, 4, 4)
+        love.graphics.setLineWidth(1)
+
+        -- Item content (skip if being dragged)
+        if item and not isDragSource then
+            self:drawItemInSlot(item, bounds.x, bounds.y, bounds.w, bounds.h)
+        end
+    end
+
+    function bar:drawItemInSlot(item, x, y, w, h)
+        -- Item icon (simple colored circle with initial)
+        local iconColor = self:getItemColor(item)
+        self:applyColor(iconColor)
+        love.graphics.circle("fill", x + w/2, y + h/2, w/3)
+
+        -- Item initial
+        self:applyColor(M.COLORS.text)
+        local initial = string.sub(item.name or "?", 1, 1):upper()
+        local font = love.graphics.getFont()
+        local textW = font:getWidth(initial)
+        local textH = font:getHeight()
+        love.graphics.print(initial, x + w/2 - textW/2, y + h/2 - textH/2)
+
+        -- Quantity for stackables
+        if item.stackable and item.quantity and item.quantity > 1 then
+            self:applyColor(M.COLORS.text_quantity)
+            love.graphics.print("x" .. item.quantity, x + w - 20, y + h - 14)
+        end
+
+        -- Lit indicator for light sources
+        if item.properties and isItemLit(item) then
+            self:applyColorRGBA(1, 0.9, 0.3, 0.9)
+            love.graphics.circle("fill", x + w - 8, y + 8, 4)
+        end
+    end
+
+    function bar:getItemColor(item)
+        if item.properties and item.properties.key then
+            return { 0.8, 0.7, 0.3 }  -- Gold for keys
+        elseif item.properties and item.properties.light_source then
+            if isItemLit(item) then
+                return { 1, 0.8, 0.3 }  -- Bright orange when lit
+            else
+                return { 0.7, 0.4, 0.2 }  -- Brown when unlit
+            end
+        elseif item.weaponType then
+            return { 0.6, 0.6, 0.7 }  -- Steel for weapons
+        elseif item.isRation then
+            return { 0.5, 0.7, 0.4 }  -- Green for food
+        elseif item.properties and item.properties.potion then
+            return { 0.4, 0.5, 0.8 }  -- Blue for potions
+        else
+            return { 0.5, 0.5, 0.5 }  -- Gray default
+        end
+    end
+
+    function bar:drawDragGhost()
+        if not self.dragging then return end
+
+        local mouseX, mouseY = love.mouse.getPosition()
+        local item = self.dragging.item
+
+        -- Draw ghost at mouse position
+        local ghostX = mouseX - self.dragOffsetX
+        local ghostY = mouseY - self.dragOffsetY
+
+        -- Semi-transparent background
+        self:applyColorRGBA(0.2, 0.2, 0.25, 0.9)
+        love.graphics.rectangle("fill", ghostX, ghostY, M.SLOT_SIZE, M.SLOT_SIZE, 4, 4)
+
+        -- Item content
+        self:drawItemInSlot(item, ghostX, ghostY, M.SLOT_SIZE, M.SLOT_SIZE)
+
+        -- Drag hint
+        self:applyColorRGBA(1, 1, 1, 0.8)
+        love.graphics.print("Drop on POI", ghostX, ghostY + M.SLOT_SIZE + 2)
+    end
+
+    ----------------------------------------------------------------------------
+    -- INPUT HANDLING
+    ----------------------------------------------------------------------------
+
+    function bar:mousepressed(x, y, button)
+        if not self.isVisible then return false end
+        if button ~= 1 then return false end
+
+        local location, index = self:getSlotAt(x, y)
+        if location then
+            local item = self:getItemAt(location, index)
+            if item then
+                -- Start dragging
+                self:startDrag(location, index, x, y)
+                return true
+            end
+        end
+
+        return false
+    end
+
+    function bar:mousereleased(x, y, button)
+        if not self.isVisible then return false end
+        if button ~= 1 then return false end
+
+        if self.dragging then
+            self:endDrag(x, y)
+            return true
+        end
+
+        return false
+    end
+
+    function bar:mousemoved(x, y, dx, dy)
+        if not self.isVisible then return false end
+
+        if self.dragging then
+            self:updateDrag(x, y)
+            return true
+        end
+
+        return false
+    end
+
+    function bar:init()
+        -- Sync with global active PC state
+        if gameState and gameState.activePCIndex then
+            self.selectedPC = gameState.activePCIndex
+        end
+
+        -- Listen for active PC changes
+        self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
+            self.selectedPC = data.newIndex
+        end)
+    end
+
+    function bar:keypressed(key)
+        if not self.isVisible then return false end
+
+        -- Backtick to cycle selected PC
+        if key == "`" then
+            -- Use global cycleActivePC if available, otherwise fallback to local
+            if cycleActivePC then
+                cycleActivePC()
+            else
+                self.selectedPC = (self.selectedPC % #self.guild) + 1
+            end
+            return true
+        end
+
+        -- Escape to cancel drag
+        if key == "escape" and self.dragging then
+            self:cancelDrag()
+            return true
+        end
+
+        return false
+    end
+
+    -- Initialize layout
+    bar:calculateLayout()
+
+    return bar
 end
 
 return M
@@ -16627,8 +21431,10 @@ M.STYLES = {
     button_normal   = { 0.2, 0.2, 0.25, 1.0 },
     button_hover    = { 0.3, 0.5, 0.6, 1.0 },
     button_pressed  = { 0.2, 0.4, 0.5, 1.0 },
+    button_disabled = { 0.18, 0.18, 0.2, 0.7 },
     text_normal     = { 0.9, 0.9, 0.85, 1.0 },
     text_hover      = { 1.0, 1.0, 1.0, 1.0 },
+    text_disabled   = { 0.6, 0.6, 0.58, 0.9 },
     title           = { 0.7, 0.85, 1.0, 1.0 },
 }
 
@@ -16646,6 +21452,7 @@ function M.createFocusMenu(config)
         -- References
         inputManager = config.inputManager,
         roomManager  = config.roomManager,
+        interactionSystem = config.interactionSystem,
         eventBus     = config.eventBus or events.globalBus,
 
         -- Font
@@ -16699,19 +21506,100 @@ function M.createFocusMenu(config)
         self.x = screenX
         self.y = screenY
 
+        -- Build action options
+        local actionOptions = {}
+        local actionSet = {}
+        if self.interactionSystem and poiData then
+            local actions = self.interactionSystem:getValidActions(poiData)
+            for _, actionData in ipairs(actions) do
+                -- Skip duplicate "examine" entry; scrutiny already covers a close look
+                if actionData.action ~= "examine" then
+                    actionSet[actionData.action] = true
+                    local watchCost = (actionData.level_required == "investigate")
+                    local label = "Act: " .. (actionData.description or actionData.action)
+                    if watchCost then
+                        label = label .. " (Watch)"
+                    end
+                    local option = {
+                        kind = "action",
+                        action = actionData.action,
+                        level = actionData.level_required,
+                        watchCost = watchCost,
+                        description = label,
+                        callback = function()
+                            self:selectOption(actionData.action)
+                        end,
+                    }
+
+                    -- Bound by Fate: disable repeated Test of Fate attempts
+                    if self.roomManager and self.roomId and self.poiId then
+                        local isInvestigationAction =
+                            actionData.level_required == "investigate" or
+                            actionData.action == "investigate" or
+                            actionData.action == "search" or
+                            actionData.action == "trap_check"
+                        if isInvestigationAction then
+                            local status = self.roomManager:getBoundByFateStatus(self.roomId, self.poiId, "investigate", {})
+                            if status and status.allowed == false then
+                                option.disabled = true
+                                option.description = option.description .. " (Result stands)"
+                            end
+                        end
+                    end
+
+                    actionOptions[#actionOptions + 1] = option
+                end
+            end
+        end
+
+        -- Add a generic Investigate action if the POI has deeper info
+        if poiData and (poiData.investigate_test or poiData.secrets or poiData.investigate_description) then
+            if not actionSet.search and not actionSet.trap_check then
+                local option = {
+                    kind = "action",
+                    action = "investigate",
+                    level = "investigate",
+                    watchCost = true,
+                    description = "Act: Investigate (Watch)",
+                    callback = function()
+                        self:selectOption("investigate")
+                    end,
+                }
+
+                if self.roomManager and self.roomId and self.poiId then
+                    local status = self.roomManager:getBoundByFateStatus(self.roomId, self.poiId, "investigate", {})
+                    if status and status.allowed == false then
+                        option.disabled = true
+                        option.description = option.description .. " (Result stands)"
+                    end
+                end
+
+                actionOptions[#actionOptions + 1] = option
+            end
+        end
+
         -- Get scrutiny verbs from room manager
         self.options = {}
         if self.roomManager then
             local verbs = self.roomManager:getScrutinyVerbs(poiData)
             for i, verbData in ipairs(verbs) do
-                self.options[i] = {
-                    verb = verbData.verb,
-                    description = verbData.desc or verbData.description or verbData.verb,
-                    callback = function()
-                        self:selectOption(verbData.verb)
-                    end,
-                }
+                -- If search is offered as an action, avoid duplicate in scrutiny list
+                if verbData.verb ~= "search" or not actionSet.search then
+                    self.options[#self.options + 1] = {
+                        kind = "scrutinize",
+                        verb = verbData.verb,
+                        description = "Scrutinize: " .. (verbData.desc or verbData.description or verbData.verb),
+                        callback = function()
+                            self:selectOption(verbData.verb)
+                        end,
+                    }
+                end
             end
+        end
+
+        -- Append action options after scrutiny options
+        for _, actionOption in ipairs(actionOptions) do
+            self.options[#self.options + 1] = actionOption
         end
 
         -- Add "Cancel" option
@@ -16801,19 +21689,41 @@ function M.createFocusMenu(config)
             return
         end
 
-        -- Get POI info at scrutiny level
-        local result = nil
-        if self.roomManager then
-            result = self.roomManager:getPOIInfo(self.roomId, self.poiId, "scrutinize", verb)
+        local option = nil
+        for _, opt in ipairs(self.options) do
+            if opt.verb == verb or opt.action == verb then
+                option = opt
+                break
+            end
         end
 
-        -- Emit selection event
-        self.eventBus:emit(events.EVENTS.SCRUTINY_SELECTED, {
-            poiId = self.poiId,
-            roomId = self.roomId,
-            verb = verb,
-            result = result,
-        })
+        if option and option.disabled then
+            return
+        end
+
+        if option and option.kind == "action" then
+            self.eventBus:emit(events.EVENTS.POI_ACTION_SELECTED, {
+                poiId = self.poiId,
+                roomId = self.roomId,
+                action = option.action,
+                level = option.level,
+                watchCost = option.watchCost or false,
+            })
+        else
+            -- Get POI info at scrutiny level
+            local result = nil
+            if self.roomManager then
+                result = self.roomManager:getPOIInfo(self.roomId, self.poiId, "scrutinize", verb)
+            end
+
+            -- Emit selection event
+            self.eventBus:emit(events.EVENTS.SCRUTINY_SELECTED, {
+                poiId = self.poiId,
+                roomId = self.roomId,
+                verb = verb,
+                result = result,
+            })
+        end
 
         -- Close menu
         self:close()
@@ -16836,6 +21746,11 @@ function M.createFocusMenu(config)
         -- Check which button was pressed
         local index = self:getButtonAt(x, y)
         if index then
+            local option = self.options[index]
+            if option and option.disabled then
+                self.pressedIndex = nil
+                return true
+            end
             self.pressedIndex = index
         end
 
@@ -16851,7 +21766,12 @@ function M.createFocusMenu(config)
         -- If released on same button that was pressed, activate it
         if index and index == self.pressedIndex then
             local option = self.options[index]
-            if option and option.callback then
+            if option and option.disabled then
+                self.eventBus:emit(events.EVENTS.BOUND_BY_FATE_BLOCKED, {
+                    poiId = self.poiId,
+                    roomId = self.roomId,
+                })
+            elseif option and option.callback then
                 option.callback()
             end
         end
@@ -16863,8 +21783,12 @@ function M.createFocusMenu(config)
     --- Handle mouse movement
     function menu:onMouseMoved(x, y)
         if not self.isOpen then return end
-
-        self.hoveredIndex = self:getButtonAt(x, y)
+        local index = self:getButtonAt(x, y)
+        if index and self.options[index] and self.options[index].disabled then
+            self.hoveredIndex = nil
+            return
+        end
+        self.hoveredIndex = index
     end
 
     --- Check if point is inside menu
@@ -16964,16 +21888,19 @@ function M.createFocusMenu(config)
         for i, option in ipairs(self.options) do
             local isHovered = (i == self.hoveredIndex)
             local isPressed = (i == self.pressedIndex)
+            local isDisabled = option.disabled == true
 
             -- Button background
             local bgColor = self.styles.button_normal
-            if isPressed then
+            if isDisabled then
+                bgColor = self.styles.button_disabled
+            elseif isPressed then
                 bgColor = self.styles.button_pressed
             elseif isHovered then
                 bgColor = self.styles.button_hover
             end
 
-            love.graphics.setColor(bgColor[1], bgColor[2], bgColor[3], bgColor[4] * alpha)
+            love.graphics.setColor(bgColor[1], bgColor[2], bgColor[3], (bgColor[4] or 1) * alpha)
             love.graphics.rectangle(
                 "fill",
                 self.x + self.padding,
@@ -16984,7 +21911,12 @@ function M.createFocusMenu(config)
             )
 
             -- Button text
-            local textColor = isHovered and self.styles.text_hover or self.styles.text_normal
+            local textColor = self.styles.text_normal
+            if isDisabled then
+                textColor = self.styles.text_disabled
+            elseif isHovered then
+                textColor = self.styles.text_hover
+            end
             love.graphics.setColor(textColor[1], textColor[2], textColor[3], alpha)
             love.graphics.printf(
                 option.description,
@@ -17265,6 +22197,14 @@ function M.createInputManager(config)
         self.dragSource = nil
     end
 
+    --- Clear drag state without emitting events
+    -- Use when an external system has already handled the drop
+    function manager:clearDragState()
+        self.isDragging = false
+        self.dragType = M.DRAG_TYPES.NONE
+        self.dragSource = nil
+    end
+
     ----------------------------------------------------------------------------
     -- CLICK DETECTION
     ----------------------------------------------------------------------------
@@ -17454,6 +22394,7 @@ return M
 -- Shows: Full name, origin, known items, HP/defense (gated by discovery)
 
 local events = require('logic.events')
+local disposition_module = require('logic.disposition')
 
 local M = {}
 
@@ -17486,6 +22427,21 @@ M.COLORS = {
 
     -- Discovery state
     undiscovered = { 0.50, 0.48, 0.45, 0.6 },    -- Unknown info
+
+    -- Disposition colors (emotional wheel)
+    disp_anger    = { 0.75, 0.25, 0.20, 1.0 },   -- Red
+    disp_distaste = { 0.60, 0.40, 0.55, 1.0 },   -- Purple
+    disp_sadness  = { 0.35, 0.45, 0.65, 1.0 },   -- Blue
+    disp_joy      = { 0.85, 0.75, 0.30, 1.0 },   -- Yellow
+    disp_surprise = { 0.90, 0.55, 0.25, 1.0 },   -- Orange
+    disp_trust    = { 0.35, 0.65, 0.45, 1.0 },   -- Green
+    disp_fear     = { 0.50, 0.50, 0.55, 1.0 },   -- Gray
+
+    -- Morale bar
+    morale_high   = { 0.35, 0.65, 0.45, 1.0 },   -- Green
+    morale_mid    = { 0.85, 0.75, 0.30, 1.0 },   -- Yellow
+    morale_low    = { 0.75, 0.25, 0.20, 1.0 },   -- Red
+    morale_bg     = { 0.30, 0.28, 0.25, 0.5 },
 }
 
 --------------------------------------------------------------------------------
@@ -17531,6 +22487,15 @@ function M.createInspectPanel(config)
         self.eventBus:on(events.EVENTS.SCRUTINY_SELECTED, function(data)
             if data.poiId then
                 self:markDiscovered(data.poiId, data.verb)
+            end
+        end)
+
+        -- Listen for social discoveries (from Banter/Intimidate)
+        self.eventBus:on("social_discovery", function(data)
+            if data.targetId and data.discoveries then
+                for _, discovery in ipairs(data.discoveries) do
+                    self:markDiscovered(data.targetId, discovery)
+                end
             end
         end)
     end
@@ -17714,20 +22679,30 @@ function M.createInspectPanel(config)
         love.graphics.line(x, lineY, x + M.PANEL_WIDTH - M.PANEL_PADDING * 2, lineY)
         lineY = lineY + 8
 
-        -- Health/Wounds (pips)
-        love.graphics.setColor(colors.text_body)
-        love.graphics.print("Health:", x, lineY)
-        lineY = lineY + M.LINE_HEIGHT
-        self:drawHealthPips(x, lineY, e)
-        lineY = lineY + 14
-
-        -- Armor (if present)
-        if e.armorSlots and e.armorSlots > 0 then
+        -- Health display depends on PC vs NPC
+        if e.isPC then
+            -- PC: Full wound track with pips
             love.graphics.setColor(colors.text_body)
-            love.graphics.print("Armor:", x, lineY)
+            love.graphics.print("Health:", x, lineY)
             lineY = lineY + M.LINE_HEIGHT
-            self:drawArmorPips(x, lineY, e)
+            self:drawHealthPips(x, lineY, e)
             lineY = lineY + 14
+
+            -- Armor (if present)
+            if e.armorSlots and e.armorSlots > 0 then
+                love.graphics.setColor(colors.text_body)
+                love.graphics.print("Armor:", x, lineY)
+                lineY = lineY + M.LINE_HEIGHT
+                self:drawArmorPips(x, lineY, e)
+                lineY = lineY + 14
+            end
+        else
+            -- NPC: Health/Defense (HD) system
+            love.graphics.setColor(colors.text_body)
+            love.graphics.print("HD (Health/Defense):", x, lineY)
+            lineY = lineY + M.LINE_HEIGHT
+            self:drawHDBar(x, lineY, e)
+            lineY = lineY + 28
         end
 
         -- Defense status
@@ -17770,15 +22745,46 @@ function M.createInspectPanel(config)
             end
         end
 
-        -- NPC-specific: Hates/Wants (only if discovered via Banter/Con Artist)
+        -- NPC-specific info
         if not e.isPC then
+            -- Disposition (revealed by successful Banter/Intimidate)
+            lineY = lineY + 4
+            love.graphics.setColor(colors.text_body)
+            love.graphics.print("Disposition:", x, lineY)
+            lineY = lineY + M.LINE_HEIGHT
+
+            if self:isDiscovered(e.id, "disposition") then
+                self:drawDispositionWheel(x, lineY, e)
+                lineY = lineY + 24
+            else
+                love.graphics.setColor(colors.undiscovered)
+                love.graphics.print("  ??? (try Banter)", x, lineY)
+                lineY = lineY + M.LINE_HEIGHT
+            end
+
+            -- Morale (revealed by successful Banter/Intimidate)
+            love.graphics.setColor(colors.text_body)
+            love.graphics.print("Morale:", x, lineY)
+            lineY = lineY + M.LINE_HEIGHT
+
+            if self:isDiscovered(e.id, "morale") then
+                self:drawMoraleBar(x, lineY, e)
+                lineY = lineY + 14
+            else
+                love.graphics.setColor(colors.undiscovered)
+                love.graphics.print("  ??? (try Banter)", x, lineY)
+                lineY = lineY + M.LINE_HEIGHT
+            end
+
+            -- Hates/Wants (only if discovered via great success or Con Artist)
             if e.hates and self:isDiscovered(e.id, "hates") then
                 lineY = lineY + 4
                 love.graphics.setColor(colors.text_body)
                 love.graphics.print("Hates:", x, lineY)
                 lineY = lineY + M.LINE_HEIGHT
                 love.graphics.setColor(colors.text_faint)
-                love.graphics.print("  " .. table.concat(e.hates, ", "), x, lineY)
+                local hatesText = type(e.hates) == "table" and table.concat(e.hates, ", ") or tostring(e.hates)
+                love.graphics.print("  " .. hatesText, x, lineY)
                 lineY = lineY + M.LINE_HEIGHT
             end
 
@@ -17787,17 +22793,176 @@ function M.createInspectPanel(config)
                 love.graphics.print("Wants:", x, lineY)
                 lineY = lineY + M.LINE_HEIGHT
                 love.graphics.setColor(colors.text_faint)
-                love.graphics.print("  " .. table.concat(e.wants, ", "), x, lineY)
+                local wantsText = type(e.wants) == "table" and table.concat(e.wants, ", ") or tostring(e.wants)
+                love.graphics.print("  " .. wantsText, x, lineY)
                 lineY = lineY + M.LINE_HEIGHT
             end
 
-            -- Show "???" for undiscovered info
+            -- Show hint for fully undiscovered NPCs
             if not self:hasAnyDiscovery(e.id) then
                 lineY = lineY + 4
                 love.graphics.setColor(colors.undiscovered)
-                love.graphics.print("(More info unknown)", x, lineY)
+                love.graphics.print("(Social info hidden)", x, lineY)
             end
         end
+    end
+
+    --- Draw disposition wheel indicator
+    function panel:drawDispositionWheel(x, y, entity)
+        local colors = self.colors
+        local currentDisp = entity.disposition or "distaste"
+        local props = disposition_module.getProperties(currentDisp)
+
+        -- Draw small wheel segment indicators
+        local segmentWidth = 20
+        local segmentHeight = 16
+        local spacing = 2
+
+        for i, disp in ipairs(disposition_module.WHEEL) do
+            local segX = x + (i - 1) * (segmentWidth + spacing)
+            local colorKey = "disp_" .. disp
+            local segColor = colors[colorKey] or colors.undiscovered
+
+            -- Highlight current disposition
+            if disp == currentDisp then
+                -- Draw highlighted segment
+                love.graphics.setColor(segColor)
+                love.graphics.rectangle("fill", segX, y, segmentWidth, segmentHeight, 2, 2)
+                love.graphics.setColor(colors.panel_border)
+                love.graphics.setLineWidth(2)
+                love.graphics.rectangle("line", segX, y, segmentWidth, segmentHeight, 2, 2)
+                love.graphics.setLineWidth(1)
+            else
+                -- Draw faded segment
+                love.graphics.setColor(segColor[1], segColor[2], segColor[3], 0.3)
+                love.graphics.rectangle("fill", segX, y, segmentWidth, segmentHeight, 2, 2)
+            end
+        end
+
+        -- Draw disposition name and description below
+        local dispColor = colors["disp_" .. currentDisp] or colors.text_body
+        love.graphics.setColor(dispColor)
+        love.graphics.print(props.name or currentDisp, x, y + segmentHeight + 2)
+    end
+
+    --- Draw NPC Health/Defense bar (HD system)
+    function panel:drawHDBar(x, y, entity)
+        local colors = self.colors
+        local pipSize = 12
+        local pipSpacing = 3
+
+        local health = entity.npcHealth or 3
+        local maxHealth = entity.npcMaxHealth or 3
+        local defense = entity.npcDefense or 0
+        local maxDefense = entity.npcMaxDefense or 0
+
+        local startX = x
+
+        -- Draw Defense pips first (blue/gray)
+        if maxDefense > 0 then
+            love.graphics.setColor(colors.text_faint)
+            love.graphics.print("Def:", x, y - 2)
+            x = x + 28
+
+            for i = 1, maxDefense do
+                local pipX = x + (i - 1) * (pipSize + pipSpacing)
+
+                if i <= defense then
+                    -- Full defense pip
+                    love.graphics.setColor(colors.pip_armor)
+                    love.graphics.rectangle("fill", pipX, y, pipSize, pipSize, 2, 2)
+                else
+                    -- Empty defense pip (depleted)
+                    love.graphics.setColor(colors.pip_empty)
+                    love.graphics.rectangle("fill", pipX, y, pipSize, pipSize, 2, 2)
+                end
+
+                love.graphics.setColor(colors.panel_border)
+                love.graphics.rectangle("line", pipX, y, pipSize, pipSize, 2, 2)
+            end
+
+            x = x + maxDefense * (pipSize + pipSpacing) + 8
+        end
+
+        -- Draw Health pips (red)
+        love.graphics.setColor(colors.text_faint)
+        love.graphics.print("HP:", startX, y + pipSize + 4)
+        x = startX + 28
+
+        for i = 1, maxHealth do
+            local pipX = x + (i - 1) * (pipSize + pipSpacing)
+
+            if i <= health then
+                -- Full health pip
+                love.graphics.setColor(colors.pip_full)
+                love.graphics.rectangle("fill", pipX, y + pipSize + 4, pipSize, pipSize, 2, 2)
+            else
+                -- Empty health pip (wounded)
+                love.graphics.setColor(colors.pip_empty)
+                love.graphics.rectangle("fill", pipX, y + pipSize + 4, pipSize, pipSize, 2, 2)
+                -- X mark for lost health
+                love.graphics.setColor(colors.text_danger)
+                love.graphics.line(pipX + 2, y + pipSize + 6, pipX + pipSize - 2, y + pipSize + pipSize + 2)
+                love.graphics.line(pipX + pipSize - 2, y + pipSize + 6, pipX + 2, y + pipSize + pipSize + 2)
+            end
+
+            love.graphics.setColor(colors.panel_border)
+            love.graphics.rectangle("line", pipX, y + pipSize + 4, pipSize, pipSize, 2, 2)
+        end
+
+        -- Show Death's Door or Dead status
+        if entity.conditions then
+            if entity.conditions.dead then
+                love.graphics.setColor(colors.text_danger)
+                love.graphics.print("DEFEATED", startX + 80, y + pipSize + 4)
+            elseif entity.conditions.deaths_door then
+                love.graphics.setColor(colors.text_danger)
+                love.graphics.print("DEATH'S DOOR", startX + 80, y + pipSize + 4)
+            end
+        end
+    end
+
+    --- Draw morale bar
+    function panel:drawMoraleBar(x, y, entity)
+        local colors = self.colors
+        local barWidth = M.PANEL_WIDTH - M.PANEL_PADDING * 2 - 40
+        local barHeight = 10
+
+        -- Get current morale
+        local currentMorale = 10
+        if entity.getMorale then
+            currentMorale = entity:getMorale()
+        elseif entity.baseMorale then
+            currentMorale = entity.baseMorale - (entity.moraleModifier or 0)
+        end
+
+        local baseMorale = entity.baseMorale or 14
+        local moralePercent = math.max(0, math.min(1, currentMorale / baseMorale))
+
+        -- Background
+        love.graphics.setColor(colors.morale_bg)
+        love.graphics.rectangle("fill", x, y, barWidth, barHeight, 2, 2)
+
+        -- Fill color based on morale level
+        local fillColor
+        if moralePercent > 0.6 then
+            fillColor = colors.morale_high
+        elseif moralePercent > 0.3 then
+            fillColor = colors.morale_mid
+        else
+            fillColor = colors.morale_low
+        end
+
+        love.graphics.setColor(fillColor)
+        love.graphics.rectangle("fill", x, y, barWidth * moralePercent, barHeight, 2, 2)
+
+        -- Border
+        love.graphics.setColor(colors.panel_border)
+        love.graphics.rectangle("line", x, y, barWidth, barHeight, 2, 2)
+
+        -- Value text
+        love.graphics.setColor(colors.text_body)
+        love.graphics.print(string.format("%d", currentMorale), x + barWidth + 4, y - 2)
     end
 
     --- Draw health pips
@@ -17930,24 +23095,71 @@ function M.createInspectPanel(config)
         local height = M.PANEL_PADDING * 2 + M.LINE_HEIGHT * 4
 
         if self.targetType == "entity" and self.target then
-            height = height + M.LINE_HEIGHT * 6  -- Name, origin, health, etc.
+            local e = self.target
+            height = height + M.LINE_HEIGHT * 4  -- Name, origin, separator
 
-            if self.target.armorSlots and self.target.armorSlots > 0 then
-                height = height + M.LINE_HEIGHT + 14
+            -- Health display
+            if e.isPC then
+                -- PC: Health pips + optional armor
+                height = height + M.LINE_HEIGHT + 14  -- Health label + pips
+                if e.armorSlots and e.armorSlots > 0 then
+                    height = height + M.LINE_HEIGHT + 14
+                end
+            else
+                -- NPC: HD bar (two rows)
+                height = height + M.LINE_HEIGHT + 28
             end
 
-            if self.target.conditions then
-                local hasConditions = self.target.conditions.stressed or
-                    self.target.conditions.staggered or
-                    self.target.conditions.injured or
-                    self.target.conditions.deaths_door
+            -- PC conditions
+            if e.isPC and e.conditions then
+                local hasConditions = e.conditions.stressed or
+                    e.conditions.staggered or
+                    e.conditions.injured or
+                    e.conditions.deaths_door
                 if hasConditions then
                     height = height + M.LINE_HEIGHT
                 end
             end
+
+            -- Defense prepared
+            if e.hasDefense and e:hasDefense() then
+                height = height + M.LINE_HEIGHT
+            end
+
+            -- PC conditions display
+            if e.isPC and e.conditions then
+                height = height + M.LINE_HEIGHT  -- For conditions line
+            end
+
+            -- NPC disposition and morale sections
+            if not e.isPC then
+                -- Disposition section
+                height = height + M.LINE_HEIGHT + 4  -- "Disposition:" label
+                if self:isDiscovered(e.id, "disposition") then
+                    height = height + 24 + M.LINE_HEIGHT  -- Wheel + name
+                else
+                    height = height + M.LINE_HEIGHT  -- "???" text
+                end
+
+                -- Morale section
+                height = height + M.LINE_HEIGHT  -- "Morale:" label
+                if self:isDiscovered(e.id, "morale") then
+                    height = height + 14  -- Bar
+                else
+                    height = height + M.LINE_HEIGHT  -- "???" text
+                end
+
+                -- Hates/Wants if discovered
+                if e.hates and self:isDiscovered(e.id, "hates") then
+                    height = height + M.LINE_HEIGHT * 2 + 4
+                end
+                if e.wants and self:isDiscovered(e.id, "wants") then
+                    height = height + M.LINE_HEIGHT * 2
+                end
+            end
         end
 
-        return math.min(height, 300)  -- Cap at max height
+        return math.min(height, 450)  -- Cap at max height
     end
 
     return panel
@@ -18292,6 +23504,308 @@ function M.drawInventoryTray(inventory, location, x, y, config)
 
         M.drawItem(item, itemX, itemY, itemSize, { showDurability = true })
     end
+end
+
+return M
+
+```
+
+---
+
+## File: src/ui/layout_manager.lua
+
+```lua
+-- layout_manager.lua
+-- Stage Layout Manager for Majesty
+-- Ticket S13.2: Transition Center Vellum layouts across phases (Crawl/Challenge/Camp)
+--
+-- Focused scope: core visual components only (no modal layers).
+-- Transitions are fade-only (positions update immediately).
+
+local events = require('logic.events')
+
+local M = {}
+
+M.STAGES = {
+    CRAWL = "crawl",
+    CHALLENGE = "challenge",
+    CAMP = "camp",
+}
+
+local DEFAULTS = {
+    leftRailWidth = 200,
+    rightRailWidth = 200,
+    padding = 10,
+    headerHeight = 40,
+    bottomReserve = 200,
+    arenaTopOffset = 90,
+    equipmentBarOffset = 80,
+    contextPanelMinWidth = 120,
+    contextPanelMaxWidth = 240,
+    minArenaWidth = 260,
+    fadeDuration = 0.25,
+}
+
+local function clamp(value, minValue, maxValue)
+    if value < minValue then return minValue end
+    if value > maxValue then return maxValue end
+    return value
+end
+
+--- Create a new LayoutManager
+-- @param config table: { eventBus, screenWidth, screenHeight, leftRailWidth, rightRailWidth, padding, headerHeight }
+-- @return LayoutManager instance
+function M.createLayoutManager(config)
+    config = config or {}
+
+    local manager = {
+        eventBus = config.eventBus or events.globalBus,
+        stage = config.initialStage or M.STAGES.CRAWL,
+        elements = {},
+        screenWidth = config.screenWidth or 1280,
+        screenHeight = config.screenHeight or 800,
+        config = {
+            leftRailWidth = config.leftRailWidth or DEFAULTS.leftRailWidth,
+            rightRailWidth = config.rightRailWidth or DEFAULTS.rightRailWidth,
+            padding = config.padding or DEFAULTS.padding,
+            headerHeight = config.headerHeight or DEFAULTS.headerHeight,
+            bottomReserve = config.bottomReserve or DEFAULTS.bottomReserve,
+            arenaTopOffset = config.arenaTopOffset or DEFAULTS.arenaTopOffset,
+            equipmentBarOffset = config.equipmentBarOffset or DEFAULTS.equipmentBarOffset,
+            contextPanelMinWidth = config.contextPanelMinWidth or DEFAULTS.contextPanelMinWidth,
+            contextPanelMaxWidth = config.contextPanelMaxWidth or DEFAULTS.contextPanelMaxWidth,
+            minArenaWidth = config.minArenaWidth or DEFAULTS.minArenaWidth,
+        },
+        fadeDuration = config.fadeDuration or DEFAULTS.fadeDuration,
+    }
+
+    ----------------------------------------------------------------------------
+    -- INIT & EVENTS
+    ----------------------------------------------------------------------------
+
+    function manager:init()
+        self.eventBus:on(events.EVENTS.PHASE_CHANGED, function(data)
+            if data and data.newPhase then
+                self:setStage(data.newPhase)
+            end
+        end)
+    end
+
+    ----------------------------------------------------------------------------
+    -- REGISTRATION
+    ----------------------------------------------------------------------------
+
+    --- Register a UI component to receive layout updates
+    -- @param id string: Element ID
+    -- @param component table: UI component instance
+    -- @param opts table: { apply = function(component, layout) }
+    function manager:register(id, component, opts)
+        opts = opts or {}
+        self.elements[id] = {
+            id = id,
+            component = component,
+            apply = opts.apply,
+            alpha = 1,
+            targetAlpha = 1,
+            layout = {},
+            visible = true,
+        }
+
+        -- Apply current stage immediately for this element
+        self:applyStageLayout(self.stage, true)
+    end
+
+    ----------------------------------------------------------------------------
+    -- STAGE CONTROL
+    ----------------------------------------------------------------------------
+
+    function manager:setStage(stageName, immediate)
+        local normalized = stageName
+        if normalized ~= M.STAGES.CRAWL and normalized ~= M.STAGES.CHALLENGE and normalized ~= M.STAGES.CAMP then
+            normalized = M.STAGES.CRAWL
+        end
+        self.stage = normalized
+        self:applyStageLayout(self.stage, immediate)
+    end
+
+    ----------------------------------------------------------------------------
+    -- LAYOUT CALCULATION
+    ----------------------------------------------------------------------------
+
+    function manager:computeLayouts()
+        local cfg = self.config
+        local w = self.screenWidth
+        local h = self.screenHeight
+        local padding = cfg.padding
+        local header = cfg.headerHeight
+
+        local centerX = cfg.leftRailWidth + padding
+        local centerWidth = w - cfg.leftRailWidth - cfg.rightRailWidth - (padding * 2)
+        if centerWidth < 200 then
+            centerWidth = 200
+        end
+
+        local centerY = header + padding
+        local centerHeight = h - header - (padding * 2)
+        if centerHeight < 200 then
+            centerHeight = 200
+        end
+
+        local contextWidth = math.floor(centerWidth * 0.25)
+        contextWidth = clamp(contextWidth, cfg.contextPanelMinWidth, cfg.contextPanelMaxWidth)
+
+        local arenaWidth = centerWidth - contextWidth - padding
+        if arenaWidth < cfg.minArenaWidth then
+            contextWidth = centerWidth - cfg.minArenaWidth - padding
+            contextWidth = math.max(100, contextWidth)
+            arenaWidth = centerWidth - contextWidth - padding
+        end
+
+        local arenaX = centerX + padding
+        local arenaY = cfg.arenaTopOffset
+        local arenaHeight = h - cfg.bottomReserve - arenaY - padding
+        if arenaHeight < 200 then
+            arenaHeight = math.max(200, math.floor(h * 0.4))
+        end
+
+        local contextX = arenaX + arenaWidth + padding
+        local contextY = arenaY
+        local contextHeight = arenaHeight
+
+        local narrativeLayout = {
+            x = centerX + padding,
+            y = centerY,
+            width = centerWidth - (padding * 2),
+            height = centerHeight,
+            alpha = 1,
+            visible = true,
+        }
+
+        local equipmentLayout = {
+            x = centerX + padding,
+            y = h - cfg.equipmentBarOffset,
+            alpha = 1,
+            visible = true,
+        }
+
+        local hidden = { alpha = 0, visible = false }
+
+        return {
+            [M.STAGES.CRAWL] = {
+                narrative_view = narrativeLayout,
+                equipment_bar = equipmentLayout,
+                arena_view = hidden,
+                room_context_panel = hidden,
+            },
+            [M.STAGES.CHALLENGE] = {
+                narrative_view = {
+                    x = narrativeLayout.x,
+                    y = narrativeLayout.y,
+                    width = narrativeLayout.width,
+                    height = narrativeLayout.height,
+                    alpha = 0,
+                    visible = false,
+                },
+                equipment_bar = {
+                    x = equipmentLayout.x,
+                    y = equipmentLayout.y,
+                    alpha = 0,
+                    visible = false,
+                },
+                arena_view = {
+                    x = arenaX,
+                    y = arenaY,
+                    width = arenaWidth,
+                    height = arenaHeight,
+                    alpha = 1,
+                    visible = true,
+                },
+                room_context_panel = {
+                    x = contextX,
+                    y = contextY,
+                    width = contextWidth,
+                    height = contextHeight,
+                    alpha = 1,
+                    visible = true,
+                },
+            },
+            [M.STAGES.CAMP] = {
+                narrative_view = hidden,
+                equipment_bar = hidden,
+                arena_view = hidden,
+                room_context_panel = hidden,
+            },
+        }
+    end
+
+    ----------------------------------------------------------------------------
+    -- APPLY
+    ----------------------------------------------------------------------------
+
+    function manager:applyStageLayout(stageName, immediate)
+        local layouts = self:computeLayouts()
+        local stageLayouts = layouts[stageName] or layouts[M.STAGES.CRAWL]
+
+        for id, element in pairs(self.elements) do
+            local layout = stageLayouts[id] or { alpha = 0, visible = false }
+            element.layout = layout
+            element.targetAlpha = layout.alpha or (layout.visible and 1 or 0)
+
+            if immediate then
+                element.alpha = element.targetAlpha
+            end
+
+            element.visible = (element.alpha or 0) > 0.01
+            self:applyElement(element)
+        end
+    end
+
+    function manager:applyElement(element)
+        if not element.apply then return end
+        local layout = element.layout or {}
+        element.apply(element.component, {
+            x = layout.x,
+            y = layout.y,
+            width = layout.width,
+            height = layout.height,
+            alpha = element.alpha or layout.alpha or 1,
+            visible = element.visible,
+        })
+    end
+
+    ----------------------------------------------------------------------------
+    -- UPDATE
+    ----------------------------------------------------------------------------
+
+    function manager:update(dt)
+        if not dt then return end
+        local step = dt / self.fadeDuration
+        if step > 1 then step = 1 end
+
+        for _, element in pairs(self.elements) do
+            if element.alpha ~= element.targetAlpha then
+                if element.alpha < element.targetAlpha then
+                    element.alpha = math.min(element.targetAlpha, element.alpha + step)
+                else
+                    element.alpha = math.max(element.targetAlpha, element.alpha - step)
+                end
+                element.visible = element.alpha > 0.01
+                self:applyElement(element)
+            end
+        end
+    end
+
+    ----------------------------------------------------------------------------
+    -- RESIZE
+    ----------------------------------------------------------------------------
+
+    function manager:resize(w, h)
+        if w then self.screenWidth = w end
+        if h then self.screenHeight = h end
+        self:applyStageLayout(self.stage, true)
+    end
+
+    return manager
 end
 
 return M
@@ -19346,6 +24860,10 @@ function M.createNarrativeView(config)
 
         -- Hover state
         hoveredPOI = nil,
+
+        -- Layout visibility (for stage fades)
+        alpha = 1,
+        isVisible = true,
     }
 
     ----------------------------------------------------------------------------
@@ -19548,12 +25066,16 @@ function M.createNarrativeView(config)
     --- Draw the narrative view
     -- Call this from love.draw()
     function view:draw()
-        if not love then
+        if not love or not self.isVisible or (self.alpha or 0) <= 0 then
             return  -- Can't draw without LÖVE
+        end
+        local alpha = self.alpha or 1
+        local function setColor(color)
+            love.graphics.setColor(color[1], color[2], color[3], (color[4] or 1) * alpha)
         end
 
         -- Draw background
-        love.graphics.setColor(self.colors.background)
+        setColor(self.colors.background)
         love.graphics.rectangle("fill", self.x, self.y, self.width, self.height)
 
         -- Set font
@@ -19578,12 +25100,12 @@ function M.createNarrativeView(config)
             -- Set color based on token type
             if token.type == M.TOKEN_TYPES.POI then
                 if self.hoveredPOI == token.poiId then
-                    love.graphics.setColor(self.colors.poi_hover)
+                    setColor(self.colors.poi_hover)
                 else
-                    love.graphics.setColor(self.colors.poi)
+                    setColor(self.colors.poi)
                 end
             else
-                love.graphics.setColor(self.colors.text)
+                setColor(self.colors.text)
             end
 
             -- Draw text with proper newline and word wrapping
@@ -19662,6 +25184,20 @@ function M.createNarrativeView(config)
         return self.typewriterPos >= #self.rawText
     end
 
+    --- Set visibility and manage POI hitboxes
+    function view:setVisible(visible)
+        if self.isVisible == visible then return end
+        self.isVisible = visible
+
+        if not visible and self.inputManager then
+            for poiId, _ in pairs(self.poiHitboxes) do
+                self.inputManager:unregisterHitbox(poiId)
+            end
+        elseif visible then
+            self:calculateHitboxes()
+        end
+    end
+
     --- Skip to end of typewriter effect
     function view:skipTypewriter()
         self.typewriterPos = #self.rawText
@@ -19704,8 +25240,8 @@ return M
 -- Suit -> Action mapping (p. 111-115):
 -- - SWORDS: Attack (melee requires engagement, missile uses ammo)
 -- - PENTACLES: Roughhouse (Trip, Disarm, Displace)
--- - WANDS: Banter (attacks Morale), Intimidate
--- - CUPS: Defend, Aid Another, Heal
+-- - WANDS: Banter (attacks Morale)
+-- - CUPS: Aid Another, Heal, support actions
 
 local events = require('logic.events')
 local constants = require('constants')
@@ -19724,23 +25260,23 @@ M.COMBAT_HAND_SIZE = 3    -- Cards remaining after initiative
 M.SUIT_ACTIONS = {
     [constants.SUITS.SWORDS] = {
         primary = "attack",
-        options = { "melee", "missile" },
-        description = "Attack - deal wounds",
+        options = { "melee", "missile", "riposte" },
+        description = "Offense - strike and pressure",
     },
     [constants.SUITS.PENTACLES] = {
         primary = "roughhouse",
-        options = { "trip", "disarm", "displace", "grapple" },
-        description = "Roughhouse - battlefield control",
+        options = { "avoid", "dash", "dodge", "trip", "disarm", "displace", "grapple" },
+        description = "Avoid & Roughhouse - mobility and control",
     },
     [constants.SUITS.WANDS] = {
         primary = "banter",
-        options = { "banter", "intimidate", "cast" },
-        description = "Banter - attack morale",
+        options = { "banter", "cast", "recover", "investigate", "detect_magic" },
+        description = "Wands - magic and insight",
     },
     [constants.SUITS.CUPS] = {
-        primary = "defend",
-        options = { "defend", "dodge", "riposte", "heal", "aid", "shield" },
-        description = "Defend - protect and support",
+        primary = "aid",
+        options = { "heal", "aid", "shield", "pull_item", "use_item" },
+        description = "Support - sustain and prepare",
     },
 }
 
@@ -19787,6 +25323,11 @@ function M.createPlayerHand(config)
 
         -- Listen for challenge end to discard all hands
         self.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
+            self:discardAllHands()
+        end)
+
+        -- Discard remaining cards at end of each round
+        self.eventBus:on(events.EVENTS.CHALLENGE_ROUND_END, function(data)
             self:discardAllHands()
         end)
     end
@@ -20815,6 +26356,10 @@ function M.createCampScreen(config)
         local panelY = self.height - M.LAYOUT.ACTION_PANEL_HEIGHT
         local panelH = M.LAYOUT.ACTION_PANEL_HEIGHT
 
+        -- Clear phase-specific button bounds (will be set by the appropriate panel)
+        self.meatgrinderButtonBounds = nil
+        self.breakCampButtonBounds = nil
+
         -- Background
         love.graphics.setColor(self.colors.panel_bg)
         love.graphics.rectangle("fill", 0, panelY, self.width, panelH)
@@ -20834,6 +26379,8 @@ function M.createCampScreen(config)
             self:drawWatchPanel(panelY)
         elseif currentState == camp_controller.STATES.RECOVERY then
             self:drawRecoveryPanel(panelY)
+        elseif currentState == camp_controller.STATES.TEARDOWN then
+            self:drawTeardownPanel(panelY)
         else
             self:drawGenericPanel(panelY, currentState)
         end
@@ -20890,11 +26437,46 @@ function M.createCampScreen(config)
 
     function screen:drawWatchPanel(panelY)
         love.graphics.setColor(self.colors.step_text)
-        love.graphics.print("THE WATCH - Click to draw from the Meatgrinder", M.LAYOUT.PADDING, panelY + 10)
+        love.graphics.print("THE WATCH - Draw from the Meatgrinder to see what stirs in the night...", M.LAYOUT.PADDING, panelY + 10)
 
         if self.campController.patrolActive then
             love.graphics.setColor(self.colors.step_active)
             love.graphics.print("Patrol active - drawing twice!", M.LAYOUT.PADDING, panelY + 30)
+        end
+
+        -- Draw meatgrinder button (only if watch not yet resolved)
+        if not self.campController.watchResolved then
+            local btnW, btnH = 180, 40
+            local btnX = self.width / 2 - btnW / 2
+            local btnY = panelY + 50
+
+            local isHover = self.hoverButton == "meatgrinder"
+
+            -- Button background
+            if isHover then
+                love.graphics.setColor(0.45, 0.25, 0.20, 1.0)  -- Warm hover
+            else
+                love.graphics.setColor(0.35, 0.18, 0.15, 1.0)  -- Dark red-brown
+            end
+            love.graphics.rectangle("fill", btnX, btnY, btnW, btnH, 6, 6)
+
+            -- Button border
+            love.graphics.setColor(0.6, 0.35, 0.25, 1.0)
+            love.graphics.setLineWidth(2)
+            love.graphics.rectangle("line", btnX, btnY, btnW, btnH, 6, 6)
+            love.graphics.setLineWidth(1)
+
+            -- Button text
+            love.graphics.setColor(self.colors.button_text)
+            love.graphics.printf("Draw from Meatgrinder", btnX, btnY + 12, btnW, "center")
+
+            -- Store bounds for click detection
+            self.meatgrinderButtonBounds = { x = btnX, y = btnY, w = btnW, h = btnH }
+        else
+            -- Watch already resolved
+            love.graphics.setColor(self.colors.step_complete)
+            love.graphics.print("The night passes...", self.width / 2 - 60, panelY + 55)
+            self.meatgrinderButtonBounds = nil
         end
     end
 
@@ -20902,6 +26484,39 @@ function M.createCampScreen(config)
         love.graphics.setColor(self.colors.step_text)
         love.graphics.print("RECOVERY - Click charged bonds to heal wounds, regain resolve, or clear stress", M.LAYOUT.PADDING, panelY + 10)
         love.graphics.print("Stressed characters must clear stress first!", M.LAYOUT.PADDING, panelY + 30)
+    end
+
+    function screen:drawTeardownPanel(panelY)
+        love.graphics.setColor(self.colors.step_text)
+        love.graphics.print("TEARDOWN - The party packs up camp and prepares to move on.", M.LAYOUT.PADDING, panelY + 10)
+
+        -- Draw "Break Camp" button
+        local btnW, btnH = 160, 40
+        local btnX = self.width / 2 - btnW / 2
+        local btnY = panelY + 50
+
+        local isHover = self.hoverButton == "breakcamp"
+
+        -- Button background
+        if isHover then
+            love.graphics.setColor(0.35, 0.45, 0.35, 1.0)  -- Green hover
+        else
+            love.graphics.setColor(0.25, 0.35, 0.25, 1.0)  -- Dark green
+        end
+        love.graphics.rectangle("fill", btnX, btnY, btnW, btnH, 6, 6)
+
+        -- Button border
+        love.graphics.setColor(0.4, 0.55, 0.4, 1.0)
+        love.graphics.setLineWidth(2)
+        love.graphics.rectangle("line", btnX, btnY, btnW, btnH, 6, 6)
+        love.graphics.setLineWidth(1)
+
+        -- Button text
+        love.graphics.setColor(self.colors.button_text)
+        love.graphics.printf("Break Camp", btnX, btnY + 12, btnW, "center")
+
+        -- Store bounds for click detection
+        self.breakCampButtonBounds = { x = btnX, y = btnY, w = btnW, h = btnH }
     end
 
     function screen:drawGenericPanel(panelY, state)
@@ -21012,6 +26627,24 @@ function M.createCampScreen(config)
             end
         end
 
+        -- Check meatgrinder button (Watch phase)
+        if self.meatgrinderButtonBounds then
+            local btn = self.meatgrinderButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self:handleMeatgrinderClick()
+                return
+            end
+        end
+
+        -- Check break camp button (Teardown phase)
+        if self.breakCampButtonBounds then
+            local btn = self.breakCampButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self:handleBreakCampClick()
+                return
+            end
+        end
+
         -- Check advance button
         if self.advanceButtonBounds then
             local btn = self.advanceButtonBounds
@@ -21053,6 +26686,22 @@ function M.createCampScreen(config)
                y >= plate.y and y <= plate.y + plate:getHeight() then
                 self.hoveredPlateIndex = i
                 break
+            end
+        end
+
+        -- Check meatgrinder button hover
+        if self.meatgrinderButtonBounds then
+            local btn = self.meatgrinderButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self.hoverButton = "meatgrinder"
+            end
+        end
+
+        -- Check break camp button hover
+        if self.breakCampButtonBounds then
+            local btn = self.breakCampButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self.hoverButton = "breakcamp"
             end
         end
 
@@ -21300,6 +26949,29 @@ function M.createCampScreen(config)
             else
                 print("[CampScreen] Bond is not charged")
             end
+        end
+    end
+
+    function screen:handleMeatgrinderClick()
+        if not self.campController then return end
+
+        local success, err = self.campController:resolveWatch()
+        if success then
+            print("[CampScreen] Meatgrinder drawn - watch resolved")
+        else
+            print("[CampScreen] Watch failed: " .. (err or "unknown"))
+        end
+    end
+
+    function screen:handleBreakCampClick()
+        if not self.campController then return end
+
+        -- advanceStep from TEARDOWN calls endCamp() which emits phase_changed
+        local success, err = self.campController:advanceStep()
+        if success then
+            print("[CampScreen] Camp broken - returning to crawl")
+        else
+            print("[CampScreen] Break camp failed: " .. (err or "unknown"))
         end
     end
 
@@ -22127,7 +27799,7 @@ function M.createCharacterSheet(config)
         local success, reason = self.selectedPC.inventory:swap(self.dragging.id, targetLoc)
         if success then
             print("[INVENTORY] Moved " .. self.dragging.name .. " to " .. targetLoc)
-            self.eventBus:emit("inventory_changed", {
+            self.eventBus:emit(events.EVENTS.INVENTORY_CHANGED, {
                 entity = self.selectedPC,
                 item = self.dragging,
                 from = self.dragSourceLocation,
@@ -22180,7 +27852,11 @@ local input_manager = require('ui.input_manager')
 local narrative_view = require('ui.narrative_view')
 local focus_menu = require('ui.focus_menu')
 local character_plate = require('ui.character_plate')
-local belt_hotbar = require('ui.belt_hotbar')
+local equipment_bar = require('ui.equipment_bar')
+local interaction = require('logic.interaction')
+local item_interaction = require('logic.item_interaction')
+local resolver = require('logic.resolver')
+local constants = require('constants')
 
 local M = {}
 
@@ -22207,6 +27883,34 @@ M.COLORS = {
     dread_card_bg = { 0.15, 0.1, 0.12, 1.0 },
 }
 
+local function formatLightLevel(level)
+    if level == "bright" then
+        return "BRIGHT"
+    elseif level == "dim" then
+        return "DIM"
+    elseif level == "dark" then
+        return "DARK"
+    end
+    return "UNKNOWN"
+end
+
+local function getLightLevelColor(level)
+    if level == "bright" then
+        return 0.75, 0.9, 0.45, 1
+    elseif level == "dim" then
+        return 0.95, 0.8, 0.35, 1
+    else
+        return 0.95, 0.45, 0.4, 1
+    end
+end
+
+local function getNowSeconds()
+    if love and love.timer and love.timer.getTime then
+        return love.timer.getTime()
+    end
+    return os.clock()
+end
+
 --------------------------------------------------------------------------------
 -- CRAWL SCREEN FACTORY
 --------------------------------------------------------------------------------
@@ -22223,12 +27927,14 @@ function M.createCrawlScreen(config)
         roomManager  = config.roomManager,
         watchManager = config.watchManager,
         gameState    = config.gameState,
+        layoutManager = config.layoutManager,
 
         -- UI Components (created in init)
         inputManager  = nil,
         narrativeView = nil,
         focusMenu     = nil,
-        beltHotbar    = nil,  -- S10.3: Belt item quick access
+        equipmentBar    = nil,  -- Hands + Belt item display with drag-to-use
+        roomContextPanel = nil, -- S13.2: Slim room context panel during challenges
 
         -- Layout dimensions (calculated on resize)
         width  = 800,
@@ -22246,6 +27952,22 @@ function M.createCrawlScreen(config)
         characterPlates = {},     -- S5.1: Extended character plate components
         dreadCard     = nil,      -- Currently displayed Major Arcana
         exitHitboxes  = {},       -- Room exit clickable areas
+        currentRoomDescription = nil,
+        pendingTestOfFate = nil,
+        testHistoryDrawer = {
+            isExpanded = false,
+            collapsedHeight = 28,
+            expandedHeight = 180,
+            headerHeight = 28,
+            padding = 8,
+            lineHeight = 18,
+            entries = {},
+            maxEntries = 50,
+        },
+        lightNarrative = {
+            pendingToggle = nil,
+            combineWindow = 0.25,
+        },
 
         -- Textures (loaded in init)
         vellumTexture = nil,
@@ -22253,6 +27975,14 @@ function M.createCrawlScreen(config)
         -- Colors
         colors = config.colors or M.COLORS,
     }
+
+    local function describeEntity(entity)
+        return (entity and entity.name) or "Someone"
+    end
+
+    local function describeItem(item)
+        return (item and item.name) or "light source"
+    end
 
     ----------------------------------------------------------------------------
     -- INITIALIZATION
@@ -22262,6 +27992,17 @@ function M.createCrawlScreen(config)
     function screen:init()
         -- Create input manager
         self.inputManager = input_manager.createInputManager({
+            eventBus = self.eventBus,
+            roomManager = self.roomManager,
+        })
+
+        -- Create interaction systems
+        self.interactionSystem = interaction.createInteractionSystem({
+            eventBus = self.eventBus,
+            roomManager = self.roomManager,
+        })
+
+        self.itemInteractionSystem = item_interaction.createItemInteractionSystem({
             eventBus = self.eventBus,
             roomManager = self.roomManager,
         })
@@ -22285,14 +28026,32 @@ function M.createCrawlScreen(config)
             eventBus = self.eventBus,
             inputManager = self.inputManager,
             roomManager = self.roomManager,
+            interactionSystem = self.interactionSystem,
         })
 
-        -- S10.3: Create belt hotbar (positioned in calculateLayout)
-        self.beltHotbar = belt_hotbar.createBeltHotbar({
+        -- Create equipment bar (hands + belt, positioned in calculateLayout)
+        self.equipmentBar = equipment_bar.createEquipmentBar({
             eventBus = self.eventBus,
+            inputManager = self.inputManager,
             guild = self.guild,
         })
-        self.beltHotbar:init()
+        self.equipmentBar:init()
+
+        -- S13.2: Slim room context panel for challenge phase
+        self.roomContextPanel = {
+            x = 0,
+            y = 0,
+            width = 0,
+            height = 0,
+            alpha = 0,
+            isVisible = false,
+            padding = 12,
+        }
+
+        -- Register layout-managed elements
+        if self.layoutManager then
+            self:registerLayoutElements()
+        end
 
         -- Subscribe to events
         self:subscribeEvents()
@@ -22365,22 +28124,107 @@ function M.createCrawlScreen(config)
         self.eventBus:on(events.EVENTS.SCRUTINY_SELECTED, function(data)
             self:handleScrutinyResult(data)
         end)
+
+        -- POI action selected -> resolve interaction
+        self.eventBus:on(events.EVENTS.POI_ACTION_SELECTED, function(data)
+            self:handlePoiActionSelected(data)
+        end)
+
+        -- Bound by Fate note (disabled actions)
+        self.eventBus:on(events.EVENTS.BOUND_BY_FATE_BLOCKED, function()
+            self:notifyBoundByFate()
+        end)
+
+        -- Test of Fate result -> resolve pending crawl investigations
+        self.eventBus:on(events.EVENTS.TEST_OF_FATE_COMPLETE, function(data)
+            self:handleTestOfFateComplete(data)
+        end)
+
+        -- Item used on POI -> handle interaction (keys on doors, poles on traps, etc.)
+        self.eventBus:on(events.EVENTS.USE_ITEM_ON_POI, function(data)
+            self:handleItemOnPOI(data)
+        end)
+
+        -- Light-system narrative hooks
+        self.eventBus:on(events.EVENTS.LIGHT_SOURCE_TOGGLED, function(data)
+            self:handleLightSourceToggled(data)
+        end)
+        self.eventBus:on(events.EVENTS.LIGHT_FLICKERED, function(data)
+            self:handleLightFlickered(data)
+        end)
+        self.eventBus:on(events.EVENTS.LIGHT_DESTROYED, function(data)
+            self:handleLightDestroyed(data)
+        end)
+        self.eventBus:on(events.EVENTS.LIGHT_EXTINGUISHED, function(data)
+            self:handleLightExtinguished(data)
+        end)
+        self.eventBus:on(events.EVENTS.LANTERN_BROKEN, function(data)
+            self:handleLanternBroken(data)
+        end)
+        self.eventBus:on(events.EVENTS.PARTY_LIGHT_CHANGED, function(data)
+            self:handlePartyLightChanged(data)
+        end)
+        self.eventBus:on(events.EVENTS.DARKNESS_FELL, function(data)
+            self:handleDarknessFell(data)
+        end)
+        self.eventBus:on(events.EVENTS.DARKNESS_LIFTED, function(data)
+            self:handleDarknessLifted(data)
+        end)
+    end
+
+    --- Register UI elements with the layout manager
+    function screen:registerLayoutElements()
+        if not self.layoutManager then return end
+
+        self.layoutManager:register("narrative_view", self.narrativeView, {
+            apply = function(view, layout)
+                if layout.x and layout.y then
+                    if view.x ~= layout.x or view.y ~= layout.y then
+                        view:setPosition(layout.x, layout.y)
+                    end
+                end
+                if layout.width and layout.height then
+                    if view.width ~= layout.width or view.height ~= layout.height then
+                        view:resize(layout.width, layout.height)
+                    end
+                end
+                view.alpha = layout.alpha or 1
+                if view.setVisible then
+                    view:setVisible(layout.visible)
+                else
+                    view.isVisible = layout.visible
+                end
+            end,
+        })
+
+        self.layoutManager:register("equipment_bar", self.equipmentBar, {
+            apply = function(bar, layout)
+                if layout.x and layout.y then
+                    if bar.x ~= layout.x or bar.y ~= layout.y then
+                        bar.x = layout.x
+                        bar.y = layout.y
+                        bar:calculateLayout()
+                    end
+                end
+                bar.alpha = layout.alpha or 1
+                bar.isVisible = layout.visible
+            end,
+        })
+
+        self.layoutManager:register("room_context_panel", self.roomContextPanel, {
+            apply = function(panel, layout)
+                if layout.x then panel.x = layout.x end
+                if layout.y then panel.y = layout.y end
+                if layout.width then panel.width = layout.width end
+                if layout.height then panel.height = layout.height end
+                panel.alpha = layout.alpha or 1
+                panel.isVisible = layout.visible
+            end,
+        })
     end
 
     --- Handle scrutiny result and display it
     function screen:handleScrutinyResult(data)
-        -- S11.3: Check if this is a "search" on a container with loot
-        if data.verb == "search" then
-            local feature = self.roomManager:getFeature(data.roomId, data.poiId)
-            if feature and feature.loot and #feature.loot > 0 then
-                -- Open the loot modal instead of showing narrative
-                if self.gameState and self.gameState.lootModal then
-                    self.gameState.lootModal:open(feature, data.roomId)
-                    return
-                end
-            end
-        end
-
         if not data.result then return end
 
         local resultText = data.result.text or "You find nothing of note."
@@ -22394,6 +28238,586 @@ function M.createCrawlScreen(config)
             local currentText = self.narrativeView.rawText or ""
             local newText = currentText .. "\n\n--- " .. data.verb:upper() .. " ---\n" .. resultText
             self.narrativeView:setText(newText, true)
+        end
+    end
+
+    --- Get the currently active PC for crawl interactions
+    function screen:getActivePC()
+        if self.gameState and self.gameState.activePCIndex and self.gameState.guild then
+            return self.gameState.guild[self.gameState.activePCIndex] or self.gameState.guild[1]
+        end
+        return self.guild and self.guild[1] or nil
+    end
+
+    --- Append a labeled block to the narrative view
+    function screen:appendNarrativeBlock(title, text)
+        if not self.narrativeView then return end
+        local currentText = self.narrativeView.rawText or ""
+        local newText = currentText .. "\n\n--- " .. title .. " ---\n" .. text
+        self.narrativeView:setText(newText, true)
+    end
+
+    --- Notify that a Test of Fate result stands (Bound by Fate)
+    function screen:notifyBoundByFate()
+        self:appendNarrativeBlock("BOUND BY FATE", "The result stands unless circumstances change (a different tool or a changed situation).")
+    end
+
+    --- Only append automatic system logs while this crawl screen is active.
+    function screen:canAppendSystemNarrative()
+        if not self.narrativeView then
+            return false
+        end
+        if self.gameState and self.gameState.currentScreen and self.gameState.currentScreen ~= self then
+            return false
+        end
+        return true
+    end
+
+    function screen:buildLightToggleMessage(data)
+        local actor = describeEntity(data and data.entity)
+        local itemName = describeItem(data and data.item)
+        if data and data.lit then
+            return string.format("%s lights %s.", actor, itemName)
+        end
+        return string.format("%s extinguishes %s.", actor, itemName)
+    end
+
+    function screen:buildPartyLightShiftMessage(data)
+        local current = formatLightLevel(data and data.current)
+        local previous = formatLightLevel(data and data.previous)
+        if current == previous then
+            return nil
+        end
+
+        local sources = data and data.sources
+        local sourceSuffix = ""
+        if type(sources) == "number" then
+            sourceSuffix = string.format(" (%d active source%s)", sources, sources == 1 and "" or "s")
+        end
+
+        return string.format("Party light shifts from %s to %s%s.", previous, current, sourceSuffix)
+    end
+
+    function screen:flushPendingLightNarrative(force)
+        if not self:canAppendSystemNarrative() then
+            return
+        end
+
+        local tracker = self.lightNarrative
+        local pending = tracker and tracker.pendingToggle
+        if not pending then
+            return
+        end
+
+        local now = getNowSeconds()
+        local window = tracker.combineWindow or 0.25
+        if not force and (now - pending.timestamp) < window then
+            return
+        end
+
+        self:appendNarrativeBlock("LIGHT", self:buildLightToggleMessage(pending))
+        tracker.pendingToggle = nil
+    end
+
+    function screen:handleLightSourceToggled(data)
+        if not self:canAppendSystemNarrative() then return end
+        if not self.lightNarrative then
+            self.lightNarrative = { pendingToggle = nil, combineWindow = 0.25 }
+        end
+        self.lightNarrative.pendingToggle = {
+            entity = data and data.entity,
+            item = data and data.item,
+            lit = data and data.lit,
+            timestamp = getNowSeconds(),
+        }
+    end
+
+    function screen:handleLightFlickered(data)
+        if not self:canAppendSystemNarrative() then return end
+        local remaining = (data and data.remaining) or 0
+        -- Extinguish/destroy logs carry the terminal event; suppress duplicate flicker->0 lines.
+        if remaining <= 0 then
+            return
+        end
+        local actor = describeEntity(data and data.entity)
+        local itemName = describeItem(data and data.item)
+        local cardSuffix = ""
+        if data and data.cardValue then
+            cardSuffix = " (Meatgrinder " .. tostring(data.cardValue) .. ")"
+        end
+        local message = string.format("%s's %s flickers%s. %d remaining.", actor, itemName, cardSuffix, remaining)
+        self:appendNarrativeBlock("LIGHT", message)
+    end
+
+    function screen:handleLightDestroyed(data)
+        if not self:canAppendSystemNarrative() then return end
+        local actor = describeEntity(data and data.entity)
+        local itemName = describeItem(data and data.item)
+        self:appendNarrativeBlock("LIGHT", string.format("%s's %s gutters out and is spent.", actor, itemName))
+    end
+
+    function screen:handleLightExtinguished(data)
+        if not self:canAppendSystemNarrative() then return end
+        local actor = describeEntity(data and data.entity)
+        local itemName = describeItem(data and data.item)
+        self:appendNarrativeBlock("LIGHT", string.format("%s's %s goes dark and needs fuel.", actor, itemName))
+    end
+
+    function screen:handleLanternBroken(data)
+        if not self:canAppendSystemNarrative() then return end
+        local actor = describeEntity(data and data.entity)
+        local itemName = describeItem(data and data.item)
+        self:appendNarrativeBlock("LIGHT", string.format("%s's %s breaks.", actor, itemName))
+    end
+
+    function screen:handlePartyLightChanged(data)
+        if not self:canAppendSystemNarrative() then return end
+        local shiftMessage = self:buildPartyLightShiftMessage(data)
+        if not shiftMessage then
+            return
+        end
+
+        local tracker = self.lightNarrative
+        local pending = tracker and tracker.pendingToggle
+        local now = getNowSeconds()
+        local window = (tracker and tracker.combineWindow) or 0.25
+        if pending and (now - pending.timestamp) <= window then
+            self:appendNarrativeBlock("LIGHT", self:buildLightToggleMessage(pending) .. " " .. shiftMessage)
+            tracker.pendingToggle = nil
+            return
+        end
+
+        self:appendNarrativeBlock("LIGHT", shiftMessage)
+    end
+
+    function screen:handleDarknessFell(data)
+        if not self:canAppendSystemNarrative() then return end
+        local affected = (data and data.affectedCount) or 0
+        if affected == 1 then
+            self:appendNarrativeBlock("DARKNESS", "Darkness falls. 1 adventurer is now blind.")
+        else
+            self:appendNarrativeBlock("DARKNESS", string.format("Darkness falls. %d adventurers are now blind.", affected))
+        end
+    end
+
+    function screen:handleDarknessLifted(data)
+        if not self:canAppendSystemNarrative() then return end
+        local affected = (data and data.affectedCount) or 0
+        self:appendNarrativeBlock("DARKNESS", string.format("Light returns. Blindness clears for %d adventurer%s.", affected, affected == 1 and "" or "s"))
+    end
+
+    local function formatTestResult(result)
+        if not result then return "UNKNOWN" end
+        if result.result == resolver.RESULTS.GREAT_SUCCESS then
+            return "GREAT SUCCESS"
+        elseif result.result == resolver.RESULTS.SUCCESS then
+            return "SUCCESS"
+        elseif result.result == resolver.RESULTS.GREAT_FAILURE then
+            return "GREAT FAILURE"
+        elseif result.result == resolver.RESULTS.FAILURE then
+            return "FAILURE"
+        end
+        return "UNKNOWN"
+    end
+
+    local function formatFavor(favor)
+        if favor == true then
+            return "Favor"
+        elseif favor == false then
+            return "Disfavor"
+        end
+        return "Neutral"
+    end
+
+    local function formatCardList(cards)
+        if not cards or #cards == 0 then return "No cards" end
+        local parts = {}
+        for _, card in ipairs(cards) do
+            if card.name then
+                parts[#parts + 1] = card.name
+            elseif card.value then
+                parts[#parts + 1] = tostring(card.value)
+            end
+        end
+        return table.concat(parts, ", ")
+    end
+
+    --- Record a Test of Fate result in the drawer history
+    function screen:recordTestHistory(data)
+        if not data or not data.result then return end
+        local drawer = self.testHistoryDrawer
+        if not drawer then return end
+
+        local config = data.config or {}
+        local entity = data.entity
+        local description = config.description or "Test of Fate"
+        local attribute = config.attribute or "?"
+        local favor = formatFavor(config.favor)
+        local resultText = formatTestResult(data.result)
+        local total = data.result.total or 0
+        local cards = formatCardList(data.result.cards)
+        local actorName = entity and entity.name or "Unknown"
+
+        local summary = string.format("%s (%d) - %s", resultText, total, description)
+
+        drawer.entries[#drawer.entries + 1] = {
+            description = description,
+            attribute = attribute,
+            favor = favor,
+            resultText = resultText,
+            total = total,
+            cards = cards,
+            actorName = actorName,
+            summary = summary,
+        }
+
+        if #drawer.entries > drawer.maxEntries then
+            table.remove(drawer.entries, 1)
+        end
+    end
+
+    --- Refresh the room description while preserving appended narrative
+    function screen:refreshRoomDescription()
+        if not self.narrativeView or not self.roomManager or not self.currentRoomId then return end
+
+        local room = self.roomManager:getRoom(self.currentRoomId)
+        if not room then return end
+
+        local newDescription = self:buildRoomDescription(room)
+        local existingText = self.narrativeView.rawText or ""
+        local suffix = ""
+
+        if self.currentRoomDescription and existingText:sub(1, #self.currentRoomDescription) == self.currentRoomDescription then
+            suffix = existingText:sub(#self.currentRoomDescription + 1)
+        else
+            suffix = existingText
+        end
+
+        self.currentRoomDescription = newDescription
+        self.narrativeView:setText(newDescription .. suffix, true)
+    end
+
+    --- Handle Test of Fate completion for crawl actions
+    function screen:handleTestOfFateComplete(data)
+        self:recordTestHistory(data)
+        if not self.pendingTestOfFate then return end
+
+        local pending = self.pendingTestOfFate
+        self.pendingTestOfFate = nil
+
+        if pending.kind == "poi_investigation" then
+            if not self.roomManager or not pending.feature then return end
+            if not data or not data.result then
+                self:appendNarrativeBlock("TEST OF FATE", "No result was recorded.")
+                return
+            end
+
+            local result = self.roomManager:conductInvestigation(
+                pending.actor,
+                pending.roomId or self.currentRoomId,
+                pending.feature.id,
+                nil,
+                resolver,
+                pending.item,
+                { testResult = data and data.result or nil }
+            )
+
+            self:applyInvestigationOutcome(pending.feature, result)
+            return
+        end
+
+        if pending.kind == "item_interaction" then
+            if not self.roomManager or not pending.feature then return end
+            if not data or not data.result then
+                self:appendNarrativeBlock("TEST OF FATE", "No result was recorded.")
+                return
+            end
+
+            local testResult = data.result
+            local result = pending.baseResult or {}
+            local interactionType = pending.interactionType
+            local roomId = pending.roomId or self.currentRoomId
+
+            if testResult.success then
+                if interactionType == item_interaction.INTERACTION_TYPES.UNLOCK then
+                    self.roomManager:setFeatureState(roomId, pending.feature.id, "unlocked")
+                    result.description = "You pick the lock successfully."
+                else
+                    result.description = (pending.testConfig and pending.testConfig.success_desc) or "Your efforts succeed."
+                end
+            else
+                result.description = (pending.testConfig and pending.testConfig.failure_desc) or "Your attempt fails."
+            end
+
+            -- Record Bound by Fate (result stands unless circumstances change)
+            local testKey = pending.testKey or "item_interaction"
+            self.roomManager:recordBoundByFate(roomId, pending.feature.id, testKey, {
+                item = pending.item,
+            }, testResult)
+
+            if result.description then
+                self:appendNarrativeBlock("ITEM", result.description)
+            end
+        end
+    end
+
+    --- Spend a watch and surface the time cost in the narrative
+    function screen:spendWatch(reason)
+        if not self.watchManager then return nil end
+        local watchResult = self.watchManager:incrementWatch()
+        local message = reason or "Time passes as you work."
+        if watchResult and watchResult.watchNumber then
+            message = message .. " (Watch " .. watchResult.watchNumber .. ")"
+        end
+        self:appendNarrativeBlock("TIME PASSES", message)
+        return watchResult
+    end
+
+    --- Apply investigation results (narrative + rewards)
+    function screen:applyInvestigationOutcome(feature, result)
+        if result and result.description then
+            self:appendNarrativeBlock("INVESTIGATE", result.description)
+        end
+
+        -- Open loot modal on successful investigation if loot is present
+        if result and result.result and result.result.success then
+            if feature.type == "container" or feature.type == "corpse" then
+                self.roomManager:updateFeatureState(self.currentRoomId, feature.id, { state = "searched" })
+            end
+            if feature.loot and #feature.loot > 0 then
+                if self.gameState and self.gameState.lootModal then
+                    self.gameState.lootModal:open(feature, self.currentRoomId)
+                end
+            end
+
+            -- Reveal any secret connections linked to this POI
+            if feature.reveal_connection or feature.reveal_connections then
+                self:revealFeatureConnections(feature)
+            end
+        end
+    end
+
+    --- Reveal connections linked to a feature (secret passages, etc.)
+    function screen:revealFeatureConnections(feature)
+        if not feature or not self.watchManager or not self.watchManager.dungeon then return end
+
+        local reveal = feature.reveal_connections or feature.reveal_connection
+        if not reveal then return end
+
+        local connections = {}
+        if type(reveal) == "string" then
+            connections = { { to = reveal } }
+        elseif type(reveal) == "table" and reveal[1] then
+            connections = reveal
+        elseif type(reveal) == "table" then
+            connections = { reveal }
+        end
+
+        local dungeon = self.watchManager.dungeon
+        local revealedAny = false
+
+        for _, connInfo in ipairs(connections) do
+            local fromId = connInfo.from or self.currentRoomId
+            local toId = connInfo.to or connInfo.target or connInfo.roomId
+            if toId then
+                local conn = dungeon:getConnection(fromId, toId)
+                if conn then
+                    dungeon:discoverConnection(fromId, toId)
+                    if not conn.is_one_way then
+                        dungeon:discoverConnection(toId, fromId)
+                    end
+                    revealedAny = true
+                end
+            end
+        end
+
+        if revealedAny then
+            self:refreshRoomDescription()
+        end
+    end
+
+    --- Get a Bound by Fate key for item-based tests
+    function screen:getItemTestKey(interactionType)
+        if not interactionType then
+            return "item_interaction"
+        end
+        return "item_" .. tostring(interactionType)
+    end
+
+    --- Resolve a POI investigation (Test of Fate) in the Crawl
+    function screen:resolvePoiInvestigation(actor, feature, context)
+        if not actor or not feature or not self.roomManager then return end
+
+        if (feature.type == "container" or feature.type == "corpse") and
+            (feature.state == "empty" or feature.state == "searched") then
+            self:appendNarrativeBlock("INVESTIGATE", "You've already searched this.")
+            return
+        end
+
+        local item = context and context.item or nil
+
+        -- Auto-success with key item (if applicable)
+        if item and feature.key_item_id then
+            local itemKeyId = item.keyId or (item.properties and (item.properties.key_id or item.properties.keyId))
+            if itemKeyId == feature.key_item_id or item.name == feature.key_item_id then
+                local result = self.roomManager:conductInvestigation(
+                    actor,
+                    self.currentRoomId,
+                    feature.id,
+                    nil,
+                    resolver,
+                    item
+                )
+                self:applyInvestigationOutcome(feature, result)
+                return result
+            end
+        end
+
+        -- Ensure deck is available before opening the modal
+        if not self.gameState or not self.gameState.playerDeck or self.gameState.playerDeck:totalCards() == 0 then
+            self:appendNarrativeBlock("INVESTIGATE", "You cannot draw a card right now.")
+            return
+        end
+
+        if self.pendingTestOfFate then
+            self:appendNarrativeBlock("TEST OF FATE", "A Test of Fate is already underway.")
+            return
+        end
+
+        local boundStatus = self.roomManager:getBoundByFateStatus(self.currentRoomId, feature.id, "investigate", {
+            item = item,
+        })
+        if boundStatus and boundStatus.allowed == false then
+            self:notifyBoundByFate()
+            return
+        end
+
+        if context and context.watchCost then
+            local verb = context.action or "investigate"
+            self:spendWatch("You take time to " .. verb .. ".")
+        end
+
+        local testInfo = self.roomManager:computeInvestigationTest(actor, self.currentRoomId, feature.id, item)
+        if not testInfo then
+            self:appendNarrativeBlock("INVESTIGATE", "You cannot investigate that right now.")
+            return
+        end
+
+        local title = "Investigate"
+        if feature.name then
+            title = "Investigate: " .. feature.name
+        end
+
+        self.pendingTestOfFate = {
+            kind = "poi_investigation",
+            actor = actor,
+            feature = feature,
+            roomId = self.currentRoomId,
+            item = item,
+        }
+
+        self.eventBus:emit(events.EVENTS.REQUEST_TEST_OF_FATE, {
+            entity = actor,
+            attribute = testInfo.attribute,
+            targetSuit = testInfo.suitId,
+            favor = testInfo.favor,
+            description = title,
+        })
+    end
+
+    --- Resolve a simple Test of Fate for crawl interactions
+    function screen:resolveSimpleTest(actor, attributeName, favor)
+        if not self.gameState or not self.gameState.playerDeck then
+            return nil
+        end
+        local card = self.gameState.playerDeck:draw()
+        if not card then
+            return nil
+        end
+
+        local suitId = constants.SUITS[string.upper(attributeName or "pentacles")] or constants.SUITS.PENTACLES
+        local attributeValue = 0
+        if actor and actor.getAttribute then
+            attributeValue = actor:getAttribute(suitId)
+        end
+
+        local testResult = resolver.resolveTest(attributeValue, suitId, card, favor)
+        self.gameState.playerDeck:discard(card)
+        return testResult
+    end
+
+    --- Determine the most relevant item interaction for a POI
+    function screen:selectItemInteraction(item, feature)
+        if not self.itemInteractionSystem or not item or not feature then
+            return nil
+        end
+
+        if feature.lock and self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.UNLOCK) then
+            return item_interaction.INTERACTION_TYPES.UNLOCK
+        end
+
+        if (feature.trap or feature.type == "hazard") and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.PROBE) then
+            return item_interaction.INTERACTION_TYPES.PROBE
+        end
+
+        if feature.type == "mechanism" and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.TRIGGER) then
+            return item_interaction.INTERACTION_TYPES.TRIGGER
+        end
+
+        if feature.type == "light" and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.LIGHT) then
+            return item_interaction.INTERACTION_TYPES.LIGHT
+        end
+
+        if (feature.fragile or feature.breakable) and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.BREAK) then
+            return item_interaction.INTERACTION_TYPES.BREAK
+        end
+
+        local caps = self.itemInteractionSystem:getItemCapabilities(item)
+        return caps and caps[1] or nil
+    end
+
+    --- Handle action selections from the POI menu
+    function screen:handlePoiActionSelected(data)
+        if not data or not data.poiId then return end
+        local feature = self.roomManager and self.roomManager:getFeature(data.roomId, data.poiId)
+        if not feature then return end
+
+        local actor = self:getActivePC()
+
+        if data.watchCost then
+            self:spendWatch("You take time to " .. (data.action or "act") .. ".")
+        end
+
+        -- Map investigation-style actions to the Test of Fate flow
+        if data.action == "investigate" or data.action == "search" or data.action == "trap_check" then
+            self:resolvePoiInvestigation(actor, feature, {
+                watchCost = data.watchCost,
+                action = data.action,
+            })
+            return
+        end
+
+        -- Default interaction handling
+        if data.watchCost then
+            self:spendWatch("You take time to " .. (data.action or "act") .. ".")
+        end
+
+        if self.interactionSystem then
+            local result = self.interactionSystem:interact(actor, feature, data.action, data.level, {
+                roomId = self.currentRoomId,
+                hasItem = function(keyId)
+                    local item, _ = self:findMatchingKey(keyId)
+                    return item ~= nil
+                end,
+            })
+
+            if result and result.description then
+                self:appendNarrativeBlock(string.upper(data.action or "ACT"), result.description)
+            end
         end
     end
 
@@ -22414,56 +28838,21 @@ function M.createCrawlScreen(config)
         else
             print("[handleExitClick] Move failed: " .. (result.error or "unknown"))
 
-            -- S11.3: Handle locked door - check if party has matching key
+            -- Handle locked door - require dragging a key to unlock
             if result.error == "connection_locked" then
                 local connection = self.watchManager.dungeon:getConnection(self.currentRoomId, targetRoomId)
 
-                -- Check if any party member has the matching key
-                local foundKey, foundPC = self:findMatchingKey(connection.key_id)
+                local msg = "The passage is locked."
+                if connection and connection.description then
+                    msg = connection.description
+                end
 
-                if foundKey then
-                    -- Auto-unlock with the found key
-                    connection.is_locked = false
-
-                    -- Show success message
-                    if self.narrativeView then
-                        local currentText = self.narrativeView.rawText or ""
-                        local newText = currentText .. "\n\n--- UNLOCKED ---\n" ..
-                            foundPC.name .. " uses the " .. (foundKey.name or "key") ..
-                            " to unlock the passage. It swings open with a creak."
-                        self.narrativeView:setText(newText, true)
-                    end
-
-                    print("[KEY] Door unlocked with " .. (foundKey.name or "key") .. " by " .. foundPC.name)
-
-                    -- Emit unlock event
-                    self.eventBus:emit("door_unlocked", {
-                        from = self.currentRoomId,
-                        to = targetRoomId,
-                        keyItem = foundKey,
-                        unlocker = foundPC,
-                    })
-
-                    -- Refresh room display and then auto-move
-                    self:enterRoom(self.currentRoomId)
-
-                    -- Now try to move through the unlocked door
-                    local moveSuccess, moveResult = self.watchManager:moveParty(targetRoomId)
-                    if moveSuccess then
-                        print("[handleExitClick] Move successful after unlock!")
-                    end
-                else
-                    -- No matching key - show locked message
-                    local msg = "The passage is locked."
-                    if connection and connection.description then
-                        msg = connection.description
-                    end
-
-                    if self.narrativeView then
-                        local currentText = self.narrativeView.rawText or ""
-                        local newText = currentText .. "\n\n--- LOCKED ---\n" .. msg .. "\n(Find the right key to unlock this passage)"
-                        self.narrativeView:setText(newText, true)
-                    end
+                -- Show locked message with drag hint
+                if self.narrativeView then
+                    local currentText = self.narrativeView.rawText or ""
+                    local newText = currentText .. "\n\n--- LOCKED ---\n" .. msg ..
+                        "\n\n(Drag a key from your hands or belt onto this exit to unlock it.)"
+                    self.narrativeView:setText(newText, true)
                 end
             end
         end
@@ -22489,22 +28878,27 @@ function M.createCrawlScreen(config)
         self.centerX = self.leftRailWidth + padding
         self.centerWidth = self.width - self.leftRailWidth - self.rightRailWidth - (padding * 2)
 
-        -- Update narrative view position
-        if self.narrativeView then
-            self.narrativeView:setPosition(
-                self.centerX + padding,
-                M.LAYOUT.HEADER_HEIGHT + padding
-            )
-            self.narrativeView:resize(
-                self.centerWidth - (padding * 2),
-                self.height - M.LAYOUT.HEADER_HEIGHT - (padding * 2)
-            )
-        end
+        if self.layoutManager then
+            self.layoutManager:resize(self.width, self.height)
+        else
+            -- Update narrative view position
+            if self.narrativeView then
+                self.narrativeView:setPosition(
+                    self.centerX + padding,
+                    M.LAYOUT.HEADER_HEIGHT + padding
+                )
+                self.narrativeView:resize(
+                    self.centerWidth - (padding * 2),
+                    self.height - M.LAYOUT.HEADER_HEIGHT - (padding * 2)
+                )
+            end
 
-        -- S10.3: Position belt hotbar at bottom left
-        if self.beltHotbar then
-            self.beltHotbar.x = self.leftRailWidth + padding
-            self.beltHotbar.y = self.height - 70
+            -- Position equipment bar at bottom of center area
+            if self.equipmentBar then
+                self.equipmentBar.x = self.centerX + padding
+                self.equipmentBar.y = self.height - 80
+                self.equipmentBar:calculateLayout()
+            end
         end
     end
 
@@ -22548,6 +28942,7 @@ function M.createCrawlScreen(config)
         -- Build rich text description
         local description = self:buildRoomDescription(room)
         print("[enterRoom] Built description: " .. description)
+        self.currentRoomDescription = description
         self.narrativeView:setText(description)
 
         -- Register exit hitboxes (based on connections)
@@ -22598,6 +28993,7 @@ function M.createCrawlScreen(config)
                 if conn.is_locked then
                     displayText = displayText .. " (locked)"
                 end
+                displayText = displayText .. " (Watch)"
 
                 -- Add separator
                 if not first then
@@ -22639,8 +29035,8 @@ function M.createCrawlScreen(config)
         self:registerGuildHitboxes()
 
         -- S10.3: Update belt hotbar guild reference
-        if self.beltHotbar then
-            self.beltHotbar.guild = self.guild
+        if self.equipmentBar then
+            self.equipmentBar.guild = self.guild
         end
     end
 
@@ -22651,6 +29047,12 @@ function M.createCrawlScreen(config)
         local y = M.LAYOUT.HEADER_HEIGHT + M.LAYOUT.PADDING
         local plateWidth = self.leftRailWidth - (M.LAYOUT.PADDING * 2)
 
+        -- Get active PC index from gameState (global)
+        local activePCIndex = 1
+        if gameState and gameState.activePCIndex then
+            activePCIndex = gameState.activePCIndex
+        end
+
         for i, adventurer in ipairs(self.guild) do
             local plate = character_plate.createCharacterPlate({
                 eventBus = self.eventBus,
@@ -22658,6 +29060,7 @@ function M.createCrawlScreen(config)
                 x = self.leftRailX + M.LAYOUT.PADDING,
                 y = y,
                 width = plateWidth,
+                isActive = (i == activePCIndex),
             })
             plate:init()
 
@@ -22665,6 +29068,18 @@ function M.createCrawlScreen(config)
 
             -- Advance y by plate height
             y = y + plate:getHeight() + M.LAYOUT.PADDING
+        end
+
+        -- Subscribe to active PC changes
+        self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
+            self:updateActivePlate(data.newIndex)
+        end)
+    end
+
+    --- Update which plate shows as active
+    function screen:updateActivePlate(newIndex)
+        for i, plate in ipairs(self.characterPlates) do
+            plate:setActive(i == newIndex)
         end
     end
 
@@ -22697,17 +29112,28 @@ function M.createCrawlScreen(config)
     function screen:handleDrop(data)
         if data.action == "investigate" and data.target then
             -- Dragged adventurer onto POI
-            print("Investigating " .. (data.target.id or "unknown") ..
-                  " with " .. (data.source.name or "adventurer"))
+            local targetId = data.target.id
+            if targetId and targetId:sub(1, 5) == "exit_" then
+                local targetRoomId = targetId:sub(6)
+                self:handleExitClick(targetRoomId)
+                return
+            end
 
-            -- Would call roomManager:conductInvestigation here
+            self:handlePoiActionSelected({
+                poiId = data.target.id,
+                roomId = self.currentRoomId,
+                action = "investigate",
+                level = "investigate",
+                watchCost = true,
+            })
         elseif data.action == "use_item" and data.target then
             -- Dragged item onto POI
             print("Using item on " .. (data.target.id or "unknown"))
 
             -- S11.3: Check if using a key on a locked exit
-            if data.targetId and data.targetId:sub(1, 5) == "exit_" then
-                local targetRoomId = data.targetId:sub(6)
+            local targetId = data.target.id
+            if targetId and targetId:sub(1, 5) == "exit_" then
+                local targetRoomId = targetId:sub(6)
                 self:handleKeyOnLockedExit(data.source, targetRoomId)
             end
         end
@@ -22805,12 +29231,111 @@ function M.createCrawlScreen(config)
         return nil, nil
     end
 
+    --- Handle dragging an item onto a POI
+    -- @param data table: { item, itemLocation, poiId, poi, user }
+    function screen:handleItemOnPOI(data)
+        local item = data.item
+        local poiId = data.poiId
+        local user = data.user
+
+        if not item or not poiId then return end
+
+        print("[USE ITEM] " .. (user and user.name or "Someone") .. " uses " ..
+              (item.name or "item") .. " on " .. poiId)
+
+        -- Check if target is an exit (for key-door interactions)
+        if poiId:sub(1, 5) == "exit_" then
+            local targetRoomId = poiId:sub(6)
+            self:handleKeyOnLockedExit(item, targetRoomId)
+            return
+        end
+
+        -- Check if target is a room feature
+        local feature = self.roomManager:getFeature(self.currentRoomId, poiId)
+        if feature and self.itemInteractionSystem then
+            local canUse, reason = self.itemInteractionSystem:canUseItemOnPOI(item, feature)
+            if not canUse then
+                self:appendNarrativeBlock("ITEM", "That doesn't seem to work here.")
+                return
+            end
+
+            local interactionType = self:selectItemInteraction(item, feature)
+            if not interactionType then
+                self:appendNarrativeBlock("ITEM", "You're not sure how to use that here.")
+                return
+            end
+
+            local result = self.itemInteractionSystem:useItemOnPOI(item, feature, interactionType, {
+                roomId = self.currentRoomId,
+                adventurer = user,
+            })
+
+            if result and result.requiresTest and result.testConfig then
+                if self.pendingTestOfFate then
+                    self:appendNarrativeBlock("TEST OF FATE", "A Test of Fate is already underway.")
+                    return
+                end
+
+                local testKey = self:getItemTestKey(interactionType)
+                local boundStatus = self.roomManager:getBoundByFateStatus(self.currentRoomId, feature.id, testKey, {
+                    item = item,
+                })
+                if boundStatus and boundStatus.allowed == false then
+                    self:notifyBoundByFate()
+                    return
+                end
+
+                self:spendWatch("You take time to work with the " .. (item.name or "item") .. ".")
+
+                local actor = user or self:getActivePC()
+                local attribute = result.testConfig.attribute or "pentacles"
+                local suitId = constants.SUITS[string.upper(attribute or "pentacles")] or constants.SUITS.PENTACLES
+                local title = "Use " .. (item.name or "Item")
+                if feature and feature.name then
+                    title = title .. " on " .. feature.name
+                end
+
+                self.pendingTestOfFate = {
+                    kind = "item_interaction",
+                    actor = actor,
+                    feature = feature,
+                    roomId = self.currentRoomId,
+                    item = item,
+                    interactionType = interactionType,
+                    testConfig = result.testConfig,
+                    baseResult = result,
+                    testKey = testKey,
+                }
+
+                self.eventBus:emit(events.EVENTS.REQUEST_TEST_OF_FATE, {
+                    entity = actor,
+                    attribute = attribute,
+                    targetSuit = suitId,
+                    favor = nil,
+                    description = title,
+                })
+
+                return
+            end
+
+            if result and result.description then
+                self:appendNarrativeBlock("ITEM", result.description)
+            end
+
+            return
+        end
+
+        self:appendNarrativeBlock("ITEM", "Nothing happens.")
+    end
+
     ----------------------------------------------------------------------------
     -- UPDATE
     ----------------------------------------------------------------------------
 
     --- Update the screen
     function screen:update(dt)
+        self:flushPendingLightNarrative(false)
+
         -- Update narrative view (typewriter effect)
         if self.narrativeView then
             self.narrativeView:update(dt)
@@ -22827,8 +29352,8 @@ function M.createCrawlScreen(config)
         end
 
         -- S10.3: Update belt hotbar
-        if self.beltHotbar then
-            self.beltHotbar:update(dt)
+        if self.equipmentBar then
+            self.equipmentBar:update(dt)
         end
     end
 
@@ -22840,19 +29365,27 @@ function M.createCrawlScreen(config)
     function screen:draw()
         if not love then return end
 
+        -- S13.2: Determine current layout stage based on game phase
+        local currentPhase = self.gameState and self.gameState.phase or "crawl"
+        local isChallenge = (currentPhase == "challenge")
+
         -- Background
         love.graphics.setColor(self.colors.background)
         love.graphics.rectangle("fill", 0, 0, self.width, self.height)
 
         -- Draw three columns
         self:drawLeftRail()
-        self:drawCenter()
+        self:drawCenter(isChallenge)
         self:drawRightRail()
 
-        -- Draw narrative view
-        if self.narrativeView then
+        -- Draw narrative view when visible
+        if self.narrativeView and self.narrativeView.isVisible then
             self.narrativeView:draw()
+            self:drawTestHistoryDrawer()
         end
+
+        -- S13.2: Slim room context panel (challenge stage)
+        self:drawRoomContextPanel()
 
         -- Draw focus menu (on top)
         if self.focusMenu then
@@ -22860,8 +29393,8 @@ function M.createCrawlScreen(config)
         end
 
         -- S10.3: Draw belt hotbar
-        if self.beltHotbar then
-            self.beltHotbar:draw()
+        if self.equipmentBar then
+            self.equipmentBar:draw()
         end
 
         -- Draw drag ghost (on very top)
@@ -22889,7 +29422,8 @@ function M.createCrawlScreen(config)
     end
 
     --- Draw the center area (Vellum)
-    function screen:drawCenter()
+    -- S13.2: Accept isChallenge flag to adjust header
+    function screen:drawCenter(isChallenge)
         -- Vellum background
         if self.vellumTexture then
             love.graphics.setColor(1, 1, 1, 1)
@@ -22907,9 +29441,62 @@ function M.createCrawlScreen(config)
             love.graphics.rectangle("fill", self.centerX, 0, self.centerWidth, self.height)
         end
 
-        -- Header
+        -- S13.2: Header changes based on phase
         love.graphics.setColor(self.colors.text_dark)
-        love.graphics.printf("THE UNDERWORLD", self.centerX, 10, self.centerWidth, "center")
+        if isChallenge then
+            -- During challenge, arena is drawn on top, so just leave space
+            -- Header will be drawn by challenge overlay
+        else
+            love.graphics.printf("THE UNDERWORLD", self.centerX, 10, self.centerWidth, "center")
+        end
+    end
+
+    --- S13.2: Draw slim room context panel during Challenge phase
+    function screen:drawRoomContextPanel()
+        local panel = self.roomContextPanel
+        if not panel or not panel.isVisible or (panel.alpha or 0) <= 0 then return end
+        if not self.currentRoomId then return end
+
+        local roomData = self.roomManager and self.roomManager:getRoom(self.currentRoomId)
+        if not roomData then return end
+
+        if (panel.width or 0) <= 0 or (panel.height or 0) <= 0 then
+            return
+        end
+
+        local alpha = panel.alpha or 1
+        local pad = panel.padding or 12
+        local headerHeight = 24
+        local x, y = panel.x, panel.y
+        local w, h = panel.width, panel.height
+
+        -- Background
+        love.graphics.setColor(0.1, 0.08, 0.06, 0.92 * alpha)
+        love.graphics.rectangle("fill", x, y, w, h, 6, 6)
+
+        -- Border
+        love.graphics.setColor(0.4, 0.35, 0.3, 1 * alpha)
+        love.graphics.rectangle("line", x, y, w, h, 6, 6)
+
+        -- Room name
+        love.graphics.setColor(0.9, 0.85, 0.75, 1 * alpha)
+        local roomName = roomData.name or self.currentRoomId
+        love.graphics.print(roomName, x + pad, y + pad)
+
+        -- Room description
+        local description = roomData.base_description or roomData.description or ""
+        local textX = x + pad
+        local textY = y + pad + headerHeight
+        local textW = w - (pad * 2)
+        local textH = h - headerHeight - (pad * 2)
+        if textW <= 0 or textH <= 0 then
+            return
+        end
+
+        love.graphics.setColor(0.85, 0.8, 0.7, 0.9 * alpha)
+        love.graphics.setScissor(textX, textY, textW, textH)
+        love.graphics.printf(description, textX, textY, textW, "left")
+        love.graphics.setScissor()
     end
 
     --- Draw the right rail (Map / Dread)
@@ -22927,11 +29514,13 @@ function M.createCrawlScreen(config)
         love.graphics.printf("DREAD", self.rightRailX, 10, self.rightRailWidth, "center")
 
         -- Dread card display
+        local cardBottomY = M.LAYOUT.HEADER_HEIGHT + 120
         if self.dreadCard then
             local cardX = self.rightRailX + 20
             local cardY = M.LAYOUT.HEADER_HEIGHT + 20
             local cardW = self.rightRailWidth - 40
             local cardH = cardW * 1.4  -- Tarot proportions
+            cardBottomY = cardY + cardH
 
             -- Card background
             love.graphics.setColor(self.colors.dread_card_bg)
@@ -22972,13 +29561,54 @@ function M.createCrawlScreen(config)
         end
 
         -- Watch indicator (below card)
-        local watchY = M.LAYOUT.HEADER_HEIGHT + 200
+        local watchY = cardBottomY + 16
         love.graphics.setColor(self.colors.header_text)
         love.graphics.printf("WATCH", self.rightRailX, watchY, self.rightRailWidth, "center")
 
-        -- Would show watch count, torch pips, etc.
+        local watchCount = (self.watchManager and self.watchManager.getWatchCount and self.watchManager:getWatchCount()) or 0
+        love.graphics.setColor(0.85, 0.8, 0.72, 1)
+        love.graphics.printf("Current: " .. tostring(watchCount), self.rightRailX, watchY + 22, self.rightRailWidth, "center")
+
+        love.graphics.setColor(self.colors.header_text)
+        love.graphics.printf("LIGHT", self.rightRailX, watchY + 52, self.rightRailWidth, "center")
+
+        local activePC = self:getActivePC()
+        local lightSystem = self.gameState and self.gameState.lightSystem or nil
+        local activeLight = lightSystem and activePC and lightSystem:getEntityLightLevel(activePC) or "dark"
+        local partyLight = lightSystem and lightSystem:getLightLevel() or activeLight
+        local totalFlickers = lightSystem and lightSystem:getTotalFlickers() or 0
+
+        local lightR, lightG, lightB, lightA = getLightLevelColor(activeLight)
+        love.graphics.setColor(lightR, lightG, lightB, lightA)
+        love.graphics.printf(
+            string.format("%s: %s", activePC and activePC.name or "Active", formatLightLevel(activeLight)),
+            self.rightRailX + 12,
+            watchY + 74,
+            self.rightRailWidth - 24,
+            "left"
+        )
+
+        local partyR, partyG, partyB, partyA = getLightLevelColor(partyLight)
+        love.graphics.setColor(partyR, partyG, partyB, partyA)
+        love.graphics.printf(
+            "Party: " .. formatLightLevel(partyLight),
+            self.rightRailX + 12,
+            watchY + 94,
+            self.rightRailWidth - 24,
+            "left"
+        )
+
+        love.graphics.setColor(0.82, 0.78, 0.7, 1)
+        love.graphics.printf(
+            "Flickers: " .. tostring(totalFlickers),
+            self.rightRailX + 12,
+            watchY + 114,
+            self.rightRailWidth - 24,
+            "left"
+        )
 
         -- S11.4: Camp button at bottom of right rail
+        -- S13.6: State-based action gating
         local campBtnW = self.rightRailWidth - 20
         local campBtnH = 40
         local campBtnX = self.rightRailX + 10
@@ -22987,13 +29617,28 @@ function M.createCrawlScreen(config)
         -- Store button bounds for click detection
         self.campButtonBounds = { x = campBtnX, y = campBtnY, w = campBtnW, h = campBtnH }
 
+        -- S13.6: Check if camping is allowed (only during crawl phase)
+        local canCamp = self.gameState and self.gameState.phase == "crawl"
+        local disabledReason = nil
+        if not canCamp then
+            if self.gameState and self.gameState.phase == "challenge" then
+                disabledReason = "Cannot camp during combat"
+            elseif self.gameState and self.gameState.phase == "camp" then
+                disabledReason = "Already camping"
+            else
+                disabledReason = "Cannot camp now"
+            end
+        end
+
         -- Check if hovering
         local mouseX, mouseY = love.mouse.getPosition()
         local isHovered = mouseX >= campBtnX and mouseX < campBtnX + campBtnW and
                           mouseY >= campBtnY and mouseY < campBtnY + campBtnH
 
-        -- Button background
-        if isHovered then
+        -- Button background (greyed out if disabled)
+        if not canCamp then
+            love.graphics.setColor(0.2, 0.2, 0.2, 0.6)  -- Disabled grey
+        elseif isHovered then
             love.graphics.setColor(0.35, 0.3, 0.25, 1)
         else
             love.graphics.setColor(0.25, 0.22, 0.18, 1)
@@ -23001,12 +29646,110 @@ function M.createCrawlScreen(config)
         love.graphics.rectangle("fill", campBtnX, campBtnY, campBtnW, campBtnH, 4, 4)
 
         -- Button border
-        love.graphics.setColor(0.5, 0.4, 0.3, 1)
+        if not canCamp then
+            love.graphics.setColor(0.3, 0.3, 0.3, 0.6)  -- Disabled border
+        else
+            love.graphics.setColor(0.5, 0.4, 0.3, 1)
+        end
         love.graphics.rectangle("line", campBtnX, campBtnY, campBtnW, campBtnH, 4, 4)
 
         -- Button text
-        love.graphics.setColor(self.colors.header_text)
+        if not canCamp then
+            love.graphics.setColor(0.5, 0.5, 0.5, 0.8)  -- Disabled text
+        else
+            love.graphics.setColor(self.colors.header_text)
+        end
         love.graphics.printf("Make Camp", campBtnX, campBtnY + 12, campBtnW, "center")
+
+        -- S13.6: Tooltip for disabled state
+        if isHovered and not canCamp and disabledReason then
+            local tooltipW = 160
+            local tooltipH = 24
+            local tooltipX = campBtnX + (campBtnW - tooltipW) / 2
+            local tooltipY = campBtnY - tooltipH - 4
+
+            -- Tooltip background
+            love.graphics.setColor(0.1, 0.1, 0.1, 0.9)
+            love.graphics.rectangle("fill", tooltipX, tooltipY, tooltipW, tooltipH, 3, 3)
+            love.graphics.setColor(0.6, 0.3, 0.3, 1)
+            love.graphics.rectangle("line", tooltipX, tooltipY, tooltipW, tooltipH, 3, 3)
+
+            -- Tooltip text
+            love.graphics.setColor(0.9, 0.6, 0.6, 1)
+            love.graphics.printf(disabledReason, tooltipX, tooltipY + 5, tooltipW, "center")
+        end
+    end
+
+    --- Draw Test of Fate history drawer in the narrative panel
+    function screen:drawTestHistoryDrawer()
+        local view = self.narrativeView
+        local drawer = self.testHistoryDrawer
+        if not view or not drawer then return end
+        if not view.isVisible or (view.alpha or 0) <= 0 then return end
+
+        local x = view.x
+        local w = view.width
+        local height = drawer.isExpanded and drawer.expandedHeight or drawer.collapsedHeight
+        local y = view.y + view.height - height
+        local alpha = view.alpha or 1
+
+        local pad = drawer.padding
+        local headerH = drawer.headerHeight
+        local lineH = drawer.lineHeight
+
+        -- Background
+        love.graphics.setColor(0.12, 0.11, 0.1, 0.95 * alpha)
+        love.graphics.rectangle("fill", x, y, w, height, 6, 6)
+
+        -- Border
+        love.graphics.setColor(0.4, 0.35, 0.3, 0.9 * alpha)
+        love.graphics.rectangle("line", x, y, w, height, 6, 6)
+
+        -- Header
+        love.graphics.setColor(0.9, 0.85, 0.75, 1 * alpha)
+        local count = #drawer.entries
+        local label = "Test History (" .. count .. ")"
+        local toggleGlyph = drawer.isExpanded and "^" or "v"
+        love.graphics.print(label .. " " .. toggleGlyph, x + pad, y + 6)
+
+        if not drawer.isExpanded then
+            local lastEntry = drawer.entries[#drawer.entries]
+            if lastEntry and lastEntry.summary then
+                love.graphics.setColor(0.8, 0.76, 0.68, 0.9 * alpha)
+                love.graphics.printf(lastEntry.summary, x + pad + 140, y + 6, w - (pad * 2) - 140, "left")
+            end
+            return
+        end
+
+        -- Expanded entries
+        local listX = x + pad
+        local listY = y + headerH
+        local listW = w - (pad * 2)
+        local listH = height - headerH - pad
+        if listW <= 0 or listH <= 0 then return end
+
+        love.graphics.setScissor(listX, listY, listW, listH)
+        local maxLines = math.floor(listH / lineH)
+        local totalEntries = #drawer.entries
+        local startIndex = math.max(1, totalEntries - maxLines + 1)
+        local yCursor = listY
+
+        for i = startIndex, totalEntries do
+            local entry = drawer.entries[i]
+            local attr = entry.attribute and entry.attribute:upper() or "?"
+            local line = string.format("%s %d - %s (%s, %s) %s",
+                entry.resultText,
+                entry.total or 0,
+                entry.description,
+                attr,
+                entry.favor,
+                entry.actorName
+            )
+            love.graphics.setColor(0.82, 0.78, 0.7, 0.9 * alpha)
+            love.graphics.printf(line, listX, yCursor, listW, "left")
+            yCursor = yCursor + lineH
+        end
+        love.graphics.setScissor()
     end
 
     --- Draw the drag ghost
@@ -23054,21 +29797,42 @@ function M.createCrawlScreen(config)
             return
         end
 
+        -- Test history drawer toggle
+        if button == 1 and self.narrativeView and self.narrativeView.isVisible and self.testHistoryDrawer then
+            local view = self.narrativeView
+            local drawer = self.testHistoryDrawer
+            local height = drawer.isExpanded and drawer.expandedHeight or drawer.collapsedHeight
+            local drawerX = view.x
+            local drawerY = view.y + view.height - height
+            local drawerW = view.width
+            local drawerH = height
+            if x >= drawerX and x <= drawerX + drawerW and y >= drawerY and y <= drawerY + drawerH then
+                -- Toggle only if clicking header area
+                if y <= drawerY + drawer.headerHeight then
+                    drawer.isExpanded = not drawer.isExpanded
+                    return
+                end
+            end
+        end
+
         -- S10.3: Belt hotbar click handling
-        if self.beltHotbar and self.beltHotbar:mousepressed(x, y, button) then
+        if self.equipmentBar and self.equipmentBar:mousepressed(x, y, button) then
             return
         end
 
         -- S11.4: Camp button click handling
+        -- S13.6: Only allow during crawl phase
         if button == 1 and self.campButtonBounds then
             local btn = self.campButtonBounds
             if x >= btn.x and x < btn.x + btn.w and
                y >= btn.y and y < btn.y + btn.h then
-                -- Trigger camp phase
-                self.eventBus:emit(events.EVENTS.PHASE_CHANGED, {
-                    oldPhase = "crawl",
-                    newPhase = "camp",
-                })
+                -- S13.6: Validate phase before triggering
+                if self.gameState and self.gameState.phase == "crawl" then
+                    self.eventBus:emit(events.EVENTS.PHASE_CHANGED, {
+                        oldPhase = "crawl",
+                        newPhase = "camp",
+                    })
+                end
                 return
             end
         end
@@ -23082,12 +29846,22 @@ function M.createCrawlScreen(config)
             return
         end
 
+        -- Equipment bar drag release
+        if self.equipmentBar and self.equipmentBar:mousereleased(x, y, button) then
+            return
+        end
+
         self.inputManager:mousereleased(x, y, button)
     end
 
     function screen:mousemoved(x, y, dx, dy)
         if self.focusMenu and self.focusMenu.isOpen then
             self.focusMenu:onMouseMoved(x, y)
+        end
+
+        -- Equipment bar drag tracking
+        if self.equipmentBar then
+            self.equipmentBar:mousemoved(x, y, dx, dy)
         end
 
         self.inputManager:mousemoved(x, y, dx, dy)
@@ -23108,10 +29882,10 @@ function M.createCrawlScreen(config)
             end
         end
 
-        -- S10.3: Belt hotbar keyboard shortcuts (1-4 for items, Tab to cycle PC)
-        -- Note: Only active in crawl phase, not during challenges
-        if self.beltHotbar then
-            self.beltHotbar:keypressed(key)
+        -- S10.3: Belt hotbar keyboard shortcuts (1-4 for items, ` to cycle PC)
+        -- Note: Only active in crawl phase when character sheet is closed
+        if self.equipmentBar then
+            self.equipmentBar:keypressed(key)
         end
     end
 
@@ -23676,6 +30450,481 @@ end
 --- Enable/disable debug logging
 function M.setDebug(enabled)
     soundManager.debug = enabled
+end
+
+return M
+
+```
+
+---
+
+## File: src/ui/test_of_fate_modal.lua
+
+```lua
+-- test_of_fate_modal.lua
+-- Test of Fate Modal for Majesty Crawl Phase
+-- Ticket S12.5: Push fate mechanic, favor/disfavor, great success/failure
+--
+-- Displays a Test of Fate with:
+-- - Card drawn and result
+-- - Option to Push Fate (costs 1 Resolve)
+-- - Consequences of success/failure
+
+local events = require('logic.events')
+local resolver = require('logic.resolver')
+
+local M = {}
+
+--------------------------------------------------------------------------------
+-- COLORS
+--------------------------------------------------------------------------------
+M.COLORS = {
+    -- Modal
+    bg = { 0.12, 0.10, 0.08, 0.95 },
+    border = { 0.50, 0.45, 0.35, 1.0 },
+    title = { 0.95, 0.90, 0.80, 1.0 },
+    text = { 0.85, 0.82, 0.75, 1.0 },
+
+    -- Results
+    success = { 0.30, 0.70, 0.30, 1.0 },
+    great_success = { 0.90, 0.80, 0.20, 1.0 },
+    failure = { 0.70, 0.35, 0.30, 1.0 },
+    great_failure = { 0.90, 0.20, 0.20, 1.0 },
+
+    -- Buttons
+    button_bg = { 0.25, 0.22, 0.18, 1.0 },
+    button_hover = { 0.35, 0.30, 0.25, 1.0 },
+    button_disabled = { 0.18, 0.16, 0.14, 0.6 },
+    button_text = { 0.90, 0.88, 0.82, 1.0 },
+    button_text_disabled = { 0.50, 0.48, 0.45, 0.6 },
+
+    -- Card display
+    card_bg = { 0.20, 0.18, 0.15, 1.0 },
+    card_border = { 0.60, 0.55, 0.45, 1.0 },
+}
+
+--------------------------------------------------------------------------------
+-- LAYOUT
+--------------------------------------------------------------------------------
+M.WIDTH = 400
+M.HEIGHT = 350
+M.PADDING = 20
+M.BUTTON_HEIGHT = 40
+M.BUTTON_WIDTH = 120
+
+--------------------------------------------------------------------------------
+-- MODAL FACTORY
+--------------------------------------------------------------------------------
+
+--- Create a Test of Fate Modal
+-- @param config table: { eventBus, deck }
+-- @return TestOfFateModal instance
+function M.createTestOfFateModal(config)
+    config = config or {}
+
+    local modal = {
+        eventBus = config.eventBus or events.globalBus,
+        deck = config.deck,
+
+        -- State
+        isVisible = false,
+
+        -- Test data
+        testConfig = nil,     -- { attribute, difficulty, entity, ... }
+        initialCard = nil,    -- First card drawn
+        pushCard = nil,       -- Second card (if pushed)
+        result = nil,         -- resolver result
+
+        -- UI state
+        x = 0,
+        y = 0,
+        hoverButton = nil,
+
+        -- Colors
+        colors = M.COLORS,
+    }
+
+    ----------------------------------------------------------------------------
+    -- INITIALIZATION
+    ----------------------------------------------------------------------------
+
+    function modal:init()
+        -- Listen for test requests
+        self.eventBus:on("request_test_of_fate", function(data)
+            self:startTest(data)
+        end)
+    end
+
+    ----------------------------------------------------------------------------
+    -- TEST FLOW
+    ----------------------------------------------------------------------------
+
+    local function getResolve(entity)
+        if not entity then return 0 end
+        if type(entity.resolve) == "table" then
+            return entity.resolve.current or 0
+        end
+        return entity.resolve or 0
+    end
+
+    local function spendResolve(entity, amount)
+        if not entity then return false end
+        amount = amount or 1
+
+        if entity.spendResolve then
+            return entity:spendResolve(amount)
+        end
+
+        if type(entity.resolve) == "table" then
+            if (entity.resolve.current or 0) < amount then
+                return false
+            end
+            entity.resolve.current = entity.resolve.current - amount
+            return true
+        end
+
+        if type(entity.resolve) == "number" then
+            if entity.resolve < amount then
+                return false
+            end
+            entity.resolve = entity.resolve - amount
+            return true
+        end
+
+        return false
+    end
+
+    --- Start a Test of Fate
+    -- @param config table: { attribute, difficulty, entity, favor, description, onSuccess, onFailure }
+    function modal:startTest(config)
+        if not config or not config.entity then return end
+
+        self.testConfig = config
+        self.pushCard = nil
+        self.result = nil
+
+        -- Draw initial card from deck (minor arcana)
+        if self.deck then
+            self.initialCard = self.deck:draw()
+        else
+            -- Fallback: simulate a card
+            self.initialCard = { name = "Test Card", value = math.random(1, 14), suit = math.random(1, 4) }
+        end
+
+        -- Resolve initial test
+        local attribute = config.entity[config.attribute] or 2
+        local targetSuit = config.targetSuit or self.initialCard.suit
+        self.result = resolver.resolveTest(attribute, targetSuit, self.initialCard, config.favor)
+
+        -- Center on screen
+        local sw, sh = 800, 600
+        if love and love.graphics then
+            sw, sh = love.graphics.getDimensions()
+        end
+        self.x = (sw - M.WIDTH) / 2
+        self.y = (sh - M.HEIGHT) / 2
+
+        self.isVisible = true
+    end
+
+    --- Push Fate (spend Resolve to try again)
+    function modal:pushFate()
+        if not self.testConfig or not self.result then return end
+        if not resolver.canPush(self.result) then return end
+
+        local entity = self.testConfig.entity
+
+        -- Check if entity has Resolve to spend
+        if getResolve(entity) > 0 and spendResolve(entity, 1) then
+
+            -- Draw push card
+            if self.deck then
+                self.pushCard = self.deck:draw()
+            else
+                self.pushCard = { name = "Push Card", value = math.random(1, 14), suit = math.random(1, 4) }
+            end
+
+            -- Resolve push
+            self.result = resolver.resolvePush(self.result.total, self.result.cards, self.pushCard)
+
+            -- Emit push event
+            self.eventBus:emit("test_fate_pushed", {
+                entity = entity,
+                pushCard = self.pushCard,
+                result = self.result,
+            })
+        end
+    end
+
+    --- Accept the result and close
+    function modal:acceptResult()
+        if not self.testConfig or not self.result then
+            self:hide()
+            return
+        end
+
+        -- Emit result event
+        self.eventBus:emit("test_of_fate_complete", {
+            config = self.testConfig,
+            result = self.result,
+            entity = self.testConfig.entity,
+        })
+
+        -- Call callbacks
+        if self.result.success then
+            if self.testConfig.onSuccess then
+                self.testConfig.onSuccess(self.result)
+            end
+        else
+            if self.testConfig.onFailure then
+                self.testConfig.onFailure(self.result)
+            end
+        end
+
+        self:hide()
+    end
+
+    function modal:discardDrawnCards()
+        if not self.deck or not self.deck.discard then return end
+
+        if self.initialCard then
+            self.deck:discard(self.initialCard)
+            self.initialCard = nil
+        end
+        if self.pushCard then
+            self.deck:discard(self.pushCard)
+            self.pushCard = nil
+        end
+    end
+
+    function modal:hide()
+        self:discardDrawnCards()
+        self.isVisible = false
+        self.testConfig = nil
+        self.result = nil
+    end
+
+    ----------------------------------------------------------------------------
+    -- RENDERING
+    ----------------------------------------------------------------------------
+
+    function modal:draw()
+        if not self.isVisible or not love then return end
+
+        -- Draw dimmed background
+        local sw, sh = love.graphics.getDimensions()
+        love.graphics.setColor(0, 0, 0, 0.6)
+        love.graphics.rectangle("fill", 0, 0, sw, sh)
+
+        -- Draw modal background
+        love.graphics.setColor(self.colors.bg)
+        love.graphics.rectangle("fill", self.x, self.y, M.WIDTH, M.HEIGHT, 8, 8)
+
+        -- Draw border
+        love.graphics.setColor(self.colors.border)
+        love.graphics.setLineWidth(2)
+        love.graphics.rectangle("line", self.x, self.y, M.WIDTH, M.HEIGHT, 8, 8)
+        love.graphics.setLineWidth(1)
+
+        -- Draw title
+        love.graphics.setColor(self.colors.title)
+        local title = "Test of Fate"
+        if self.testConfig and self.testConfig.description then
+            title = self.testConfig.description
+        end
+        love.graphics.printf(title, self.x + M.PADDING, self.y + M.PADDING, M.WIDTH - M.PADDING * 2, "center")
+
+        -- Draw attribute being tested
+        if self.testConfig and self.testConfig.attribute then
+            love.graphics.setColor(self.colors.text)
+            local attrText = string.format("Testing: %s", self.testConfig.attribute:upper())
+            love.graphics.printf(attrText, self.x + M.PADDING, self.y + 50, M.WIDTH - M.PADDING * 2, "center")
+        end
+
+        -- Draw card(s)
+        local cardY = self.y + 80
+        self:drawCard(self.initialCard, self.x + M.WIDTH/2 - 50, cardY, "Initial Draw")
+
+        if self.pushCard then
+            self:drawCard(self.pushCard, self.x + M.WIDTH/2 + 10, cardY, "Push")
+        end
+
+        -- Draw result
+        if self.result then
+            self:drawResult()
+        end
+
+        -- Draw buttons
+        self:drawButtons()
+    end
+
+    function modal:drawCard(card, x, y, label)
+        if not card then return end
+
+        local cardW, cardH = 80, 100
+
+        -- Card background
+        love.graphics.setColor(self.colors.card_bg)
+        love.graphics.rectangle("fill", x, y, cardW, cardH, 4, 4)
+
+        -- Card border
+        love.graphics.setColor(self.colors.card_border)
+        love.graphics.rectangle("line", x, y, cardW, cardH, 4, 4)
+
+        -- Card value
+        love.graphics.setColor(self.colors.title)
+        love.graphics.printf(tostring(card.value or "?"), x, y + 30, cardW, "center")
+
+        -- Card name (if major arcana)
+        if card.is_major and card.name then
+            love.graphics.setColor(self.colors.text)
+            love.graphics.printf(card.name, x + 2, y + 55, cardW - 4, "center")
+        end
+
+        -- Label
+        love.graphics.setColor(self.colors.text)
+        love.graphics.printf(label or "", x, y + cardH + 5, cardW, "center")
+    end
+
+    function modal:drawResult()
+        local resultY = self.y + 200
+        local resultColor = self.colors.text
+        local resultText = "Unknown"
+
+        if self.result.result == resolver.RESULTS.SUCCESS then
+            resultColor = self.colors.success
+            resultText = "SUCCESS"
+        elseif self.result.result == resolver.RESULTS.GREAT_SUCCESS then
+            resultColor = self.colors.great_success
+            resultText = "GREAT SUCCESS!"
+        elseif self.result.result == resolver.RESULTS.FAILURE then
+            resultColor = self.colors.failure
+            resultText = "FAILURE"
+        elseif self.result.result == resolver.RESULTS.GREAT_FAILURE then
+            resultColor = self.colors.great_failure
+            resultText = "GREAT FAILURE!"
+        end
+
+        love.graphics.setColor(resultColor)
+        love.graphics.printf(resultText, self.x + M.PADDING, resultY, M.WIDTH - M.PADDING * 2, "center")
+
+        -- Draw total
+        love.graphics.setColor(self.colors.text)
+        local totalText = string.format("Total: %d (Target: %d)", self.result.total or 0, 14)
+        love.graphics.printf(totalText, self.x + M.PADDING, resultY + 25, M.WIDTH - M.PADDING * 2, "center")
+    end
+
+    function modal:drawButtons()
+        local buttonY = self.y + M.HEIGHT - M.BUTTON_HEIGHT - M.PADDING
+
+        -- Push Fate button (only if can push and has Resolve)
+        local canPush = self.result and resolver.canPush(self.result)
+        local entity = self.testConfig and self.testConfig.entity
+        local resolveCount = getResolve(entity)
+        local hasResolve = resolveCount > 0
+        local showPush = canPush and hasResolve and not self.pushCard
+
+        if showPush then
+            local pushX = self.x + M.PADDING
+            local isHover = self.hoverButton == "push"
+
+            love.graphics.setColor(isHover and self.colors.button_hover or self.colors.button_bg)
+            love.graphics.rectangle("fill", pushX, buttonY, M.BUTTON_WIDTH, M.BUTTON_HEIGHT, 4, 4)
+
+            love.graphics.setColor(self.colors.border)
+            love.graphics.rectangle("line", pushX, buttonY, M.BUTTON_WIDTH, M.BUTTON_HEIGHT, 4, 4)
+
+            love.graphics.setColor(self.colors.button_text)
+            local pushText = string.format("Push Fate (%d)", resolveCount)
+            love.graphics.printf(pushText, pushX, buttonY + 12, M.BUTTON_WIDTH, "center")
+
+            -- Store button bounds
+            self.pushButtonBounds = { x = pushX, y = buttonY, w = M.BUTTON_WIDTH, h = M.BUTTON_HEIGHT }
+        else
+            self.pushButtonBounds = nil
+        end
+
+        -- Accept button
+        local acceptX = self.x + M.WIDTH - M.BUTTON_WIDTH - M.PADDING
+        local isHover = self.hoverButton == "accept"
+
+        love.graphics.setColor(isHover and self.colors.button_hover or self.colors.button_bg)
+        love.graphics.rectangle("fill", acceptX, buttonY, M.BUTTON_WIDTH, M.BUTTON_HEIGHT, 4, 4)
+
+        love.graphics.setColor(self.colors.border)
+        love.graphics.rectangle("line", acceptX, buttonY, M.BUTTON_WIDTH, M.BUTTON_HEIGHT, 4, 4)
+
+        love.graphics.setColor(self.colors.button_text)
+        love.graphics.printf("Accept", acceptX, buttonY + 12, M.BUTTON_WIDTH, "center")
+
+        self.acceptButtonBounds = { x = acceptX, y = buttonY, w = M.BUTTON_WIDTH, h = M.BUTTON_HEIGHT }
+    end
+
+    ----------------------------------------------------------------------------
+    -- INPUT
+    ----------------------------------------------------------------------------
+
+    function modal:mousepressed(x, y, button)
+        if not self.isVisible or button ~= 1 then return false end
+
+        -- Check push button
+        if self.pushButtonBounds then
+            local btn = self.pushButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self:pushFate()
+                return true
+            end
+        end
+
+        -- Check accept button
+        if self.acceptButtonBounds then
+            local btn = self.acceptButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self:acceptResult()
+                return true
+            end
+        end
+
+        return true  -- Consume click
+    end
+
+    function modal:mousemoved(x, y)
+        if not self.isVisible then return end
+
+        self.hoverButton = nil
+
+        if self.pushButtonBounds then
+            local btn = self.pushButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self.hoverButton = "push"
+            end
+        end
+
+        if self.acceptButtonBounds then
+            local btn = self.acceptButtonBounds
+            if x >= btn.x and x <= btn.x + btn.w and y >= btn.y and y <= btn.y + btn.h then
+                self.hoverButton = "accept"
+            end
+        end
+    end
+
+    function modal:keypressed(key)
+        if not self.isVisible then return false end
+
+        if key == "escape" or key == "return" then
+            self:acceptResult()
+            return true
+        end
+
+        if key == "p" and self.pushButtonBounds then
+            self:pushFate()
+            return true
+        end
+
+        return true  -- Consume key
+    end
+
+    return modal
 end
 
 return M
@@ -25046,6 +32295,9 @@ function M.createZoneRegistry(config)
             entityA = entityA_id,
             entityB = entityB_id,
         })
+
+        -- S12.1: Emit full engagement state for UI
+        self:emitEngagementChanged()
     end
 
     --- Disengage two specific entities
@@ -25072,14 +32324,28 @@ function M.createZoneRegistry(config)
             entityA = entityA_id,
             entityB = entityB_id,
         })
+
+        -- S12.1: Emit full engagement state for UI
+        self:emitEngagementChanged()
     end
 
     --- Disengage an entity from all opponents
     function registry:disengageAll(entityId)
         local engaged = self.engagements[entityId] or {}
+        -- Copy list since disengage modifies it
+        local toDisengage = {}
         for _, otherId in ipairs(engaged) do
+            toDisengage[#toDisengage + 1] = otherId
+        end
+        for _, otherId in ipairs(toDisengage) do
             self:disengage(entityId, otherId)
         end
+    end
+
+    --- S12.1: Clear ALL engagements (for challenge end)
+    function registry:clearAllEngagements()
+        self.engagements = {}
+        self:emitEngagementChanged()
     end
 
     --- Check if entity is engaged with anyone
@@ -25091,6 +32357,46 @@ function M.createZoneRegistry(config)
     --- Get all entities an entity is engaged with
     function registry:getEngagedWith(entityId)
         return self.engagements[entityId] or {}
+    end
+
+    --- S12.1: Check if two specific entities are engaged with each other
+    function registry:areEngaged(entityA_id, entityB_id)
+        local engaged = self.engagements[entityA_id]
+        if not engaged then return false end
+
+        for _, id in ipairs(engaged) do
+            if id == entityB_id then
+                return true
+            end
+        end
+        return false
+    end
+
+    --- S12.1: Get all engagement pairs (for UI visualization)
+    -- @return table: Array of { entityA_id, entityB_id } pairs
+    function registry:getAllEngagementPairs()
+        local result = {}
+        local seen = {}  -- Track pairs we've already added
+
+        for entityId, engagedList in pairs(self.engagements) do
+            for _, otherId in ipairs(engagedList) do
+                -- Create a canonical key to avoid duplicates (smaller id first)
+                local key = entityId < otherId and (entityId .. "_" .. otherId) or (otherId .. "_" .. entityId)
+                if not seen[key] then
+                    seen[key] = true
+                    result[#result + 1] = { entityId, otherId }
+                end
+            end
+        end
+
+        return result
+    end
+
+    --- S12.1: Emit engagement changed event (call after any engagement change)
+    function registry:emitEngagementChanged()
+        self.eventBus:emit(events.EVENTS.ENGAGEMENT_CHANGED, {
+            pairs = self:getAllEngagementPairs(),
+        })
     end
 
     ----------------------------------------------------------------------------
@@ -25206,928 +32512,6 @@ function M.createZoneRegistry(config)
     end
 
     return registry
-end
-
-return M
-
-```
-
----
-
-## File: .claude/settings.local.json
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(lua:*)",
-      "Bash(cat:*)",
-      "Bash(grep:*)",
-      "Bash(luac:*)",
-      "Bash(for f in /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/challenge_controller.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/ui/action_sequencer.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/action_resolver.lua /Users/russellbates/JunkDrawer/HMTW/Majesty/src/logic/npc_ai.lua)",
-      "Bash(do luac:*)",
-      "Bash(echo:*)",
-      "Bash(done)",
-      "Bash(timeout:*)",
-      "Bash(for f in src/ui/arena_view.lua src/ui/command_board.lua src/ui/minor_action_panel.lua src/data/action_registry.lua src/logic/action_resolver.lua src/logic/challenge_controller.lua)",
-      "Bash(for:*)"
-    ]
-  }
-}
-
-```
-
----
-
-## File: .gitignore
-
-```
-/sprints/
-/rulebook/
-/.claude/
-```
-
----
-
-## File: constants.lua
-
-```lua
--- constants.lua
--- Tarot card data structures and constant tables for Majesty
--- Ticket T1_1: Tarot Data Structures & Constants
-
-local M = {}
-
---------------------------------------------------------------------------------
--- SUIT CONSTANTS (use these for logic, not string comparisons)
---------------------------------------------------------------------------------
-M.SUITS = {
-    SWORDS    = 1,
-    PENTACLES = 2,
-    CUPS      = 3,
-    WANDS     = 4,
-    MAJOR     = 5,  -- For major arcana cards
-}
-
--- Reverse lookup: ID -> name (useful for display/debugging)
-M.SUIT_NAMES = {
-    [1] = "Swords",
-    [2] = "Pentacles",
-    [3] = "Cups",
-    [4] = "Wands",
-    [5] = "Major",
-}
-
---------------------------------------------------------------------------------
--- FACE CARD VALUES
---------------------------------------------------------------------------------
-M.FACE_VALUES = {
-    PAGE   = 11,
-    KNIGHT = 12,
-    QUEEN  = 13,
-    KING   = 14,
-}
-
---------------------------------------------------------------------------------
--- CARD FACTORY
---------------------------------------------------------------------------------
-local function createCard(name, suit, value, is_major)
-    return {
-        name     = name,
-        suit     = suit,
-        value    = value,
-        is_major = is_major or false,
-    }
-end
-
---------------------------------------------------------------------------------
--- MINOR ARCANA (56 cards + The Fool = 57 cards in player deck)
---------------------------------------------------------------------------------
-local function buildMinorArcana()
-    local cards = {}
-    local SUITS = M.SUITS
-    local FACE_VALUES = M.FACE_VALUES
-
-    -- Suit data: { suit_id, suit_name_for_cards }
-    local suits = {
-        { SUITS.SWORDS,    "Swords" },
-        { SUITS.PENTACLES, "Pentacles" },
-        { SUITS.CUPS,      "Cups" },
-        { SUITS.WANDS,     "Wands" },
-    }
-
-    -- Number card names (Ace through Ten)
-    local numberNames = {
-        "Ace", "Two", "Three", "Four", "Five",
-        "Six", "Seven", "Eight", "Nine", "Ten"
-    }
-
-    -- Face card names in order of value
-    local faceCards = {
-        { "Page",   FACE_VALUES.PAGE },
-        { "Knight", FACE_VALUES.KNIGHT },
-        { "Queen",  FACE_VALUES.QUEEN },
-        { "King",   FACE_VALUES.KING },
-    }
-
-    -- Build all 56 suited cards
-    for _, suitData in ipairs(suits) do
-        local suitId, suitName = suitData[1], suitData[2]
-
-        -- Number cards (Ace = 1 through Ten = 10)
-        for value = 1, 10 do
-            local name = numberNames[value] .. " of " .. suitName
-            cards[#cards + 1] = createCard(name, suitId, value, false)
-        end
-
-        -- Face cards
-        for _, faceData in ipairs(faceCards) do
-            local faceName, faceValue = faceData[1], faceData[2]
-            local name = faceName .. " of " .. suitName
-            cards[#cards + 1] = createCard(name, suitId, faceValue, false)
-        end
-    end
-
-    -- The Fool (value 0, belongs with minor arcana in player deck)
-    cards[#cards + 1] = createCard("The Fool", SUITS.MAJOR, 0, true)
-
-    return cards
-end
-
---------------------------------------------------------------------------------
--- MAJOR ARCANA (21 cards, I-XXI, used by GM)
---------------------------------------------------------------------------------
-local function buildMajorArcana()
-    local cards = {}
-    local SUITS = M.SUITS
-
-    -- Major Arcana names in order (I through XXI)
-    -- Note: The Fool (0) is NOT included here; it's in the minor arcana deck
-    local majorNames = {
-        "The Magician",         -- I
-        "The High Priestess",   -- II
-        "The Empress",          -- III
-        "The Emperor",          -- IV
-        "The Hierophant",       -- V
-        "The Lovers",           -- VI
-        "The Chariot",          -- VII
-        "Strength",             -- VIII
-        "The Hermit",           -- IX
-        "Wheel of Fortune",     -- X
-        "Justice",              -- XI
-        "The Hanged Man",       -- XII
-        "Death",                -- XIII
-        "Temperance",           -- XIV
-        "The Devil",            -- XV
-        "The Tower",            -- XVI
-        "The Star",             -- XVII
-        "The Moon",             -- XVIII
-        "The Sun",              -- XIX
-        "Judgement",            -- XX
-        "The World",            -- XXI
-    }
-
-    for i, name in ipairs(majorNames) do
-        cards[#cards + 1] = createCard(name, SUITS.MAJOR, i, true)
-    end
-
-    return cards
-end
-
---------------------------------------------------------------------------------
--- EXPORT CONSTANT TABLES
---------------------------------------------------------------------------------
-M.MinorArcana = buildMinorArcana()  -- 57 cards (56 suited + The Fool)
-M.MajorArcana = buildMajorArcana()  -- 21 cards (I-XXI)
-
-return M
-
-```
-
----
-
-## File: scripts/dump_project_markdown.sh
-
-~~~bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-usage() {
-  cat <<'EOF'
-Usage: dump_project_markdown.sh [-r ROOT_DIR] [-o OUTPUT_MD]
-
-Create a single Markdown file containing the project's text files with clear
-per-file separators and language-aware code fences, respecting .gitignore.
-
-Options:
-  -r, --root   Project root directory (default: current directory)
-  -o, --out    Output Markdown file path (default: project_dump.md, created under root)
-  -h, --help   Show this help and exit
-
-Notes:
-- Prefers ripgrep (rg) for file discovery; falls back to 'git ls-files'.
-  Either ripgrep must be installed or ROOT_DIR must be a Git repo.
-- Binary files are skipped.
-EOF
-}
-
-ROOT_DIR="$(pwd)"
-OUTPUT_PATH="project_dump.md"
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -r|--root)
-      [ $# -ge 2 ] || { echo "Missing argument for $1" >&2; exit 1; }
-      ROOT_DIR="$2"
-      shift 2
-      ;;
-    -o|--out)
-      [ $# -ge 2 ] || { echo "Missing argument for $1" >&2; exit 1; }
-      OUTPUT_PATH="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage
-      exit 1
-      ;;
-  esac
-done
-
-# Normalize ROOT_DIR
-if [ ! -d "$ROOT_DIR" ]; then
-  echo "Root directory does not exist: $ROOT_DIR" >&2
-  exit 1
-fi
-ROOT_DIR="$(cd "$ROOT_DIR" && pwd)"
-
-# Normalize OUTPUT_PATH (make absolute if relative)
-case "$OUTPUT_PATH" in
-  /*) : ;; # absolute already
-  *) OUTPUT_PATH="$ROOT_DIR/$OUTPUT_PATH" ;;
-esac
-
-mkdir -p "$(dirname "$OUTPUT_PATH")"
-
-# Collect files respecting .gitignore
-FILE_LIST="$(mktemp)"
-TMP_OUT=""
-cleanup() {
-  rm -f "$FILE_LIST"
-  if [ -n "${TMP_OUT:-}" ]; then rm -f "$TMP_OUT"; fi
-}
-trap cleanup EXIT
-
-if command -v rg >/dev/null 2>&1; then
-  # ripgrep respects .gitignore by default
-  ( cd "$ROOT_DIR" && rg --files --hidden --follow --glob '!.git' ) > "$FILE_LIST"
-elif [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
-  # git files incl. untracked, excluding standard ignores
-  ( cd "$ROOT_DIR" && git ls-files -co --exclude-standard ) > "$FILE_LIST"
-else
-  echo "Error: Need ripgrep (rg) installed or a Git repo to honor .gitignore." >&2
-  exit 1
-fi
-
-# Additional filtering: ensure top-level directories/files specified with
-# root-anchored patterns in .gitignore (e.g., /sprints/, /rulebook/, /.claude/)
-# are excluded from FILE_LIST even when using 'git ls-files' that may include
-# already-tracked files. Use awk-based string matching for macOS compatibility.
-if [ -f "$ROOT_DIR/.gitignore" ]; then
-  DIRS_CSV=""
-  FILES_CSV=""
-  while IFS= read -r raw; do
-    # Strip trailing comments and whitespace
-    line="${raw%%#*}"
-    line="$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//')"
-    [ -n "$line" ] || continue
-    # Only handle root-anchored patterns for directories/files
-    case "$line" in
-      /*/)
-        name="${line#/}"; name="${name%/}"
-        DIRS_CSV="${DIRS_CSV}${name},"
-        ;;
-      /*)
-        name="${line#/}"
-        FILES_CSV="${FILES_CSV}${name},"
-        ;;
-      *)
-        # Non-root-anchored or other complex patterns are ignored here;
-        # they are already handled by ripgrep when available.
-        :
-        ;;
-    esac
-  done < "$ROOT_DIR/.gitignore"
-
-  if [ -n "$DIRS_CSV$FILES_CSV" ]; then
-    TMP_LIST="$(mktemp)"
-    awk -v dirs="$DIRS_CSV" -v files="$FILES_CSV" '
-      BEGIN{
-        n=split(dirs,d,","); for(i=1;i<=n;i++) if(d[i]!="") D[d[i]]=1;
-        m=split(files,f,","); for(i=1;i<=m;i++) if(f[i]!="") F[f[i]]=1;
-      }
-      {
-        path=$0
-        slash=index(path,"/")
-        if (slash>0) {
-          comp=substr(path,1,slash-1)
-          if (comp in D) next
-        } else {
-          if (path in F) next
-        }
-        print path
-      }' "$FILE_LIST" > "$TMP_LIST"
-    mv "$TMP_LIST" "$FILE_LIST"
-  fi
-fi
-
-# Temporary output to avoid partial writes
-TMP_OUT="$(mktemp)"
-
-# Header
-{
-  echo "# Project Source Dump"
-  echo
-  echo "- Root: $ROOT_DIR"
-  echo "- Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  echo
-  echo "---"
-  echo
-} >> "$TMP_OUT"
-
-guess_lang() {
-  # Echo a Markdown code fence language based on file extension
-  # Falls back to empty (no language hint)
-  file="$1"
-  ext="${file##*.}"
-  case "$ext" in
-    lua) echo "lua" ;;
-    md|markdown) echo "markdown" ;;
-    txt|text|license|licence) echo "text" ;;
-    sh|bash|zsh) echo "bash" ;;
-    js|jsx|mjs|cjs) echo "javascript" ;;
-    ts|tsx) echo "typescript" ;;
-    json) echo "json" ;;
-    yml|yaml) echo "yaml" ;;
-    html|htm) echo "html" ;;
-    css|scss|sass|less) echo "css" ;;
-    py) echo "python" ;;
-    go) echo "go" ;;
-    rs) echo "rust" ;;
-    java) echo "java" ;;
-    kt|kts) echo "kotlin" ;;
-    c) echo "c" ;;
-    h) echo "c" ;;
-    cpp|cxx|cc) echo "cpp" ;;
-    hpp|hh|hxx) echo "cpp" ;;
-    m) echo "objective-c" ;;
-    mm) echo "objective-c++" ;;
-    swift) echo "swift" ;;
-    rb) echo "ruby" ;;
-    php) echo "php" ;;
-    *) echo "" ;;
-  esac
-}
-
-is_text_file() {
-  # Heuristic: grep -Iq returns success for text files
-  # Using LC_ALL=C for consistent behavior across locales
-  LC_ALL=C grep -Iq . -- "$1"
-}
-
-# Compute absolute path to skip if output resides under root
-SKIP_ABS="$OUTPUT_PATH"
-
-while IFS= read -r rel; do
-  # Skip empty lines
-  [ -n "$rel" ] || continue
-
-  abs="$ROOT_DIR/$rel"
-
-  # Skip non-regular files
-  if [ ! -f "$abs" ]; then
-    continue
-  fi
-
-  # Skip the output file itself if it lives in the tree
-  if [ "$abs" = "$SKIP_ABS" ]; then
-    continue
-  fi
-
-  # Skip binaries
-  if ! is_text_file "$abs"; then
-    continue
-  fi
-
-  # Decide on fence; if file contains triple backticks, use tildes
-  fence='```'
-  if grep -q '```' -- "$abs"; then
-    fence='~~~'
-  fi
-
-  lang="$(guess_lang "$rel")"
-
-  {
-    echo "## File: $rel"
-    echo
-    if [ -n "$lang" ]; then
-      echo "${fence}${lang}"
-    else
-      echo "${fence}"
-    fi
-    cat -- "$abs"
-    echo
-    echo "${fence}"
-    echo
-    echo "---"
-    echo
-  } >> "$TMP_OUT"
-done < "$FILE_LIST"
-
-mv -f "$TMP_OUT" "$OUTPUT_PATH"
-
-echo "Wrote Markdown to: $OUTPUT_PATH"
-
-
-
-~~~
-
----
-
-## File: src/logic/deck.lua
-
-```lua
--- deck.lua
--- Deck Lifecycle Manager for Majesty
--- Ticket T1_2: Manages draw_pile, discard_pile, shuffle, draw, and discard operations
-
-local M = {}
-
---------------------------------------------------------------------------------
--- DEEP COPY HELPER
--- Prevents the "reference trap" where modifying a drawn card affects the registry
---------------------------------------------------------------------------------
-local function deepCopyCard(card)
-    return {
-        name     = card.name,
-        suit     = card.suit,
-        value    = card.value,
-        is_major = card.is_major,
-    }
-end
-
-local function deepCopyCards(cards)
-    local copy = {}
-    for i, card in ipairs(cards) do
-        copy[i] = deepCopyCard(card)
-    end
-    return copy
-end
-
---------------------------------------------------------------------------------
--- FISHER-YATES SHUFFLE (in-place)
--- Note: Random seed must be initialized via game_clock:init() before use
---------------------------------------------------------------------------------
-local function fisherYatesShuffle(t)
-    for i = #t, 2, -1 do
-        local j = math.random(1, i)
-        t[i], t[j] = t[j], t[i]
-    end
-    return t
-end
-
---------------------------------------------------------------------------------
--- DECK FACTORY
---------------------------------------------------------------------------------
-
---- Create a new Deck instance
--- @param cards table: Array of card data from constants.lua (MinorArcana or MajorArcana)
--- @return Deck instance with draw_pile, discard_pile, and methods
-function M.createDeck(cards)
-    local deck = {
-        draw_pile    = {},
-        discard_pile = {},
-    }
-
-    -- Deep copy cards into draw pile (avoid reference trap)
-    if cards and #cards > 0 then
-        deck.draw_pile = deepCopyCards(cards)
-    end
-
-    ----------------------------------------------------------------------------
-    -- SHUFFLE: Randomize the draw pile in-place
-    ----------------------------------------------------------------------------
-    function deck:shuffle()
-        fisherYatesShuffle(self.draw_pile)
-        return self
-    end
-
-    ----------------------------------------------------------------------------
-    -- DRAW: Remove and return the top card from draw pile
-    -- Auto-reshuffles discard into draw pile if draw pile is empty
-    ----------------------------------------------------------------------------
-    function deck:draw()
-        -- If draw pile is empty, check discard pile
-        if #self.draw_pile == 0 then
-            if #self.discard_pile == 0 then
-                -- Both piles empty, nothing to draw
-                return nil
-            end
-
-            -- Move discard pile to draw pile and shuffle
-            self.draw_pile = self.discard_pile
-            self.discard_pile = {}
-            self:shuffle()
-        end
-
-        -- Remove and return top card (last element for O(1) removal)
-        return table.remove(self.draw_pile)
-    end
-
-    ----------------------------------------------------------------------------
-    -- DISCARD: Move a card to the discard pile
-    ----------------------------------------------------------------------------
-    function deck:discard(card)
-        if card then
-            self.discard_pile[#self.discard_pile + 1] = card
-        end
-        return self
-    end
-
-    ----------------------------------------------------------------------------
-    -- UTILITY: Get counts for debugging/UI
-    ----------------------------------------------------------------------------
-    function deck:drawPileCount()
-        return #self.draw_pile
-    end
-
-    function deck:discardPileCount()
-        return #self.discard_pile
-    end
-
-    function deck:totalCards()
-        return #self.draw_pile + #self.discard_pile
-    end
-
-    ----------------------------------------------------------------------------
-    -- UTILITY: Peek at top of discard pile (some rules check this)
-    ----------------------------------------------------------------------------
-    function deck:peekDiscard()
-        if #self.discard_pile == 0 then
-            return nil
-        end
-        return self.discard_pile[#self.discard_pile]
-    end
-
-    ----------------------------------------------------------------------------
-    -- RESET: Return all cards to draw pile and shuffle (full reshuffle)
-    ----------------------------------------------------------------------------
-    function deck:reset()
-        -- Move all discarded cards back to draw pile
-        for i = 1, #self.discard_pile do
-            self.draw_pile[#self.draw_pile + 1] = self.discard_pile[i]
-        end
-        self.discard_pile = {}
-        self:shuffle()
-        return self
-    end
-
-    return deck
-end
-
---------------------------------------------------------------------------------
--- CONVENIENCE CONSTRUCTORS
---------------------------------------------------------------------------------
-
---- Create the Player's Deck (Minor Arcana + The Fool)
--- @param constants table: The constants module from constants.lua
-function M.createPlayerDeck(constants)
-    local deck = M.createDeck(constants.MinorArcana)
-    deck:shuffle()
-    return deck
-end
-
---- Create the GM's Deck (Major Arcana, I-XXI)
--- @param constants table: The constants module from constants.lua
-function M.createGMDeck(constants)
-    local deck = M.createDeck(constants.MajorArcana)
-    deck:shuffle()
-    return deck
-end
-
-return M
-
-```
-
----
-
-## File: src/logic/game_clock.lua
-
-```lua
--- game_clock.lua
--- Game State and Round Manager for Majesty
--- Ticket T1_3: Tracks game phase and handles end-of-round triggers (Fool reshuffle)
-
-local M = {}
-
---------------------------------------------------------------------------------
--- GLOBAL INITIALIZATION
--- Call once at game startup, before creating any decks
---------------------------------------------------------------------------------
-local initialized = false
-
---- Initialize the random seed for the entire game
--- Must be called once before any deck shuffling occurs
--- Uses a combination of time and a high-precision counter to avoid
--- identical shuffles when multiple decks are created in the same millisecond
-function M.init()
-    if not initialized then
-        -- Combine os.time() with os.clock() for better entropy
-        local seed = os.time() + math.floor(os.clock() * 1000)
-        math.randomseed(seed)
-        -- Warm up the generator (first few values can be predictable)
-        for _ = 1, 10 do math.random() end
-        initialized = true
-    end
-end
-
---- Check if the system has been initialized
-function M.isInitialized()
-    return initialized
-end
-
---------------------------------------------------------------------------------
--- PHASE CONSTANTS
---------------------------------------------------------------------------------
-M.PHASES = {
-    CRAWL     = 1,
-    CHALLENGE = 2,
-    CAMP      = 3,
-    CITY      = 4,
-}
-
-M.PHASE_NAMES = {
-    [1] = "Crawl",
-    [2] = "Challenge",
-    [3] = "Camp",
-    [4] = "City",
-}
-
---------------------------------------------------------------------------------
--- GAME CLOCK FACTORY
---------------------------------------------------------------------------------
-
---- Create a new GameClock instance
--- @param playerDeck Deck: The player's deck (Minor Arcana + Fool)
--- @param gmDeck Deck: The GM's deck (Major Arcana)
--- @return GameClock instance
-function M.createGameClock(playerDeck, gmDeck)
-    local clock = {
-        currentPhase    = M.PHASES.CITY,  -- Games typically start in City phase
-        pendingReshuffle = false,
-        playerDeck      = playerDeck,
-        gmDeck          = gmDeck,
-        roundNumber     = 0,
-    }
-
-    ----------------------------------------------------------------------------
-    -- PHASE MANAGEMENT
-    ----------------------------------------------------------------------------
-
-    --- Set the current game phase
-    -- @param phase number: One of PHASES constants
-    function clock:setPhase(phase)
-        self.currentPhase = phase
-        return self
-    end
-
-    --- Get the current phase
-    function clock:getPhase()
-        return self.currentPhase
-    end
-
-    --- Get the current phase name (for display/debugging)
-    function clock:getPhaseName()
-        return M.PHASE_NAMES[self.currentPhase] or "Unknown"
-    end
-
-    ----------------------------------------------------------------------------
-    -- CARD DRAWN LISTENER
-    -- Called whenever a card is drawn; checks for The Fool
-    ----------------------------------------------------------------------------
-
-    --- Notify the clock that a card was drawn
-    -- If The Fool is drawn, sets pendingReshuffle flag
-    -- @param card table: The card that was drawn
-    -- @return card table: Returns the same card (for chaining/passthrough)
-    function clock:onCardDrawn(card)
-        if card and card.name == "The Fool" then
-            self.pendingReshuffle = true
-        end
-        -- Return the card unchanged - Fool's value (0) is still used for resolution
-        return card
-    end
-
-    ----------------------------------------------------------------------------
-    -- END OF ROUND
-    -- Handles the Fool-triggered dual-deck reshuffle
-    ----------------------------------------------------------------------------
-
-    --- End the current round
-    -- If The Fool was drawn this round, reshuffles both decks
-    -- @return boolean: true if reshuffle occurred, false otherwise
-    function clock:endRound()
-        self.roundNumber = self.roundNumber + 1
-
-        if self.pendingReshuffle then
-            -- Reset both decks: move all discards back and shuffle
-            if self.playerDeck then
-                self.playerDeck:reset()
-            end
-            if self.gmDeck then
-                self.gmDeck:reset()
-            end
-
-            self.pendingReshuffle = false
-            return true  -- Reshuffle occurred
-        end
-
-        return false  -- No reshuffle needed
-    end
-
-    ----------------------------------------------------------------------------
-    -- UTILITY
-    ----------------------------------------------------------------------------
-
-    --- Check if a reshuffle is pending
-    function clock:isReshufflePending()
-        return self.pendingReshuffle
-    end
-
-    --- Get current round number
-    function clock:getRoundNumber()
-        return self.roundNumber
-    end
-
-    --- Manually trigger reshuffle (for edge cases/testing)
-    function clock:forceReshuffle()
-        self.pendingReshuffle = true
-        return self
-    end
-
-    return clock
-end
-
-return M
-
-```
-
----
-
-## File: src/logic/resolver.lua
-
-```lua
--- resolver.lua
--- Test of Fate Resolution Logic for Majesty
--- Ticket T1_4: Pure function library for resolving Tests of Fate and Pushing Fate
---
--- This module is STATELESS - it knows nothing about Decks or Players.
--- It just takes numbers and cards and returns results.
-
-local M = {}
-
---------------------------------------------------------------------------------
--- RESULT TYPES
---------------------------------------------------------------------------------
-M.RESULTS = {
-    SUCCESS       = "success",
-    GREAT_SUCCESS = "great_success",
-    FAILURE       = "failure",
-    GREAT_FAILURE = "great_failure",
-}
-
---------------------------------------------------------------------------------
--- CONSTANTS
---------------------------------------------------------------------------------
-local TARGET_VALUE = 14  -- Threshold for success
-local FAVOR_BONUS = 3    -- Bonus/penalty for favor/disfavor
-
---------------------------------------------------------------------------------
--- RESULT FACTORY
--- Creates a standardized result object
---------------------------------------------------------------------------------
-local function createResult(resultType, total, cards)
-    local isSuccess = (resultType == M.RESULTS.SUCCESS or resultType == M.RESULTS.GREAT_SUCCESS)
-    local isGreat = (resultType == M.RESULTS.GREAT_SUCCESS or resultType == M.RESULTS.GREAT_FAILURE)
-
-    return {
-        result   = resultType,
-        success  = isSuccess,
-        isGreat  = isGreat,
-        total    = total,
-        cards    = cards or {},
-    }
-end
-
---------------------------------------------------------------------------------
--- RESOLVE INITIAL TEST
--- Called when an adventurer draws a card for a Test of Fate
---
--- @param attribute number: The adventurer's attribute value (1-4)
--- @param targetSuit number: The suit being tested (from constants.SUITS)
--- @param card table: The drawn card { name, suit, value, is_major }
--- @param favor boolean|nil: true = favor (+3), false = disfavor (-3), nil = neither
--- @return Result object
---------------------------------------------------------------------------------
-function M.resolveTest(attribute, targetSuit, card, favor)
-    local total = card.value + attribute
-
-    -- Apply favor/disfavor (non-cumulative, binary)
-    if favor == true then
-        total = total + FAVOR_BONUS
-    elseif favor == false then
-        total = total - FAVOR_BONUS
-    end
-
-    local cards = { card }
-
-    if total >= TARGET_VALUE then
-        -- Success! Check for Great Success
-        -- Great Success requires: matching suit on INITIAL draw (not push)
-        if card.suit == targetSuit then
-            return createResult(M.RESULTS.GREAT_SUCCESS, total, cards)
-        else
-            return createResult(M.RESULTS.SUCCESS, total, cards)
-        end
-    else
-        -- Failure (can be pushed)
-        return createResult(M.RESULTS.FAILURE, total, cards)
-    end
-end
-
---------------------------------------------------------------------------------
--- RESOLVE PUSH
--- Called when an adventurer pushes fate after an initial failure
---
--- @param previousTotal number: The total from the initial test (before push)
--- @param previousCards table: Array of cards from initial test
--- @param pushCard table: The second card drawn when pushing
--- @return Result object
---
--- Rules:
--- - If pushCard is The Fool → Great Failure (automatic)
--- - If new total >= 14 → Success (NEVER Great Success)
--- - If new total < 14 → Great Failure
---------------------------------------------------------------------------------
-function M.resolvePush(previousTotal, previousCards, pushCard)
-    local cards = {}
-    for _, c in ipairs(previousCards) do
-        cards[#cards + 1] = c
-    end
-    cards[#cards + 1] = pushCard
-
-    -- The Fool when pushing = automatic Great Failure
-    if pushCard.name == "The Fool" then
-        -- Total includes Fool's value (0), but it's still Great Failure
-        local total = previousTotal + pushCard.value
-        return createResult(M.RESULTS.GREAT_FAILURE, total, cards)
-    end
-
-    local total = previousTotal + pushCard.value
-
-    if total >= TARGET_VALUE then
-        -- Success (never Great Success from pushing)
-        return createResult(M.RESULTS.SUCCESS, total, cards)
-    else
-        -- Great Failure
-        return createResult(M.RESULTS.GREAT_FAILURE, total, cards)
-    end
-end
-
---------------------------------------------------------------------------------
--- UTILITY: Check if a result can be pushed
--- Only failures (not great failures) can be pushed
---------------------------------------------------------------------------------
-function M.canPush(result)
-    return result.result == M.RESULTS.FAILURE
-end
-
---------------------------------------------------------------------------------
--- UTILITY: Calculate minimum card value needed for success
--- Useful for UI hints
---------------------------------------------------------------------------------
-function M.minimumCardNeeded(attribute, favor)
-    local bonus = 0
-    if favor == true then
-        bonus = FAVOR_BONUS
-    elseif favor == false then
-        bonus = -FAVOR_BONUS
-    end
-    return TARGET_VALUE - attribute - bonus
 end
 
 return M

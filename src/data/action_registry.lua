@@ -29,6 +29,8 @@ M.SUITS = {
 --   description   - Short description for tooltip
 --   allowMinor    - Whether this can be used as a Minor Action (default: true for suit-matched)
 --   requiresTarget - Whether a target is needed
+--   challengeAction - Whether this should appear in Challenge action menus
+--   showInCommandBoard - Optional override for Challenge UI visibility
 
 M.ACTIONS = {
     ----------------------------------------------------------------------------
@@ -42,6 +44,7 @@ M.ACTIONS = {
         description = "Strike an enemy in your zone with a melee weapon.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "missile",
@@ -53,6 +56,7 @@ M.ACTIONS = {
         targetType = "enemy",
         requiresWeaponType = "ranged",
         isRanged = true,  -- S12.2: Cannot use while engaged
+        challengeAction = true,
     },
     {
         id = "riposte",
@@ -61,6 +65,7 @@ M.ACTIONS = {
         attribute = "swords",
         description = "Prepare to counter-attack. If attacked, strike back with this card.",
         requiresTarget = false,
+        challengeAction = true,
     },
 
     ----------------------------------------------------------------------------
@@ -73,6 +78,7 @@ M.ACTIONS = {
         attribute = "pentacles",
         description = "Avoid a danger or disengage safely; move to an adjacent zone afterward.",
         requiresTarget = false,
+        challengeAction = true,
     },
     {
         id = "dash",
@@ -81,6 +87,7 @@ M.ACTIONS = {
         attribute = "pentacles",
         description = "Move quickly through a zone, potentially avoiding obstacles.",
         requiresTarget = false,
+        challengeAction = true,
     },
     {
         id = "dodge",
@@ -89,6 +96,7 @@ M.ACTIONS = {
         attribute = "pentacles",
         description = "Prepare to dodge. Card value helps you avoid an attack.",
         requiresTarget = false,
+        challengeAction = true,
     },
     {
         id = "trip",
@@ -98,6 +106,7 @@ M.ACTIONS = {
         description = "Knock an enemy prone, reducing their defense.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "disarm",
@@ -107,6 +116,7 @@ M.ACTIONS = {
         description = "Remove an item from an enemy's hands.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "displace",
@@ -116,6 +126,7 @@ M.ACTIONS = {
         description = "Push an enemy to an adjacent zone.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "grapple",
@@ -125,6 +136,7 @@ M.ACTIONS = {
         description = "Seize an enemy. Success engages and prevents their movement.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
     {
         id = "pick_lock",
@@ -135,6 +147,8 @@ M.ACTIONS = {
         requiresTarget = false,
         requiresItem = "lockpicks",
         testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "disarm_trap",
@@ -144,10 +158,55 @@ M.ACTIONS = {
         description = "Safely disarm a detected trap.",
         requiresTarget = false,
         testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
-    -- CUPS (Social / Support)
+    -- CUPS (Support / Commands)
+    ----------------------------------------------------------------------------
+    {
+        id = "aid",
+        name = "Aid Another",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        description = "Bank a bonus for an ally's next action (card value + Cups).",
+        requiresTarget = true,
+        targetType = "ally",
+        challengeAction = true,
+    },
+    {
+        id = "command",
+        name = "Command",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        description = "Command an animal companion (or similar ally) to act.",
+        requiresTarget = false,
+        requiresCompanion = true,
+        challengeAction = true,
+    },
+    {
+        id = "pull_item",
+        name = "Pull Item from Pack",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        description = "Swap an item from your pack with an item in your hands.",
+        requiresTarget = false,
+        autoSuccess = true,
+        challengeAction = true,
+    },
+    {
+        id = "use_item",
+        name = "Use Item",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        description = "Use an item in hand. If used on a combatant, resolve against Initiative.",
+        requiresTarget = false,  -- Optional target
+        challengeAction = true,
+    },
+
+    ----------------------------------------------------------------------------
+    -- CUPS EXTENSIONS (not shown in Challenge command board)
     ----------------------------------------------------------------------------
     {
         id = "heal",
@@ -157,6 +216,8 @@ M.ACTIONS = {
         description = "Attempt to heal a wound on yourself or an ally.",
         requiresTarget = true,
         targetType = "ally",
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "parley",
@@ -166,6 +227,8 @@ M.ACTIONS = {
         description = "Attempt to negotiate or reason with an NPC.",
         requiresTarget = true,
         targetType = "any",
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "rally",
@@ -175,55 +238,45 @@ M.ACTIONS = {
         description = "Inspire an ally, removing a condition or boosting morale.",
         requiresTarget = true,
         targetType = "ally",
-    },
-    {
-        id = "aid",
-        name = "Aid Another",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",
-        description = "Bank a bonus for an ally's next action (card value + Cups).",
-        requiresTarget = true,
-        targetType = "ally",
-    },
-    {
-        id = "pull_item",
-        name = "Pull Item",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",
-        description = "Ready an item from your pack to your belt.",
-        requiresTarget = false,
-        autoSuccess = true,
-    },
-    {
-        id = "use_item",
-        name = "Use Item",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",  -- Depends on item, but uses Cups suit
-        description = "Activate an item's special ability.",
-        requiresTarget = false,
-        autoSuccess = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
-    -- WANDS (Magic / Perception)
+    -- WANDS (Social / Spellcraft)
     ----------------------------------------------------------------------------
-    {
-        id = "cast",
-        name = "Cast Spell",
-        suit = M.SUITS.WANDS,
-        attribute = "wands",
-        description = "Channel a prepared spell effect.",
-        requiresTarget = false,  -- Depends on spell
-    },
     {
         id = "banter",
         name = "Banter",
         suit = M.SUITS.WANDS,
         attribute = "wands",
-        description = "Taunt, intimidate, or frighten an enemy to sway morale.",
+        description = "Taunt, intimidate, or frighten an enemy to sway morale/disposition.",
         requiresTarget = true,
         targetType = "enemy",
+        challengeAction = true,
     },
+    {
+        id = "speak_incantation",
+        name = "Speak Incantation",
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        description = "Intone the words of power to cast a spell effect.",
+        requiresTarget = false,  -- Optional target
+        challengeAction = true,
+    },
+    {
+        id = "recover",
+        name = "Recover",
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        description = "Remove one recoverable effect (rooted, prone, blind, deaf, disarmed).",
+        requiresTarget = false,
+        challengeAction = true,
+    },
+
+    ----------------------------------------------------------------------------
+    -- WANDS EXTENSIONS (not shown in Challenge command board)
+    ----------------------------------------------------------------------------
     {
         id = "investigate",
         name = "Investigate",
@@ -232,6 +285,8 @@ M.ACTIONS = {
         description = "Search for hidden details, secrets, or clues.",
         requiresTarget = false,
         testOfFate = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "detect_magic",
@@ -241,19 +296,35 @@ M.ACTIONS = {
         description = "Sense magical auras or enchantments nearby.",
         requiresTarget = false,
         testOfFate = true,
-    },
-    {
-        id = "recover",
-        name = "Recover",
-        suit = M.SUITS.WANDS,
-        attribute = "wands",
-        description = "Clear a negative status effect (rooted, prone, blind, deaf, disarmed).",
-        requiresTarget = false,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
-    -- MISCELLANEOUS (Any Suit on Primary Turn)
+    -- MISCELLANEOUS (Any Suit on Primary Turn; never minor actions)
     ----------------------------------------------------------------------------
+    {
+        id = "bid_lore",
+        name = "Bid Lore",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Bid lore during a Challenge to recall esoteric details.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
+    },
+    {
+        id = "guard",
+        name = "Guard",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "If wielding a shield, replace your Initiative with this card's value.",
+        requiresTarget = false,
+        allowMinor = false,
+        requiresTag = "shield",
+        challengeAction = true,
+    },
     {
         id = "move",
         name = "Move",
@@ -262,6 +333,18 @@ M.ACTIONS = {
         description = "Move to an adjacent zone. No test required unless obstacles.",
         requiresTarget = false,
         allowMinor = false,  -- Cannot be a Minor action (normally)
+        challengeAction = true,
+    },
+    {
+        id = "pull_item_belt",
+        name = "Pull Item from Belt",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Swap an item from your belt with an item in your hands.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
     },
     {
         id = "interact",
@@ -272,16 +355,51 @@ M.ACTIONS = {
         requiresTarget = false,
         allowMinor = false,
         autoSuccess = true,
+        challengeAction = false,
+        showInCommandBoard = false,
     },
     {
         id = "reload",
-        name = "Reload",
+        name = "Reload Crossbow",
         suit = M.SUITS.MISC,
         attribute = nil,
         description = "Reload a crossbow (required after each shot).",
         requiresTarget = false,
         allowMinor = false,
         requiresWeaponType = "crossbow",
+        challengeAction = true,
+    },
+    {
+        id = "test_fate",
+        name = "Test Fate",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Trigger a Test of Fate for risky complex actions mid-Challenge.",
+        requiresTarget = false,
+        allowMinor = false,
+        testOfFate = true,
+        challengeAction = true,
+    },
+    {
+        id = "trivial_action",
+        name = "Trivial Action",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Perform a quick uncontested interaction not covered by other actions.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
+    },
+    {
+        id = "vigilance",
+        name = "Vigilance",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Prepare a triggered response action using a matching-suit card.",
+        requiresTarget = false,
+        allowMinor = false,
+        challengeAction = true,
     },
 }
 
@@ -310,14 +428,132 @@ end
 -- QUERY FUNCTIONS
 --------------------------------------------------------------------------------
 
---- Get an action by ID
-function M.getAction(actionId)
-    return M.byId[actionId]
+-- Backward-compatible aliases for renamed actions
+M.ALIASES = {
+    cast = "speak_incantation",
+}
+
+local function normalizeActionId(actionId)
+    local current = actionId
+    local seen = {}
+
+    while current and M.ALIASES[current] and not seen[current] do
+        seen[current] = true
+        current = M.ALIASES[current]
+    end
+
+    return current or actionId
 end
 
---- Get all actions for a suit
-function M.getActionsForSuit(suit)
-    return M.bySuit[suit] or {}
+local function hasTagInHands(entity, requiredTag)
+    if not entity or not entity.inventory or not entity.inventory.getItems then
+        return false
+    end
+
+    local hands = entity.inventory:getItems("hands") or {}
+    for _, item in ipairs(hands) do
+        local props = item.properties
+        if props and props.tags then
+            for _, tag in ipairs(props.tags) do
+                if tag == requiredTag then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+--- Validate an action's requirements against an entity
+-- @return boolean, string|nil: canUse, disableReason
+function M.checkActionRequirements(action, entity)
+    if not action then
+        return false, "Unknown action"
+    end
+
+    if action.requiresWeaponType then
+        local hasRequiredWeapon = false
+
+        if entity and entity.inventory then
+            local weapon = entity.inventory:getWieldedWeapon()
+            if weapon then
+                if action.requiresWeaponType == "ranged" then
+                    hasRequiredWeapon = weapon.isRanged == true
+                elseif action.requiresWeaponType == "melee" then
+                    hasRequiredWeapon = weapon.isMelee == true or (weapon.isWeapon and not weapon.isRanged)
+                else
+                    hasRequiredWeapon = weapon.weaponType == action.requiresWeaponType
+                end
+            end
+        end
+
+        if not hasRequiredWeapon then
+            return false, "Requires " .. action.requiresWeaponType .. " weapon in hands"
+        end
+    end
+
+    if action.requiresTag then
+        if not hasTagInHands(entity, action.requiresTag) then
+            return false, "Requires " .. action.requiresTag
+        end
+    end
+
+    if action.requiresCompanion then
+        local hasCompanion = entity and (
+            entity.companion ~= nil or
+            (type(entity.companions) == "table" and next(entity.companions) ~= nil)
+        )
+        if not hasCompanion then
+            return false, "Requires companion"
+        end
+    end
+
+    if action.requiresItem then
+        if entity and entity.inventory then
+            local hasItem = entity.inventory:hasItemOfType(action.requiresItem)
+            if not hasItem then
+                return false, "Requires " .. action.requiresItem
+            end
+        else
+            return false, "Requires " .. action.requiresItem
+        end
+    end
+
+    return true, nil
+end
+
+--- Get an action by ID
+function M.getAction(actionId)
+    local normalized = normalizeActionId(actionId)
+    return M.byId[normalized]
+end
+
+--- Get actions for a suit
+-- @param options table|nil: { challengeOnly = bool, commandBoardOnly = bool }
+function M.getActionsForSuit(suit, options)
+    local actions = M.bySuit[suit] or {}
+    if not options then
+        return actions
+    end
+
+    local filtered = {}
+    for _, action in ipairs(actions) do
+        local include = true
+
+        if options.challengeOnly and action.challengeAction == false then
+            include = false
+        end
+        if options.commandBoardOnly and action.showInCommandBoard == false then
+            include = false
+        end
+
+        if include then
+            filtered[#filtered + 1] = action
+        end
+    end
+
+    return filtered
 end
 
 --- Get actions available for a given card and context
@@ -342,43 +578,8 @@ function M.getAvailableActions(card, isPrimaryTurn, entity)
             end
         end
 
-        -- Check additional requirements
-        -- S13: Check for weapon in hands (via inventory) with proper type matching
-        if canUse and action.requiresWeaponType then
-            local hasRequiredWeapon = false
-
-            -- Check inventory hands for weapons
-            if entity and entity.inventory then
-                local weapon = entity.inventory:getWieldedWeapon()
-                if weapon then
-                    -- "ranged" is a category check (isRanged flag)
-                    if action.requiresWeaponType == "ranged" then
-                        hasRequiredWeapon = weapon.isRanged == true
-                    -- "melee" is a category check
-                    elseif action.requiresWeaponType == "melee" then
-                        hasRequiredWeapon = weapon.isMelee == true or (weapon.isWeapon and not weapon.isRanged)
-                    -- Otherwise check specific weapon type
-                    else
-                        hasRequiredWeapon = weapon.weaponType == action.requiresWeaponType
-                    end
-                end
-            end
-
-            if not hasRequiredWeapon then
-                canUse = false
-            end
-        end
-
-        if canUse and action.requiresItem then
-            -- Check if entity has required item
-            if entity and entity.inventory then
-                local hasItem = entity.inventory:hasItemOfType(action.requiresItem)
-                if not hasItem then
-                    canUse = false
-                end
-            else
-                canUse = false
-            end
+        if canUse then
+            canUse = M.checkActionRequirements(action, entity)
         end
 
         if canUse then

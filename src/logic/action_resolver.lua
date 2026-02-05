@@ -32,13 +32,17 @@ M.ACTION_TYPES = {
     GRAPPLE    = "grapple",     -- Establish grapple
 
     -- Cups
+    COMMAND    = "command",     -- Command companion actions
     HEAL       = "heal",        -- Healing action
+    PARLEY     = "parley",      -- Social extension
+    RALLY      = "rally",       -- Social extension
     SHIELD     = "shield",      -- Protect another
     AID        = "aid",         -- S7.1: Aid Another (bank bonus for ally)
 
     -- Wands
     BANTER     = "banter",      -- Attack morale
-    CAST       = "cast",        -- Use magic
+    SPEAK_INCANTATION = "speak_incantation", -- Rulebook spellcasting action
+    CAST       = "cast",        -- Legacy alias for Speak Incantation
     RECOVER    = "recover",     -- S7.4: Clear negative status effects
 
     -- Special
@@ -46,7 +50,13 @@ M.ACTION_TYPES = {
     MOVE       = "move",        -- Change zone
     USE_ITEM   = "use_item",    -- Use an item
     PULL_ITEM  = "pull_item",   -- Pull item from pack
+    PULL_ITEM_BELT = "pull_item_belt", -- Pull item from belt
     INTERACT   = "interact",    -- Environment interaction
+    BID_LORE   = "bid_lore",    -- Misc rules lookup action
+    GUARD      = "guard",       -- Replace initiative if shielded
+    TEST_FATE  = "test_fate",   -- Mid-challenge test of fate trigger
+    TRIVIAL_ACTION = "trivial_action", -- Simple uncontested action
+    VIGILANCE  = "vigilance",   -- Prepared triggered response
 
     -- Defensive Actions (S4.9)
     DODGE      = "dodge",       -- Adds card value to defense difficulty
@@ -61,6 +71,10 @@ M.ACTION_TYPES = {
 
     -- S7.8: Ammunition
     RELOAD     = "reload",      -- Reload a crossbow
+}
+
+M.ACTION_ALIASES = {
+    cast = M.ACTION_TYPES.SPEAK_INCANTATION,
 }
 
 --------------------------------------------------------------------------------
@@ -171,6 +185,7 @@ function M.createActionResolver(config)
     -- @return boolean, string: can perform, reason if blocked
     function resolver:canPerformAction(actor, actionType, actionDef)
         if not actor then return false, "No actor" end
+        actionType = self:normalizeActionType(actionType)
 
         -- S12.2: Check ranged restriction when engaged
         local isRanged = actionType == M.ACTION_TYPES.MISSILE
@@ -180,6 +195,13 @@ function M.createActionResolver(config)
 
         if isRanged and self:hasAnyEngagement(actor) then
             return false, "Cannot use ranged weapons while engaged"
+        end
+
+        if actionDef then
+            local requirementsOk, requirementReason = action_registry.checkActionRequirements(actionDef, actor)
+            if not requirementsOk then
+                return false, requirementReason or "Action requirements not met"
+            end
         end
 
         return true, nil
@@ -205,10 +227,18 @@ function M.createActionResolver(config)
         return nil
     end
 
+    function resolver:normalizeActionType(actionType)
+        if not actionType then
+            return actionType
+        end
+        return M.ACTION_ALIASES[actionType] or actionType
+    end
+
     function resolver:usesCardValueOnly(action)
         if not action then return false end
         if action.isMinorAction then return true end
-        if action.type == M.ACTION_TYPES.DODGE or action.type == M.ACTION_TYPES.RIPOSTE then
+        local actionType = self:normalizeActionType(action.type)
+        if actionType == M.ACTION_TYPES.DODGE or actionType == M.ACTION_TYPES.RIPOSTE then
             return true
         end
         return false
@@ -231,12 +261,16 @@ function M.createActionResolver(config)
     end
 
     function resolver:isInitiativeOpposed(actionType)
+        actionType = self:normalizeActionType(actionType)
         return actionType == M.ACTION_TYPES.MELEE or
                actionType == M.ACTION_TYPES.MISSILE or
                actionType == M.ACTION_TYPES.TRIP or
                actionType == M.ACTION_TYPES.DISARM or
                actionType == M.ACTION_TYPES.DISPLACE or
-               actionType == M.ACTION_TYPES.GRAPPLE
+               actionType == M.ACTION_TYPES.GRAPPLE or
+               actionType == M.ACTION_TYPES.SPEAK_INCANTATION or
+               actionType == M.ACTION_TYPES.COMMAND or
+               actionType == M.ACTION_TYPES.USE_ITEM
     end
 
     function resolver:getTargetInitiative(target, action)
@@ -465,7 +499,8 @@ function M.createActionResolver(config)
 
         -- Route to specific resolution based on ACTION TYPE (not card suit)
         -- This allows using any card for any action on primary turns
-        local actionType = action.type or "generic"
+        local actionType = self:normalizeActionType(action.type or "generic")
+        action.normalizedType = actionType
 
         -- Swords actions (combat)
         if actionType == M.ACTION_TYPES.MELEE or actionType == M.ACTION_TYPES.MISSILE then
@@ -477,28 +512,46 @@ function M.createActionResolver(config)
             self:resolvePentaclesAction(action, result)
         -- Cups actions (defense/social)
         elseif actionType == M.ACTION_TYPES.DODGE or actionType == M.ACTION_TYPES.RIPOSTE or
-               actionType == M.ACTION_TYPES.HEAL or
-               actionType == M.ACTION_TYPES.SHIELD or actionType == M.ACTION_TYPES.AID then
+               actionType == M.ACTION_TYPES.HEAL or actionType == M.ACTION_TYPES.SHIELD or
+               actionType == M.ACTION_TYPES.AID or actionType == M.ACTION_TYPES.COMMAND or
+               actionType == M.ACTION_TYPES.PARLEY or actionType == M.ACTION_TYPES.RALLY or
+               actionType == M.ACTION_TYPES.PULL_ITEM or actionType == M.ACTION_TYPES.USE_ITEM then
             self:resolveCupsAction(action, result)
         -- Wands actions (magic/perception)
-        elseif actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.CAST or
+        elseif actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.SPEAK_INCANTATION or
                actionType == M.ACTION_TYPES.RECOVER then
             self:resolveWandsAction(action, result)
         -- Movement and misc
         elseif actionType == M.ACTION_TYPES.MOVE then
             self:resolveMove(action, result, action.allEntities)
+        elseif actionType == M.ACTION_TYPES.GUARD then
+            self:resolveGuard(action, result)
+        elseif actionType == M.ACTION_TYPES.VIGILANCE then
+            self:resolveVigilance(action, result)
         elseif actionType == M.ACTION_TYPES.FLEE then
             self:resolveGenericAction(action, result)
-        elseif actionType == M.ACTION_TYPES.USE_ITEM or
-               actionType == M.ACTION_TYPES.PULL_ITEM or
+        elseif actionType == M.ACTION_TYPES.BID_LORE or
+               actionType == M.ACTION_TYPES.PULL_ITEM_BELT or
+               actionType == M.ACTION_TYPES.TRIVIAL_ACTION or
+               actionType == M.ACTION_TYPES.TEST_FATE or
                actionType == M.ACTION_TYPES.INTERACT then
             self:resolveGenericAction(action, result)
         elseif actionType == M.ACTION_TYPES.RELOAD then
             -- S7.8: Reload crossbow
             self:resolveReload(action, result)
         else
-            -- Unknown action type - fall back to suit-based routing
-            if suit == constants.SUITS.SWORDS then
+            -- Unknown action type - fall back to action definition suit when available
+            local fallbackSuit = actionDef and actionDef.suit
+
+            if fallbackSuit == action_registry.SUITS.SWORDS then
+                self:resolveSwordsAction(action, result)
+            elseif fallbackSuit == action_registry.SUITS.PENTACLES then
+                self:resolvePentaclesAction(action, result)
+            elseif fallbackSuit == action_registry.SUITS.CUPS then
+                self:resolveCupsAction(action, result)
+            elseif fallbackSuit == action_registry.SUITS.WANDS then
+                self:resolveWandsAction(action, result)
+            elseif suit == constants.SUITS.SWORDS then
                 self:resolveSwordsAction(action, result)
             elseif suit == constants.SUITS.PENTACLES then
                 self:resolvePentaclesAction(action, result)
@@ -583,13 +636,14 @@ function M.createActionResolver(config)
     --- Get the difficulty for an action
     function resolver:getDifficulty(action, actionDef)
         local target = action.target
+        local actionType = self:normalizeActionType(action.type)
 
         -- Default difficulty
         local difficulty = 10
 
         if target then
             -- Initiative-opposed actions compare against target Initiative
-            if self:isInitiativeOpposed(action.type) then
+            if self:isInitiativeOpposed(actionType) then
                 local initValue = self:getTargetInitiative(target, action)
                 if initValue then
                     return initValue
@@ -599,7 +653,7 @@ function M.createActionResolver(config)
                 return 10 + (target.pentacles or 0)
             end
 
-            if action.type == M.ACTION_TYPES.BANTER then
+            if actionType == M.ACTION_TYPES.BANTER then
                 -- S12.3: Banter vs dynamic Morale
                 if target.getMorale then
                     difficulty = target:getMorale()
@@ -608,6 +662,13 @@ function M.createActionResolver(config)
                 else
                     -- Legacy fallback
                     difficulty = target.morale or (10 + (target.wands or 0))
+                end
+            elseif actionType == M.ACTION_TYPES.PARLEY then
+                -- Parley is intentionally slightly harder than Banter
+                if target.getMorale then
+                    difficulty = target:getMorale() + 1
+                elseif target.baseMorale then
+                    difficulty = target.baseMorale + 1
                 end
             end
         end
@@ -640,7 +701,7 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolveSwordsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.MELEE
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.MELEE)
 
         if actionType == M.ACTION_TYPES.MISSILE then
             self:resolveMissile(action, result)
@@ -999,7 +1060,7 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolvePentaclesAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.TRIP
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.TRIP)
 
         if actionType == M.ACTION_TYPES.TRIP then
             self:resolveTrip(action, result)
@@ -1210,7 +1271,7 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolveCupsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.AID
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.AID)
 
         if actionType == M.ACTION_TYPES.DODGE then
             -- S4.9: Prepare Dodge defense
@@ -1220,6 +1281,16 @@ function M.createActionResolver(config)
             self:resolveRipostePrepare(action, result)
         elseif actionType == M.ACTION_TYPES.HEAL then
             self:resolveHeal(action, result)
+        elseif actionType == M.ACTION_TYPES.COMMAND then
+            self:resolveCommand(action, result)
+        elseif actionType == M.ACTION_TYPES.PARLEY then
+            self:resolveParley(action, result)
+        elseif actionType == M.ACTION_TYPES.RALLY then
+            self:resolveRally(action, result)
+        elseif actionType == M.ACTION_TYPES.USE_ITEM then
+            self:resolveUseItem(action, result)
+        elseif actionType == M.ACTION_TYPES.PULL_ITEM then
+            self:resolvePullItemFromPack(action, result)
         elseif actionType == M.ACTION_TYPES.SHIELD then
             result.success = true
             result.description = "Shielding " .. (action.target and action.target.name or "ally")
@@ -1227,6 +1298,8 @@ function M.createActionResolver(config)
         elseif actionType == M.ACTION_TYPES.AID then
             -- S7.1: Aid Another
             self:resolveAidAnother(action, result)
+        else
+            self:resolveGenericAction(action, result)
         end
     end
 
@@ -1258,6 +1331,152 @@ function M.createActionResolver(config)
 
         result.description = "Aided " .. (target.name or "ally") .. "! (+" .. totalBonus .. " to next action)"
         result.effects[#result.effects + 1] = "aid_banked"
+    end
+
+    function resolver:resolveCommand(action, result)
+        local actor = action.actor
+        local target = action.target
+        local hasCompanion = actor and (
+            actor.companion ~= nil or
+            (type(actor.companions) == "table" and next(actor.companions) ~= nil)
+        )
+
+        if not hasCompanion then
+            result.success = false
+            result.description = "No companion to command."
+            return
+        end
+
+        if target then
+            local targetInitiative = result.difficulty
+            local defenderHasShield = self:entityHasShield(target)
+            result.success = (result.testValue > targetInitiative) or
+                             (result.testValue == targetInitiative and not defenderHasShield)
+        else
+            result.success = true
+        end
+
+        if result.success then
+            result.description = "Command issued."
+            result.effects[#result.effects + 1] = "commanded"
+        else
+            result.description = "Command resisted."
+        end
+    end
+
+    function resolver:resolveParley(action, result)
+        local target = action.target
+        if not target then
+            result.success = false
+            result.description = "No target to parley with."
+            return
+        end
+
+        -- Parley requires exceeding the social difficulty, matching Banter semantics.
+        result.success = result.testValue > result.difficulty
+
+        self.eventBus:emit("social_discovery", {
+            target = target,
+            targetId = target.id,
+            discoveries = { "disposition", "morale" },
+        })
+
+        if result.success then
+            local oldDisposition = target.getDisposition and target:getDisposition() or target.disposition
+            local newDisposition = oldDisposition or "distaste"
+
+            if disposition_module and disposition_module.moveToward and disposition_module.DISPOSITIONS then
+                newDisposition = disposition_module.moveToward(
+                    newDisposition,
+                    disposition_module.DISPOSITIONS.TRUST,
+                    1
+                )
+            elseif target.shiftDisposition then
+                target:shiftDisposition(1, 1)
+                newDisposition = target.getDisposition and target:getDisposition() or target.disposition
+            end
+
+            if target.setDisposition then
+                target:setDisposition(newDisposition)
+            else
+                target.disposition = newDisposition
+            end
+
+            result.description = "Parley gains ground."
+            result.effects[#result.effects + 1] = "parley_progress"
+        else
+            if target.shiftDisposition then
+                target:shiftDisposition(-1, 1)
+            end
+            result.description = "Parley fails to persuade."
+        end
+    end
+
+    function resolver:resolveRally(action, result)
+        local target = action.target or action.actor
+        if not target then
+            result.success = false
+            result.description = "No ally to rally."
+            return
+        end
+
+        if not result.success then
+            result.description = "Rally falters."
+            return
+        end
+
+        local cleared = nil
+        if target.conditions then
+            if target.conditions.stressed then
+                target.conditions.stressed = false
+                cleared = "stressed"
+            elseif target.conditions.frightened then
+                target.conditions.frightened = false
+                cleared = "frightened"
+            elseif target.conditions.deaf then
+                target.conditions.deaf = false
+                cleared = "deaf"
+            elseif target.conditions.blind then
+                target.conditions.blind = false
+                cleared = "blind"
+            end
+        end
+
+        if target.modifyMorale then
+            target:modifyMorale(1)
+        end
+
+        if cleared then
+            result.description = "Rallied " .. (target.name or "ally") .. " (" .. cleared .. " cleared)."
+            result.effects[#result.effects + 1] = "rally_" .. cleared
+        else
+            result.description = "Rallied " .. (target.name or "ally") .. "."
+            result.effects[#result.effects + 1] = "rally_boost"
+        end
+    end
+
+    function resolver:resolveUseItem(action, result)
+        if action.target then
+            local targetInitiative = result.difficulty
+            local defenderHasShield = self:entityHasShield(action.target)
+            result.success = (result.testValue > targetInitiative) or
+                             (result.testValue == targetInitiative and not defenderHasShield)
+        else
+            result.success = true
+        end
+
+        if result.success then
+            result.description = action.target and "Item effect lands." or "Item used."
+            result.effects[#result.effects + 1] = "item_used"
+        else
+            result.description = "Item use resisted."
+        end
+    end
+
+    function resolver:resolvePullItemFromPack(action, result)
+        result.success = true
+        result.description = "Pulled item from pack."
+        result.effects[#result.effects + 1] = "item_pulled_pack"
     end
 
     --- Prepare a Dodge defense (S4.9)
@@ -1360,12 +1579,12 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     function resolver:resolveWandsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.BANTER
+        local actionType = self:normalizeActionType(action.type or M.ACTION_TYPES.BANTER)
 
         if actionType == M.ACTION_TYPES.BANTER then
             self:resolveBanter(action, result)
-        elseif actionType == M.ACTION_TYPES.CAST then
-            self:resolveCast(action, result)
+        elseif actionType == M.ACTION_TYPES.SPEAK_INCANTATION then
+            self:resolveSpeakIncantation(action, result)
         elseif actionType == M.ACTION_TYPES.RECOVER then
             -- S7.4: Recover action
             self:resolveRecover(action, result)
@@ -1451,7 +1670,7 @@ function M.createActionResolver(config)
         result.difficulty = targetMorale + dispositionMod
 
         -- Recalculate success based on morale difficulty
-        result.success = result.testValue >= result.difficulty
+        result.success = result.testValue > result.difficulty
 
         -- Reveal disposition and morale on ANY banter attempt (you learn by trying)
         self.eventBus:emit("social_discovery", {
@@ -1516,14 +1735,99 @@ function M.createActionResolver(config)
         end
     end
 
-    function resolver:resolveCast(action, result)
-        -- Magic would be spell-specific
+    function resolver:resolveSpeakIncantation(action, result)
+        local target = action.target
+
+        if target then
+            local spellValue = result.testValue
+            local targetInitiative = result.difficulty
+            local defenderHasShield = self:entityHasShield(target)
+            result.success = (spellValue > targetInitiative) or
+                             (spellValue == targetInitiative and not defenderHasShield)
+        else
+            result.success = true
+        end
+
         if result.success then
-            result.description = "Spell cast successfully!"
+            result.description = "Incantation takes effect!"
             result.effects[#result.effects + 1] = "spell_cast"
         else
-            result.description = "Spell fizzled!"
+            result.description = "Incantation resisted."
         end
+    end
+
+    -- Backward-compatible wrapper
+    function resolver:resolveCast(action, result)
+        self:resolveSpeakIncantation(action, result)
+    end
+
+    function resolver:resolveGuard(action, result)
+        local actor = action.actor
+        if not actor then
+            result.success = false
+            result.description = "No actor for Guard."
+            return
+        end
+
+        if not self:entityHasShield(actor) then
+            result.success = false
+            result.description = "Guard requires a shield."
+            return
+        end
+
+        local controller = action.challengeController or self.challengeController
+        if not controller or not controller.getInitiativeSlot then
+            result.success = false
+            result.description = "No initiative slot available."
+            return
+        end
+
+        local slot = controller:getInitiativeSlot(actor.id)
+        if not slot then
+            result.success = false
+            result.description = "No initiative to replace."
+            return
+        end
+
+        local oldValue = slot.value or (slot.card and slot.card.value) or 0
+        slot.card = action.card
+        slot.value = action.card and action.card.value or oldValue
+        slot.revealed = true
+
+        self.eventBus:emit(events.EVENTS.INITIATIVE_REVEALED, {
+            entity = actor,
+        })
+
+        result.success = true
+        result.description = "Guard set Initiative from " .. oldValue .. " to " .. slot.value .. "."
+        result.effects[#result.effects + 1] = "guarded"
+    end
+
+    function resolver:resolveVigilance(action, result)
+        local actor = action.actor
+        if not actor then
+            result.success = false
+            result.description = "No actor for Vigilance."
+            return
+        end
+
+        -- Full triggered-action binding is UI-driven and may provide follow-up payload later.
+        actor.pendingVigilance = {
+            card = action.card,
+            trigger = action.trigger or action.triggerAction,
+            followUpAction = action.followUpAction,
+            target = action.target,
+        }
+
+        self.eventBus:emit("vigilance_prepared", {
+            actor = actor,
+            trigger = actor.pendingVigilance.trigger,
+            followUpAction = actor.pendingVigilance.followUpAction,
+        })
+
+        result.success = true
+        result.description = "Vigilance prepared."
+        result.effects[#result.effects + 1] = "vigilance_prepared"
     end
 
     ----------------------------------------------------------------------------
@@ -1532,13 +1836,26 @@ function M.createActionResolver(config)
 
     function resolver:resolveGenericAction(action, result)
         local actionDef = action.actionDef or self:getActionDef(action)
+        local actionType = self:normalizeActionType(action.type)
 
         if actionDef and actionDef.autoSuccess then
             result.success = true
         end
 
         if result.success then
-            result.description = "Action succeeded!"
+            if actionType == M.ACTION_TYPES.BID_LORE then
+                result.description = "Lore bid offered."
+                result.effects[#result.effects + 1] = "lore_bid"
+            elseif actionType == M.ACTION_TYPES.TRIVIAL_ACTION then
+                result.description = "Trivial action completed."
+            elseif actionType == M.ACTION_TYPES.PULL_ITEM_BELT then
+                result.description = "Pulled item from belt."
+                result.effects[#result.effects + 1] = "item_pulled_belt"
+            elseif actionType == M.ACTION_TYPES.TEST_FATE then
+                result.description = "Test of Fate requested."
+            else
+                result.description = "Action succeeded!"
+            end
         else
             result.description = "Action failed!"
         end
@@ -1551,7 +1868,14 @@ function M.createActionResolver(config)
     --- Resolve reload action for crossbows
     function resolver:resolveReload(action, result)
         local actor = action.actor
-        local weapon = actor.weapon
+        local weapon = action.weapon
+
+        if not weapon and actor and actor.inventory and actor.inventory.getWieldedWeapon then
+            weapon = actor.inventory:getWieldedWeapon()
+        end
+        if not weapon then
+            weapon = actor.weapon
+        end
 
         -- Must have a crossbow equipped
         if not weapon or not M.isWeaponType(weapon, "CROSSBOW") then
