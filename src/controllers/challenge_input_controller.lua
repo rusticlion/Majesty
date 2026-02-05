@@ -16,6 +16,7 @@ local function createDefaultInputState()
         awaitingZone = false,
         availableZones = nil,
         minorPC = nil,
+        selectedVigilanceFollowUp = nil,
     }
 end
 
@@ -43,6 +44,7 @@ function M.createChallengeInputController(config)
         inputState.awaitingZone = false
         inputState.availableZones = nil
         inputState.minorPC = nil
+        inputState.selectedVigilanceFollowUp = nil
     end
 
     local function getPlateAt(x, y)
@@ -157,6 +159,24 @@ function M.createChallengeInputController(config)
         return targets
     end
 
+    local function getVigilanceFollowUpTargetPolicy(followUpAction)
+        if not followUpAction then
+            return "none"
+        end
+
+        if followUpAction.targetType == "enemy" then
+            return "trigger_actor"
+        end
+        if followUpAction.targetType == "ally" then
+            return "self"
+        end
+        if followUpAction.requiresTarget then
+            return "trigger_actor"
+        end
+
+        return "none"
+    end
+
     local function executeSelectedAction(target, destinationZone)
         local challengeController = gameState.challengeController
         local hand = gameState.playerHand
@@ -201,7 +221,27 @@ function M.createChallengeInputController(config)
                 allEntities = challengeController.allCombatants,
             }
 
-            if destinationZone then
+            if action.id == "vigilance" then
+                local followUpAction = inputState.selectedVigilanceFollowUp
+                if not followUpAction then
+                    print("[VIGILANCE] Follow-up action not selected.")
+                    resetCombatInputState()
+                    eventBus:emit("card_deselected", {})
+                    return
+                end
+
+                fullAction.trigger = {
+                    mode = "targeted_by_hostile_action",
+                    target = "self",
+                    hostileOnly = true,
+                    excludeSelf = true,
+                }
+                fullAction.followUpAction = followUpAction.id
+                fullAction.followUpTargetPolicy = getVigilanceFollowUpTargetPolicy(followUpAction)
+
+                print("[VIGILANCE] " .. entity.name .. " prepares " .. followUpAction.name ..
+                      " when targeted by a hostile action.")
+            elseif destinationZone then
                 print("[COMBAT] " .. entity.name .. " uses " .. action.name .. " to move to " .. destinationZone)
             else
                 print("[COMBAT] " .. entity.name .. " uses " .. action.name .. " on " .. (target and target.name or "no target"))
@@ -256,6 +296,19 @@ function M.createChallengeInputController(config)
         end
 
         inputState.selectedAction = data.action
+
+        if data.action.id == "vigilance" then
+            if not data.followUpAction then
+                print("[VIGILANCE] Select follow-up action from Command Board.")
+                resetCombatInputState()
+                eventBus:emit("card_deselected", {})
+                return
+            end
+
+            inputState.selectedVigilanceFollowUp = data.followUpAction
+            executeSelectedAction(nil)
+            return
+        end
 
         if data.action.id == "move" or data.action.id == "dash" then
             local challengeController = gameState.challengeController

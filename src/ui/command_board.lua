@@ -72,6 +72,9 @@ function M.createCommandBoard(config)
         selectedCard = nil,
         selectedEntity = nil,
         isPrimaryTurn = true,  -- vs Minor Window
+        mode = "action",       -- "action" | "vigilance_followup"
+        vigilanceBaseAction = nil,
+        vigilanceFollowUpOptions = nil,
 
         -- Layout
         x = 0,
@@ -129,6 +132,9 @@ function M.createCommandBoard(config)
         self.selectedCard = card
         self.selectedEntity = entity
         self.isPrimaryTurn = isPrimaryTurn ~= false  -- Default true
+        self.mode = "action"
+        self.vigilanceBaseAction = nil
+        self.vigilanceFollowUpOptions = nil
 
         -- Calculate position (center of screen area)
         local screenW, screenH = love.graphics.getDimensions()
@@ -147,7 +153,11 @@ function M.createCommandBoard(config)
         self.selectedCard = nil
         self.selectedEntity = nil
         self.hoveredAction = nil
+        self.hoveredButton = nil
         self.buttons = {}
+        self.mode = "action"
+        self.vigilanceBaseAction = nil
+        self.vigilanceFollowUpOptions = nil
     end
 
     --- Calculate total board height based on max column length
@@ -248,6 +258,133 @@ function M.createCommandBoard(config)
         end
     end
 
+    function board:getVigilanceFollowUpOptions()
+        if not self.selectedCard or not self.selectedEntity then
+            return {}
+        end
+
+        local cardSuit = action_registry.cardSuitToActionSuit(self.selectedCard.suit)
+        if cardSuit == action_registry.SUITS.MISC then
+            return {}
+        end
+
+        local options = action_registry.getActionsForSuit(cardSuit, {
+            challengeOnly = true,
+            commandBoardOnly = true,
+        })
+
+        local filtered = {}
+        for _, option in ipairs(options) do
+            if option.id ~= "vigilance" then
+                local requirementsOk = action_registry.checkActionRequirements(option, self.selectedEntity)
+                if requirementsOk then
+                    filtered[#filtered + 1] = option
+                end
+            end
+        end
+
+        return filtered
+    end
+
+    function board:showVigilanceFollowUp(vigilanceAction)
+        local options = self:getVigilanceFollowUpOptions()
+        if #options == 0 then
+            return false
+        end
+
+        if #options == 1 then
+            self:emitActionSelected(vigilanceAction, options[1])
+            self:hide()
+            return true
+        end
+
+        self.mode = "vigilance_followup"
+        self.vigilanceBaseAction = vigilanceAction
+        self.vigilanceFollowUpOptions = options
+        self:buildVigilanceFollowUpButtons(options)
+        return true
+    end
+
+    function board:buildVigilanceFollowUpButtons(options)
+        self.buttons = {}
+
+        local count = #options
+        self.width = M.COLUMN_WIDTH + M.BOARD_PADDING * 2
+        self.height = M.BOARD_PADDING * 2 + M.HEADER_HEIGHT +
+            count * (M.BUTTON_HEIGHT + M.BUTTON_PADDING) + M.BUTTON_PADDING
+
+        local screenW, screenH = love.graphics.getDimensions()
+        self.x = (screenW - self.width) / 2
+        self.y = (screenH - self.height) / 2 - 20
+
+        local cardSuit = action_registry.cardSuitToActionSuit(self.selectedCard and self.selectedCard.suit)
+        local suitNames = {
+            [action_registry.SUITS.SWORDS] = "Swords",
+            [action_registry.SUITS.PENTACLES] = "Pentacles",
+            [action_registry.SUITS.CUPS] = "Cups",
+            [action_registry.SUITS.WANDS] = "Wands",
+        }
+        local headerColors = {
+            [action_registry.SUITS.SWORDS] = self.colors.header_swords,
+            [action_registry.SUITS.PENTACLES] = self.colors.header_pentacles,
+            [action_registry.SUITS.CUPS] = self.colors.header_cups,
+            [action_registry.SUITS.WANDS] = self.colors.header_wands,
+        }
+
+        self.buttons.header_followup = {
+            x = self.x + M.BOARD_PADDING,
+            y = self.y + M.BOARD_PADDING,
+            width = M.COLUMN_WIDTH,
+            height = M.HEADER_HEIGHT,
+            name = (suitNames[cardSuit] or "Suit") .. " Follow-Up",
+            color = headerColors[cardSuit] or self.colors.header_misc,
+            enabled = true,
+        }
+
+        local colX = self.x + M.BOARD_PADDING
+        for i, action in ipairs(options) do
+            local btnY = self.y + M.BOARD_PADDING + M.HEADER_HEIGHT + M.BUTTON_PADDING +
+                (i - 1) * (M.BUTTON_HEIGHT + M.BUTTON_PADDING)
+            self.buttons[#self.buttons + 1] = {
+                action = action,
+                x = colX,
+                y = btnY,
+                width = M.COLUMN_WIDTH,
+                height = M.BUTTON_HEIGHT,
+                enabled = true,
+                disabledReason = nil,
+                suitColor = self.buttons.header_followup.color,
+            }
+        end
+    end
+
+    function board:returnToActionMode()
+        self.mode = "action"
+        self.vigilanceBaseAction = nil
+        self.vigilanceFollowUpOptions = nil
+        self.hoveredAction = nil
+        self.hoveredButton = nil
+
+        local screenW, screenH = love.graphics.getDimensions()
+        local numColumns = 5
+        self.width = numColumns * M.COLUMN_WIDTH + M.BOARD_PADDING * 2 + (numColumns - 1) * M.BUTTON_PADDING
+        self.height = self:calculateHeight()
+        self.x = (screenW - self.width) / 2
+        self.y = (screenH - self.height) / 2 - 50
+
+        self:buildButtons()
+    end
+
+    function board:emitActionSelected(action, followUpAction)
+        self.eventBus:emit("action_selected", {
+            action = action,
+            card = self.selectedCard,
+            entity = self.selectedEntity,
+            isPrimaryTurn = self.isPrimaryTurn,
+            followUpAction = followUpAction,
+        })
+    end
+
     ----------------------------------------------------------------------------
     -- UPDATE
     ----------------------------------------------------------------------------
@@ -275,14 +412,26 @@ function M.createCommandBoard(config)
 
         -- Draw title
         love.graphics.setColor(self.colors.header_text)
-        local title = self.isPrimaryTurn and "Choose Action (Primary Turn)" or "Choose Minor Action"
+        local title = nil
+        if self.mode == "vigilance_followup" then
+            title = "Choose Vigilance Follow-Up"
+        else
+            title = self.isPrimaryTurn and "Choose Action (Primary Turn)" or "Choose Minor Action"
+        end
         love.graphics.printf(title, self.x, self.y - 25, self.width, "center")
 
-        -- Draw column headers
-        for i = 1, 5 do
-            local header = self.buttons["header_" .. i]
+        if self.mode == "vigilance_followup" then
+            local header = self.buttons.header_followup
             if header then
                 self:drawColumnHeader(header)
+            end
+        else
+            -- Draw column headers
+            for i = 1, 5 do
+                local header = self.buttons["header_" .. i]
+                if header then
+                    self:drawColumnHeader(header)
+                end
             end
         end
 
@@ -451,23 +600,33 @@ function M.createCommandBoard(config)
             if btn.action and btn.enabled then
                 if x >= btn.x and x <= btn.x + btn.width and
                    y >= btn.y and y <= btn.y + btn.height then
-                    -- Emit action selection
-                    self.eventBus:emit("action_selected", {
-                        action = btn.action,
-                        card = self.selectedCard,
-                        entity = self.selectedEntity,
-                        isPrimaryTurn = self.isPrimaryTurn,
-                    })
+                    if self.mode == "action" and btn.action.id == "vigilance" and self.isPrimaryTurn then
+                        local opened = self:showVigilanceFollowUp(btn.action)
+                        if opened then
+                            return true
+                        end
+                        -- Fall back to standard behavior if no follow-up options are available.
+                    elseif self.mode == "vigilance_followup" and self.vigilanceBaseAction then
+                        self:emitActionSelected(self.vigilanceBaseAction, btn.action)
+                        self:hide()
+                        return true
+                    end
+
+                    self:emitActionSelected(btn.action, nil)
                     self:hide()
                     return true
                 end
             end
         end
 
-        -- Clicking outside hides the board
+        -- Clicking outside closes or steps back from vigilance follow-up mode
         if x < self.x or x > self.x + self.width or
            y < self.y or y > self.y + self.height then
-            self:hide()
+            if self.mode == "vigilance_followup" then
+                self:returnToActionMode()
+            else
+                self:hide()
+            end
             return true
         end
 
@@ -497,7 +656,11 @@ function M.createCommandBoard(config)
 
         -- ESC to close
         if key == "escape" then
-            self:hide()
+            if self.mode == "vigilance_followup" then
+                self:returnToActionMode()
+            else
+                self:hide()
+            end
             return true
         end
 

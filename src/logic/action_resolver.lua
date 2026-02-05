@@ -172,6 +172,7 @@ function M.createActionResolver(config)
         -- The zoneSystem is the single source of truth for engagement state
         -- S7.1: Track active aids { [targetId] = { val = bonus, source = actorName } }
         activeAids = {},
+        vigilanceCounter = 0, -- Monotonic order for deterministic vigilance trigger ordering
     }
 
     ----------------------------------------------------------------------------
@@ -1803,6 +1804,38 @@ function M.createActionResolver(config)
         result.effects[#result.effects + 1] = "guarded"
     end
 
+    local function resolveFollowUpActionType(followUpAction)
+        if type(followUpAction) == "table" then
+            return followUpAction.id or followUpAction.type
+        end
+        return followUpAction
+    end
+
+    --- Pick a sensible same-suit follow-up when UI did not provide one.
+    function resolver:selectDefaultVigilanceFollowUp(action)
+        if not action or not action.card then
+            return nil
+        end
+
+        local cardActionSuit = action_registry.cardSuitToActionSuit(action.card.suit)
+        if cardActionSuit == action_registry.SUITS.MISC then
+            return nil
+        end
+
+        local options = action_registry.getActionsForSuit(cardActionSuit, {
+            challengeOnly = true,
+        })
+
+        for _, option in ipairs(options) do
+            local optionType = self:normalizeActionType(option.id)
+            if optionType ~= M.ACTION_TYPES.VIGILANCE then
+                return optionType
+            end
+        end
+
+        return nil
+    end
+
     function resolver:resolveVigilance(action, result)
         local actor = action.actor
         if not actor then
@@ -1811,12 +1844,82 @@ function M.createActionResolver(config)
             return
         end
 
-        -- Full triggered-action binding is UI-driven and may provide follow-up payload later.
+        if actor.pendingVigilance then
+            result.success = false
+            result.description = "Already has Vigilance prepared."
+            return
+        end
+
+        local followUpActionType = resolveFollowUpActionType(action.followUpAction)
+        followUpActionType = self:normalizeActionType(followUpActionType)
+        if not followUpActionType then
+            followUpActionType = self:selectDefaultVigilanceFollowUp(action)
+        end
+        if not followUpActionType then
+            result.success = false
+            result.description = "Vigilance needs a follow-up action."
+            return
+        end
+
+        local followUpActionDef = action_registry.getAction(followUpActionType)
+        if not followUpActionDef then
+            result.success = false
+            result.description = "Unknown Vigilance follow-up action."
+            return
+        end
+
+        if followUpActionDef.suit == action_registry.SUITS.MISC then
+            result.success = false
+            result.description = "Vigilance follow-up must be a suited action."
+            return
+        end
+
+        if not action.card or not action.card.suit then
+            result.success = false
+            result.description = "Vigilance requires a suited card."
+            return
+        end
+
+        local cardActionSuit = action_registry.cardSuitToActionSuit(action.card.suit)
+        if cardActionSuit == action_registry.SUITS.MISC then
+            result.success = false
+            result.description = "Vigilance requires a non-misc suit card."
+            return
+        end
+
+        if followUpActionDef.suit ~= cardActionSuit then
+            result.success = false
+            result.description = "Vigilance follow-up suit must match card suit."
+            return
+        end
+
+        local followUpTargetPolicy = action.followUpTargetPolicy
+        if not followUpTargetPolicy then
+            if followUpActionDef.targetType == "enemy" then
+                followUpTargetPolicy = "trigger_actor"
+            elseif followUpActionDef.targetType == "ally" then
+                followUpTargetPolicy = "self"
+            else
+                followUpTargetPolicy = "none"
+            end
+        end
+
+        self.vigilanceCounter = (self.vigilanceCounter or 0) + 1
+
         actor.pendingVigilance = {
             card = action.card,
-            trigger = action.trigger or action.triggerAction,
-            followUpAction = action.followUpAction,
-            target = action.target,
+            trigger = action.trigger or action.triggerAction or {
+                mode = "targeted_by_hostile_action",
+                target = "self",
+                hostileOnly = true,
+                excludeSelf = true,
+            },
+            followUpAction = followUpActionType,
+            followUpTargetPolicy = followUpTargetPolicy,
+            followUpTarget = action.followUpTarget or action.target,
+            followUpDestinationZone = action.followUpDestinationZone,
+            weapon = action.weapon,
+            declaredOrder = self.vigilanceCounter,
         }
 
         self.eventBus:emit("vigilance_prepared", {
@@ -1826,7 +1929,8 @@ function M.createActionResolver(config)
         })
 
         result.success = true
-        result.description = "Vigilance prepared."
+        result.description = "Vigilance prepared: " ..
+            (followUpActionDef.name or followUpActionType) .. "."
         result.effects[#result.effects + 1] = "vigilance_prepared"
     end
 

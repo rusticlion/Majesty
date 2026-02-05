@@ -25,7 +25,7 @@ M.STATES = {
     AWAITING_ACTION = "awaiting_action",  -- Waiting for active entity to act
     RESOLVING       = "resolving",        -- Processing action result
     VISUAL_SYNC     = "visual_sync",      -- Waiting for UI to complete animation
-    MINOR_WINDOW    = "minor_window",     -- Minor action opportunity (2 sec)
+    MINOR_WINDOW    = "minor_window",     -- Minor action declaration window (paused until resume)
     ENDING          = "ending",           -- Challenge wrapping up
 }
 
@@ -44,7 +44,6 @@ M.OUTCOMES = {
 -- CONSTANTS
 --------------------------------------------------------------------------------
 local MAX_TURNS = 14
-local MINOR_ACTION_WINDOW_DURATION = 2.0  -- seconds
 
 --------------------------------------------------------------------------------
 -- CHALLENGE CONTROLLER FACTORY
@@ -83,11 +82,14 @@ function M.createChallengeController(config)
         actedThisRound  = {},         -- entity.id -> true if already acted
 
         -- Minor action tracking (S6.4: Declaration Loop)
+        -- Intentional design: pending minors resolve in declaration order.
         minorActionTimer    = 0,
         minorActionUsed     = false,
         pendingMinors       = {},     -- Committed minor actions { actor, card, action, target }
         minorWindowActive   = false,  -- True while in minor window (paused)
         resolvingMinors     = false,  -- True while resolving pending minor actions
+        pendingVigilanceReactions = {}, -- Triggered vigilance reactions awaiting resolution
+        resolvingVigilance = false,     -- True while resolving vigilance reaction queue
 
         -- Visual sync
         awaitingVisualSync  = false,
@@ -205,6 +207,7 @@ function M.createChallengeController(config)
         -- Clear is_engaged flag on all combatants
         for _, entity in ipairs(self.allCombatants) do
             entity.is_engaged = false
+            entity.pendingVigilance = nil
         end
 
         self.pcs = {}
@@ -225,6 +228,8 @@ function M.createChallengeController(config)
         self.pendingMinors = {}
         self.minorWindowActive = false
         self.resolvingMinors = false
+        self.pendingVigilanceReactions = {}
+        self.resolvingVigilance = false
 
         -- Visual sync
         self.awaitingVisualSync = false
@@ -539,6 +544,330 @@ function M.createChallengeController(config)
     -- ACTION HANDLING
     ----------------------------------------------------------------------------
 
+    --- Check if two entities are hostile to each other
+    function controller:areHostile(entityA, entityB)
+        if not entityA or not entityB then
+            return false
+        end
+        if entityA == entityB then
+            return false
+        end
+        return entityA.isPC ~= entityB.isPC
+    end
+
+    --- Normalize trigger definition for pending vigilance
+    function controller:normalizeVigilanceTrigger(trigger)
+        if type(trigger) == "string" then
+            return {
+                mode = "action_type",
+                actionType = trigger,
+                excludeSelf = true,
+            }
+        end
+
+        if type(trigger) == "table" then
+            return trigger
+        end
+
+        -- Default practical trigger: when a hostile action targets the vigilant actor.
+        return {
+            mode = "targeted_by_hostile_action",
+            target = "self",
+            hostileOnly = true,
+            excludeSelf = true,
+        }
+    end
+
+    --- Determine whether a pending vigilance triggers from a resolved action
+    function controller:doesVigilanceTrigger(actor, pendingVigilance, triggeringAction)
+        if not actor or not pendingVigilance or not triggeringAction then
+            return false
+        end
+
+        local trigger = self:normalizeVigilanceTrigger(pendingVigilance.trigger)
+        local actionType = triggeringAction.normalizedType or triggeringAction.type
+        local triggerActor = triggeringAction.actor
+        local triggerTarget = triggeringAction.target
+
+        local function matchesActionType()
+            if trigger.actionType and actionType ~= trigger.actionType then
+                return false
+            end
+            if type(trigger.actionTypes) == "table" then
+                local matched = false
+                for _, allowed in ipairs(trigger.actionTypes) do
+                    if actionType == allowed then
+                        matched = true
+                        break
+                    end
+                end
+                if not matched then
+                    return false
+                end
+            end
+            return true
+        end
+
+        if trigger.mode == "targeted_by_hostile_action" then
+            if not triggerActor or triggerActor == actor then
+                return false
+            end
+            if trigger.hostileOnly ~= false and not self:areHostile(actor, triggerActor) then
+                return false
+            end
+            if trigger.target == nil or trigger.target == "self" then
+                if triggerTarget ~= actor then
+                    return false
+                end
+            elseif trigger.target ~= "any" then
+                if type(trigger.target) == "string" then
+                    if not triggerTarget or triggerTarget.id ~= trigger.target then
+                        return false
+                    end
+                elseif triggerTarget ~= trigger.target then
+                    return false
+                end
+            end
+            return matchesActionType()
+        end
+
+        if trigger.excludeSelf ~= false and triggerActor == actor then
+            return false
+        end
+        if trigger.hostileOnly and (not triggerActor or not self:areHostile(actor, triggerActor)) then
+            return false
+        end
+        if trigger.alliedOnly and (not triggerActor or self:areHostile(actor, triggerActor)) then
+            return false
+        end
+        if trigger.actorId and (not triggerActor or triggerActor.id ~= trigger.actorId) then
+            return false
+        end
+        if trigger.targetId and (not triggerTarget or triggerTarget.id ~= trigger.targetId) then
+            return false
+        end
+        if trigger.target == "self" and triggerTarget ~= actor then
+            return false
+        end
+
+        return matchesActionType()
+    end
+
+    --- Find a fallback target for vigilance follow-up actions
+    function controller:findVigilanceFallbackTarget(actor, targetKind)
+        local candidates = nil
+        if targetKind == "enemy" then
+            candidates = actor and actor.isPC and self.npcs or self.pcs
+        elseif targetKind == "ally" then
+            candidates = actor and actor.isPC and self.pcs or self.npcs
+        else
+            candidates = self.allCombatants
+        end
+
+        for _, candidate in ipairs(candidates or {}) do
+            if candidate ~= actor and not self:isDefeated(candidate) then
+                return candidate
+            end
+        end
+
+        -- Self-target fallback for ally actions
+        if targetKind == "ally" and actor and not self:isDefeated(actor) then
+            return actor
+        end
+
+        return nil
+    end
+
+    --- Resolve target selection for a triggered vigilance follow-up
+    function controller:resolveVigilanceTarget(actor, pendingVigilance, triggeringAction, followUpDef)
+        local triggerActor = triggeringAction and triggeringAction.actor or nil
+        local triggerTarget = triggeringAction and triggeringAction.target or nil
+
+        local explicitTarget = pendingVigilance.followUpTarget or pendingVigilance.target
+        if explicitTarget and not self:isDefeated(explicitTarget) then
+            return explicitTarget
+        end
+
+        local policy = pendingVigilance.followUpTargetPolicy
+        if policy == "trigger_actor" then
+            if triggerActor and not self:isDefeated(triggerActor) then
+                return triggerActor
+            end
+        elseif policy == "trigger_target" then
+            if triggerTarget and not self:isDefeated(triggerTarget) then
+                return triggerTarget
+            end
+        elseif policy == "self" then
+            return actor
+        end
+
+        if not followUpDef then
+            return nil
+        end
+
+        if followUpDef.targetType == "enemy" then
+            if triggerActor and self:areHostile(actor, triggerActor) and not self:isDefeated(triggerActor) then
+                return triggerActor
+            end
+            return self:findVigilanceFallbackTarget(actor, "enemy")
+        end
+
+        if followUpDef.targetType == "ally" then
+            if triggerActor and not self:areHostile(actor, triggerActor) and not self:isDefeated(triggerActor) then
+                return triggerActor
+            end
+            return self:findVigilanceFallbackTarget(actor, "ally")
+        end
+
+        if followUpDef.requiresTarget then
+            if triggerActor and not self:isDefeated(triggerActor) then
+                return triggerActor
+            end
+            return self:findVigilanceFallbackTarget(actor, "any")
+        end
+
+        return nil
+    end
+
+    --- Build a concrete triggered action from pending vigilance state
+    function controller:buildVigilanceReactionAction(actor, pendingVigilance, triggeringAction)
+        local actionRegistry = require('data.action_registry')
+        local followUpActionType = pendingVigilance.followUpAction
+
+        if type(followUpActionType) == "table" then
+            followUpActionType = followUpActionType.id or followUpActionType.type
+        end
+        if not followUpActionType then
+            return nil, "missing_follow_up_action"
+        end
+
+        local followUpDef = actionRegistry.getAction(followUpActionType)
+        if not followUpDef then
+            return nil, "unknown_follow_up_action"
+        end
+
+        local reaction = {
+            actor = actor,
+            card = pendingVigilance.card,
+            type = followUpActionType,
+            actionDef = followUpDef,
+            target = self:resolveVigilanceTarget(actor, pendingVigilance, triggeringAction, followUpDef),
+            destinationZone = pendingVigilance.followUpDestinationZone,
+            weapon = pendingVigilance.weapon or (
+                actor and actor.inventory and actor.inventory.getWieldedWeapon and actor.inventory:getWieldedWeapon()
+            ) or { name = "Fists", isMelee = true },
+            allEntities = self.allCombatants,
+            challengeController = self,
+            isVigilanceReaction = true,
+            triggerAction = triggeringAction,
+            round = self.currentRound,
+            count = self.currentCount,
+            vigilanceDeclaredOrder = pendingVigilance.declaredOrder or 0,
+        }
+
+        return reaction
+    end
+
+    --- Collect all vigilance reactions triggered by the just-resolved action
+    function controller:collectTriggeredVigilanceReactions(triggeringAction)
+        if not triggeringAction then
+            return {}
+        end
+
+        local triggered = {}
+
+        for _, entity in ipairs(self.allCombatants) do
+            local pendingVigilance = entity.pendingVigilance
+            if pendingVigilance and not self:isDefeated(entity) then
+                if self:doesVigilanceTrigger(entity, pendingVigilance, triggeringAction) then
+                    entity.pendingVigilance = nil  -- Consume vigilance once triggered
+
+                    local reaction, reason = self:buildVigilanceReactionAction(entity, pendingVigilance, triggeringAction)
+                    if reaction then
+                        triggered[#triggered + 1] = reaction
+                        self.eventBus:emit("vigilance_triggered", {
+                            actor = entity,
+                            triggerAction = triggeringAction,
+                            followUpAction = reaction.type,
+                        })
+                    else
+                        self.eventBus:emit("vigilance_trigger_failed", {
+                            actor = entity,
+                            triggerAction = triggeringAction,
+                            reason = reason,
+                        })
+                        print("[VIGILANCE] " .. (entity.name or entity.id) .. " trigger failed: " .. tostring(reason))
+                    end
+                end
+            end
+        end
+
+        table.sort(triggered, function(a, b)
+            local orderA = a.vigilanceDeclaredOrder or math.huge
+            local orderB = b.vigilanceDeclaredOrder or math.huge
+            if orderA == orderB then
+                local idA = (a.actor and a.actor.id) or ""
+                local idB = (b.actor and b.actor.id) or ""
+                return tostring(idA) < tostring(idB)
+            end
+            return orderA < orderB
+        end)
+
+        return triggered
+    end
+
+    --- Queue vigilance reactions for processing
+    function controller:queueTriggeredVigilanceReactions(triggeringAction)
+        local triggered = self:collectTriggeredVigilanceReactions(triggeringAction)
+        for _, reaction in ipairs(triggered) do
+            self.pendingVigilanceReactions[#self.pendingVigilanceReactions + 1] = reaction
+        end
+        return #triggered
+    end
+
+    --- Continue turn flow when no more vigilance reactions are queued
+    function controller:continuePostActionFlow()
+        if self.resolvingMinors then
+            if #self.pendingMinors > 0 then
+                self:processNextMinorAction()
+            else
+                self.resolvingMinors = false
+                self:completeTurn()
+            end
+            return
+        end
+
+        -- Emit turn end once all reactions are complete
+        self.eventBus:emit(events.EVENTS.CHALLENGE_TURN_END, {
+            count = self.currentCount,
+            round = self.currentRound,
+            entity = self.activeEntity,
+        })
+
+        -- Enter minor action window
+        self:startMinorActionWindow()
+    end
+
+    --- Process the next queued vigilance reaction
+    function controller:processNextVigilanceReaction()
+        if #self.pendingVigilanceReactions == 0 then
+            self.resolvingVigilance = false
+            self:continuePostActionFlow()
+            return
+        end
+
+        local reaction = table.remove(self.pendingVigilanceReactions, 1)
+
+        print("[VIGILANCE] " .. (reaction.actor.name or reaction.actor.id) ..
+              " triggers " .. (reaction.type or "action"))
+
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = reaction
+
+        -- Resolve through the standard pipeline
+        self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, reaction)
+    end
+
     --- Submit an action for the active entity
     -- @param action table: { type, target, card, ... }
     -- @return boolean, string: success, error
@@ -590,6 +919,7 @@ function M.createChallengeController(config)
             return
         end
 
+        local completedAction = self.pendingAction
         self.awaitingVisualSync = false
         self.pendingAction = nil
 
@@ -599,28 +929,18 @@ function M.createChallengeController(config)
             return
         end
 
-        -- S6.4: Check if we're resolving minor actions
-        if self.resolvingMinors then
-            -- Process next minor action if any remain
-            if #self.pendingMinors > 0 then
-                self:processNextMinorAction()
-            else
-                -- All minors resolved
-                self.resolvingMinors = false
-                self:completeTurn()
-            end
+        -- Queue vigilance reactions triggered by the just-resolved action
+        local triggeredCount = self:queueTriggeredVigilanceReactions(completedAction)
+        if triggeredCount > 0 then
+            self.resolvingVigilance = true
+        end
+
+        if self.resolvingVigilance then
+            self:processNextVigilanceReaction()
             return
         end
 
-        -- Emit turn end
-        self.eventBus:emit(events.EVENTS.CHALLENGE_TURN_END, {
-            count = self.currentCount,
-            round = self.currentRound,
-            entity = self.activeEntity,
-        })
-
-        -- Enter minor action window
-        self:startMinorActionWindow()
+        self:continuePostActionFlow()
     end
 
     ----------------------------------------------------------------------------
