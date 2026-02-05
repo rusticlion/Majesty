@@ -344,13 +344,91 @@ function M.createRoomManager(config)
 
     -- Internal state for POI discovery
     local discoveredPOIs = {}      -- poi_id -> { layer -> revealed }
+    local boundByFate = {}         -- room_id -> poi_id -> test_key -> { itemKey, circumstance, result }
     local scrutinizeCount = 0      -- Track for time cost
     local SCRUTINIZE_TIME_COST = 3 -- Every N scrutinizes triggers Meatgrinder check
 
     --- Reset POI discovery state (call at start of new Crawl)
     function manager:resetPOIDiscovery()
         discoveredPOIs = {}
+        boundByFate = {}
         scrutinizeCount = 0
+    end
+
+    local function getItemKey(item)
+        if not item then return nil end
+        return item.id or item.name
+    end
+
+    local function getCircumstanceSignature(feature)
+        if not feature then return "none" end
+        local state = tostring(feature.state or "none")
+        local trapDetected = "none"
+        local trapDisarmed = "none"
+        if feature.trap then
+            trapDetected = tostring(feature.trap.detected or false)
+            trapDisarmed = tostring(feature.trap.disarmed or false)
+        end
+        return state .. "|trap_detected:" .. trapDetected .. "|trap_disarmed:" .. trapDisarmed
+    end
+
+    --- Check whether a Test of Fate can be attempted (Bound by Fate)
+    -- @param roomId string
+    -- @param poiId string
+    -- @param testKey string: identifier for the test type (e.g., "investigate", "item_unlock")
+    -- @param context table: { item }
+    -- @return table: { allowed, reason, entry }
+    function manager:getBoundByFateStatus(roomId, poiId, testKey, context)
+        local roomEntry = boundByFate[roomId]
+        if not roomEntry then
+            return { allowed = true }
+        end
+        local poiEntry = roomEntry[poiId]
+        if not poiEntry then
+            return { allowed = true }
+        end
+        local entry = poiEntry[testKey]
+        if not entry then
+            return { allowed = true }
+        end
+
+        local feature = self:getFeature(roomId, poiId)
+        local circumstance = getCircumstanceSignature(feature)
+        local itemKey = getItemKey(context and context.item or nil)
+
+        if entry.itemKey ~= itemKey then
+            return { allowed = true, reason = "item_changed", entry = entry }
+        end
+
+        if entry.circumstance ~= circumstance then
+            return { allowed = true, reason = "circumstance_changed", entry = entry }
+        end
+
+        return { allowed = false, reason = "result_stands", entry = entry }
+    end
+
+    --- Record a Test of Fate outcome (Bound by Fate)
+    -- @param roomId string
+    -- @param poiId string
+    -- @param testKey string
+    -- @param context table: { item }
+    -- @param result table: Test of Fate result
+    function manager:recordBoundByFate(roomId, poiId, testKey, context, result)
+        local feature = self:getFeature(roomId, poiId)
+        if not feature then
+            return false
+        end
+
+        boundByFate[roomId] = boundByFate[roomId] or {}
+        boundByFate[roomId][poiId] = boundByFate[roomId][poiId] or {}
+
+        boundByFate[roomId][poiId][testKey] = {
+            itemKey = getItemKey(context and context.item or nil),
+            circumstance = getCircumstanceSignature(feature),
+            result = result,
+        }
+
+        return true
     end
 
     --- Check if a POI layer has been discovered
@@ -534,6 +612,62 @@ function M.createRoomManager(config)
     -- Items can provide bonuses, auto-success, or take damage as proxy
     ----------------------------------------------------------------------------
 
+    --- Compute Test of Fate parameters for a POI investigation
+    -- @param adventurer table: The adventurer entity
+    -- @param roomId string
+    -- @param poiId string
+    -- @param item table: Optional item being used for investigation
+    -- @return table|nil: { attribute, suitId, attributeValue, favor, difficulty }
+    function manager:computeInvestigationTest(adventurer, roomId, poiId, item)
+        local feature = self:getFeature(roomId, poiId)
+        if not feature then
+            return nil
+        end
+
+        local testConfig = feature.investigate_test or {}
+        local attribute = testConfig.attribute or "pentacles"
+        local difficulty = testConfig.difficulty or 14
+
+        -- Get adventurer's attribute value
+        local constants = require('constants')
+        local suitId = constants.SUITS[string.upper(attribute)] or constants.SUITS.PENTACLES
+        local attributeValue = 0
+        if adventurer and adventurer.getAttribute then
+            attributeValue = adventurer:getAttribute(suitId)
+        end
+
+        -- Check favor/disfavor based on scrutiny
+        local favor = nil
+        if self:isPOIDiscovered(poiId, "scrutinize") then
+            favor = nil  -- Neutral - they scrutinized first
+        else
+            favor = false  -- Disfavor - investigating blind
+        end
+
+        -- T2_14: Item provides favor bonus
+        if item then
+            local itemBonus = self:getItemInvestigationBonus(item, feature)
+            if itemBonus == "favor" then
+                favor = true  -- Item grants favor
+            elseif itemBonus == "negate_disfavor" and favor == false then
+                favor = nil  -- Item negates disfavor from not scrutinizing
+            end
+        end
+
+        -- Additional favor from adventurer motifs or abilities
+        if testConfig.favor_condition then
+            favor = testConfig.favor_condition(adventurer) or favor
+        end
+
+        return {
+            attribute = attribute,
+            suitId = suitId,
+            attributeValue = attributeValue,
+            favor = favor,
+            difficulty = difficulty,
+        }
+    end
+
     --- Conduct an investigation test on a POI
     -- @param adventurer table: The adventurer entity
     -- @param roomId string
@@ -541,8 +675,10 @@ function M.createRoomManager(config)
     -- @param drawnCard table: The card drawn from the deck (nil if item auto-success)
     -- @param resolver table: The resolver module
     -- @param item table: Optional item being used for investigation
+    -- @param options table: { testResult }
     -- @return table: { result, stateChange, trapTriggered, description, itemNotched, itemDestroyed }
-    function manager:conductInvestigation(adventurer, roomId, poiId, drawnCard, resolver, item)
+    function manager:conductInvestigation(adventurer, roomId, poiId, drawnCard, resolver, item, options)
+        options = options or {}
         local feature = self:getFeature(roomId, poiId)
         if not feature then
             return {
@@ -563,7 +699,7 @@ function M.createRoomManager(config)
         -- T2_14: Check for key_item_id automatic success
         -- If POI has a key_item_id and that item is used, skip test and succeed
         if item and feature.key_item_id then
-            local itemKeyId = item.properties and item.properties.key_id
+            local itemKeyId = item.keyId or (item.properties and (item.properties.key_id or item.properties.keyId))
             if itemKeyId == feature.key_item_id or item.name == feature.key_item_id then
                 -- Auto-success with the right item!
                 self:discoverPOI(poiId, "investigate")
@@ -594,40 +730,19 @@ function M.createRoomManager(config)
 
         -- Determine test parameters from POI
         local testConfig = feature.investigate_test or {}
-        local attribute = testConfig.attribute or "pentacles"
-        local difficulty = testConfig.difficulty or 14
+        local testInfo = self:computeInvestigationTest(adventurer, roomId, poiId, item)
 
-        -- Get adventurer's attribute value
-        local constants = require('constants')
-        local suitId = constants.SUITS[string.upper(attribute)] or constants.SUITS.PENTACLES
-        local attributeValue = adventurer:getAttribute(suitId)
-
-        -- Check favor/disfavor based on scrutiny
-        local favor = nil
-        if self:isPOIDiscovered(poiId, "scrutinize") then
-            favor = nil  -- Neutral - they scrutinized first
-        else
-            favor = false  -- Disfavor - investigating blind
-        end
-
-        -- T2_14: Item provides favor bonus
-        -- Certain items give favor when used appropriately
-        if item then
-            local itemBonus = self:getItemInvestigationBonus(item, feature)
-            if itemBonus == "favor" then
-                favor = true  -- Item grants favor
-            elseif itemBonus == "negate_disfavor" and favor == false then
-                favor = nil  -- Item negates disfavor from not scrutinizing
+        -- Resolve the test (or use provided override)
+        local testResult = options.testResult
+        if not testResult then
+            if not resolver or not drawnCard or not testInfo then
+                return {
+                    result = nil,
+                    description = "You cannot draw a card right now.",
+                }
             end
+            testResult = resolver.resolveTest(testInfo.attributeValue, testInfo.suitId, drawnCard, testInfo.favor)
         end
-
-        -- Additional favor from adventurer motifs or abilities
-        if testConfig.favor_condition then
-            favor = testConfig.favor_condition(adventurer) or favor
-        end
-
-        -- Resolve the test
-        local testResult = resolver.resolveTest(attributeValue, suitId, drawnCard, favor)
         result.result = testResult
 
         -- Handle results
@@ -711,6 +826,11 @@ function M.createRoomManager(config)
                     testConfig.failure_callback(adventurer, feature, self)
                 end
             end
+        end
+
+        -- Record Bound by Fate (result stands unless circumstances change)
+        if testResult then
+            self:recordBoundByFate(roomId, poiId, "investigate", { item = item }, testResult)
         end
 
         -- Emit investigation event

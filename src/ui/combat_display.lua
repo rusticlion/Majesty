@@ -91,6 +91,13 @@ function M.createCombatDisplay(config)
             self:triggerInitiativeFlips(data.count)
         end)
 
+        -- Reveal initiative when an opposed action targets someone
+        self.eventBus:on(events.EVENTS.INITIATIVE_REVEALED, function(data)
+            if data.entity then
+                self:triggerInitiativeReveal(data.entity)
+            end
+        end)
+
         -- Listen for defense prepared
         self.eventBus:on("defense_prepared", function(data)
             -- Could add visual feedback here
@@ -163,6 +170,14 @@ function M.createCombatDisplay(config)
                 duration = M.FLIP_DURATION,
             }
         end
+    end
+
+    function display:triggerInitiativeReveal(entity)
+        if not entity or not entity.id then return end
+        self.flipAnimations[entity.id] = {
+            progress = 0,
+            duration = M.FLIP_DURATION,
+        }
     end
 
     --- Trigger defense card reveal animation

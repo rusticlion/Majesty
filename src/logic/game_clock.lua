@@ -95,7 +95,7 @@ function M.createGameClock(playerDeck, gmDeck)
     -- @param card table: The card that was drawn
     -- @return card table: Returns the same card (for chaining/passthrough)
     function clock:onCardDrawn(card)
-        if card and card.name == "The Fool" then
+        if card and (card.name == "The Fool" or (card.is_major and card.value == 0)) then
             self.pendingReshuffle = true
         end
         -- Return the card unchanged - Fool's value (0) is still used for resolution

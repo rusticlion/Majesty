@@ -5,7 +5,7 @@
 -- Suits and their actions:
 -- - SWORDS: Melee (requires engagement), Missile (bypasses engagement)
 -- - PENTACLES: Roughhouse (Trip, Disarm, Displace)
--- - CUPS: Defense, healing, social
+-- - CUPS: Support, healing, social
 -- - WANDS: Banter (attacks Morale), magic
 --
 -- Great Success (face cards on matching suit) triggers weapon bonuses
@@ -13,6 +13,7 @@
 local events = require('logic.events')
 local disposition_module = require('logic.disposition')
 local constants = require('constants')
+local action_registry = require('data.action_registry')
 
 local M = {}
 
@@ -31,7 +32,6 @@ M.ACTION_TYPES = {
     GRAPPLE    = "grapple",     -- Establish grapple
 
     -- Cups
-    DEFEND     = "defend",      -- Defensive stance
     HEAL       = "heal",        -- Healing action
     SHIELD     = "shield",      -- Protect another
     AID        = "aid",         -- S7.1: Aid Another (bank bonus for ally)
@@ -39,13 +39,14 @@ M.ACTION_TYPES = {
     -- Wands
     BANTER     = "banter",      -- Attack morale
     CAST       = "cast",        -- Use magic
-    INTIMIDATE = "intimidate",  -- Fear effect
     RECOVER    = "recover",     -- S7.4: Clear negative status effects
 
     -- Special
     FLEE       = "flee",        -- Attempt to escape
     MOVE       = "move",        -- Change zone
     USE_ITEM   = "use_item",    -- Use an item
+    PULL_ITEM  = "pull_item",   -- Pull item from pack
+    INTERACT   = "interact",    -- Environment interaction
 
     -- Defensive Actions (S4.9)
     DODGE      = "dodge",       -- Adds card value to defense difficulty
@@ -152,6 +153,7 @@ function M.createActionResolver(config)
     local resolver = {
         eventBus   = config.eventBus or events.globalBus,
         zoneSystem = config.zoneSystem,
+        challengeController = config.challengeController,
         -- S12.1: Engagements now tracked by zoneSystem (zone_system.lua)
         -- The zoneSystem is the single source of truth for engagement state
         -- S7.1: Track active aids { [targetId] = { val = bonus, source = actorName } }
@@ -181,6 +183,204 @@ function M.createActionResolver(config)
         end
 
         return true, nil
+    end
+
+    ----------------------------------------------------------------------------
+    -- ACTION HELPERS
+    ----------------------------------------------------------------------------
+
+    local actionSuitToCardSuit = {
+        [action_registry.SUITS.SWORDS]    = constants.SUITS.SWORDS,
+        [action_registry.SUITS.PENTACLES] = constants.SUITS.PENTACLES,
+        [action_registry.SUITS.CUPS]      = constants.SUITS.CUPS,
+        [action_registry.SUITS.WANDS]     = constants.SUITS.WANDS,
+    }
+
+    function resolver:getActionDef(action)
+        if not action then return nil end
+        if action.actionDef then return action.actionDef end
+        if action.type then
+            return action_registry.getAction(action.type)
+        end
+        return nil
+    end
+
+    function resolver:usesCardValueOnly(action)
+        if not action then return false end
+        if action.isMinorAction then return true end
+        if action.type == M.ACTION_TYPES.DODGE or action.type == M.ACTION_TYPES.RIPOSTE then
+            return true
+        end
+        return false
+    end
+
+    function resolver:getActionModifier(action, actionDef)
+        if not action or not action.actor then return 0 end
+        if self:usesCardValueOnly(action) then return 0 end
+
+        if actionDef and actionDef.attribute then
+            return action.actor[actionDef.attribute] or 0
+        end
+
+        -- Fallback for unknown actions: use card suit stat
+        if not actionDef and action.card and action.card.suit then
+            return self:getStatModifier(action.actor, action.card.suit)
+        end
+
+        return 0
+    end
+
+    function resolver:isInitiativeOpposed(actionType)
+        return actionType == M.ACTION_TYPES.MELEE or
+               actionType == M.ACTION_TYPES.MISSILE or
+               actionType == M.ACTION_TYPES.TRIP or
+               actionType == M.ACTION_TYPES.DISARM or
+               actionType == M.ACTION_TYPES.DISPLACE or
+               actionType == M.ACTION_TYPES.GRAPPLE
+    end
+
+    function resolver:getTargetInitiative(target, action)
+        if not target then return nil end
+        if action and action.targetInitiative then
+            return action.targetInitiative
+        end
+
+        local controller = (action and action.challengeController) or self.challengeController
+        if controller and controller.getInitiativeSlot then
+            local slot = controller:getInitiativeSlot(target.id)
+            if slot then
+                if not slot.revealed then
+                    slot.revealed = true
+                    self.eventBus:emit(events.EVENTS.INITIATIVE_REVEALED, {
+                        entity = target,
+                    })
+                end
+                return slot.value or (slot.card and slot.card.value) or nil
+            end
+        end
+
+        return nil
+    end
+
+    function resolver:entityHasShield(entity)
+        if not entity or not entity.inventory or not entity.inventory.getItems then
+            return false
+        end
+
+        local hands = entity.inventory:getItems("hands") or {}
+        for _, item in ipairs(hands) do
+            local props = item.properties
+            if props and props.tags then
+                for _, tag in ipairs(props.tags) do
+                    if tag == "shield" then
+                        return true
+                    end
+                end
+            end
+        end
+
+        return false
+    end
+
+    function resolver:requestTestOfFate(action, actionDef, result)
+        local suitKey = actionDef and actionDef.suit or nil
+        local targetSuit = suitKey and actionSuitToCardSuit[suitKey] or nil
+
+        self.eventBus:emit(events.EVENTS.REQUEST_TEST_OF_FATE, {
+            entity = action.actor,
+            attribute = (actionDef and actionDef.attribute) or "pentacles",
+            targetSuit = targetSuit,
+            description = actionDef and actionDef.name or "Test of Fate",
+        })
+
+        result.pendingTestOfFate = true
+        result.description = "Test of Fate underway."
+        action.result = result
+
+        return result
+    end
+
+    function resolver:resolveTestOfFateOutcome(action, testResult)
+        local result = {
+            success = testResult and testResult.success or false,
+            isGreat = testResult and testResult.isGreat or false,
+            damageDealt = 0,
+            effects = {},
+            description = "",
+            testOfFate = true,
+            testResult = testResult,
+        }
+
+        if result.success then
+            result.description = "Test of Fate succeeded."
+        else
+            result.description = "Test of Fate failed."
+        end
+
+        action.result = result
+        return result
+    end
+
+    function resolver:resolveInitiativeContest(action, result, options)
+        options = options or {}
+        local target = action.target
+
+        if not target then
+            result.success = false
+            result.description = "No target!"
+            return { success = false }
+        end
+
+        local attackValue = result.testValue
+        local baseInitiative = self:getTargetInitiative(target, action) or result.difficulty
+        local tieWins = options.tieWins or false
+        local considerShield = options.considerShield or false
+        local defenderHasShield = considerShield and self:entityHasShield(target) or false
+
+        local riposteTriggered = false
+        local riposteDefense = nil
+
+        if target.hasDefense and target:hasDefense() then
+            local defense = target:getDefense()
+            if defense then
+                if defense.type == "dodge" then
+                    target:consumeDefense()
+                    local dodgeValue = defense.value or 0
+                    local newInitiative = baseInitiative + dodgeValue
+                    result.effects[#result.effects + 1] = "dodge_used"
+
+                    if newInitiative > attackValue then
+                        result.success = false
+                        result.description = "Dodged! "
+                        result.effects[#result.effects + 1] = "dodged"
+                        return {
+                            success = false,
+                            dodged = true,
+                            attackValue = attackValue,
+                            baseInitiative = baseInitiative,
+                        }
+                    else
+                        result.effects[#result.effects + 1] = "dodge_failed"
+                    end
+                elseif defense.type == "riposte" then
+                    riposteTriggered = true
+                    riposteDefense = target:consumeDefense()
+                    result.effects[#result.effects + 1] = "riposte_ready"
+                end
+            end
+        end
+
+        result.success = (attackValue > baseInitiative) or
+                         (tieWins and attackValue == baseInitiative and not defenderHasShield)
+        result.difficulty = baseInitiative
+
+        return {
+            success = result.success,
+            attackValue = attackValue,
+            baseInitiative = baseInitiative,
+            riposteTriggered = riposteTriggered,
+            riposteDefense = riposteDefense,
+        }
     end
 
     ----------------------------------------------------------------------------
@@ -228,22 +428,34 @@ function M.createActionResolver(config)
         -- Get card info
         local card = action.card
         result.cardValue = card.value or 0
+        local suit = card.suit
+
+        -- Cache action definition for suit/attribute logic
+        local actionDef = self:getActionDef(action)
+        if actionDef then
+            action.actionDef = actionDef
+        end
 
         -- S4.9: Check for The Fool interrupt
         if M.isFool(card) then
             return self:resolveFoolInterrupt(action, result)
         end
 
-        -- Calculate modifier from actor's stat
-        local suit = card.suit
-        local statMod = self:getStatModifier(action.actor, suit)
+        -- S7.x: Non-combat actions during Challenges can trigger Test of Fate
+        local controller = action.challengeController or self.challengeController
+        if actionDef and actionDef.testOfFate and controller and controller.isActive and controller:isActive() then
+            return self:requestTestOfFate(action, actionDef, result)
+        end
+
+        -- Calculate modifier from action's associated attribute (or card-only rules)
+        local statMod = self:getActionModifier(action, actionDef)
         result.modifier = statMod
 
         -- Total test value
         result.testValue = result.cardValue + result.modifier
 
         -- Get difficulty (target's defense or fixed value)
-        result.difficulty = self:getDifficulty(action)
+        result.difficulty = self:getDifficulty(action, actionDef)
 
         -- Check for success
         result.success = result.testValue >= result.difficulty
@@ -264,18 +476,22 @@ function M.createActionResolver(config)
                actionType == M.ACTION_TYPES.AVOID or actionType == M.ACTION_TYPES.DASH then
             self:resolvePentaclesAction(action, result)
         -- Cups actions (defense/social)
-        elseif actionType == M.ACTION_TYPES.DEFEND or actionType == M.ACTION_TYPES.DODGE or
-               actionType == M.ACTION_TYPES.RIPOSTE or actionType == M.ACTION_TYPES.HEAL or
+        elseif actionType == M.ACTION_TYPES.DODGE or actionType == M.ACTION_TYPES.RIPOSTE or
+               actionType == M.ACTION_TYPES.HEAL or
                actionType == M.ACTION_TYPES.SHIELD or actionType == M.ACTION_TYPES.AID then
             self:resolveCupsAction(action, result)
         -- Wands actions (magic/perception)
         elseif actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.CAST or
-               actionType == M.ACTION_TYPES.INTIMIDATE or actionType == M.ACTION_TYPES.RECOVER then
+               actionType == M.ACTION_TYPES.RECOVER then
             self:resolveWandsAction(action, result)
         -- Movement and misc
         elseif actionType == M.ACTION_TYPES.MOVE then
             self:resolveMove(action, result, action.allEntities)
         elseif actionType == M.ACTION_TYPES.FLEE then
+            self:resolveGenericAction(action, result)
+        elseif actionType == M.ACTION_TYPES.USE_ITEM or
+               actionType == M.ACTION_TYPES.PULL_ITEM or
+               actionType == M.ACTION_TYPES.INTERACT then
             self:resolveGenericAction(action, result)
         elseif actionType == M.ACTION_TYPES.RELOAD then
             -- S7.8: Reload crossbow
@@ -365,32 +581,25 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
 
     --- Get the difficulty for an action
-    function resolver:getDifficulty(action)
+    function resolver:getDifficulty(action, actionDef)
         local target = action.target
 
         -- Default difficulty
         local difficulty = 10
 
         if target then
-            -- Combat: Use target's defense value
-            if action.type == M.ACTION_TYPES.MELEE or
-               action.type == M.ACTION_TYPES.MISSILE then
-                -- Defense = 10 + Pentacles (or custom defense stat)
-                difficulty = 10 + (target.pentacles or 0)
-                if target.conditions and target.conditions.defending then
-                    difficulty = difficulty + 2
+            -- Initiative-opposed actions compare against target Initiative
+            if self:isInitiativeOpposed(action.type) then
+                local initValue = self:getTargetInitiative(target, action)
+                if initValue then
+                    return initValue
                 end
 
-                -- S4.9: Check for Dodge defense
-                if target.hasDefense and target:hasDefense() then
-                    local defense = target:getDefense()
-                    if defense and defense.type == "dodge" then
-                        -- Dodge adds card value to difficulty
-                        difficulty = difficulty + (defense.value or 0)
-                        action.dodgeUsed = true
-                    end
-                end
-            elseif action.type == M.ACTION_TYPES.BANTER then
+                -- Fallback: legacy defense if initiative unavailable
+                return 10 + (target.pentacles or 0)
+            end
+
+            if action.type == M.ACTION_TYPES.BANTER then
                 -- S12.3: Banter vs dynamic Morale
                 if target.getMorale then
                     difficulty = target:getMorale()
@@ -400,11 +609,6 @@ function M.createActionResolver(config)
                     -- Legacy fallback
                     difficulty = target.morale or (10 + (target.wands or 0))
                 end
-            elseif action.type == M.ACTION_TYPES.TRIP or
-                   action.type == M.ACTION_TYPES.DISARM or
-                   action.type == M.ACTION_TYPES.DISPLACE then
-                -- Roughhouse: vs Pentacles
-                difficulty = 10 + (target.pentacles or 0)
             end
         end
 
@@ -471,8 +675,9 @@ function M.createActionResolver(config)
             end
         end
 
-        -- Recalculate success after aid/mob bonuses
-        result.success = result.testValue >= result.difficulty
+        local attackValue = result.testValue
+        local baseInitiative = result.difficulty
+        local defenderHasShield = target and self:entityHasShield(target)
 
         -- Check engagement (must be in same zone as target)
         if self.zoneSystem and target then
@@ -495,11 +700,19 @@ function M.createActionResolver(config)
             local defense = target:getDefense()
             if defense then
                 if defense.type == "dodge" then
-                    -- Dodge was already applied to difficulty, consume it
+                    -- Dodge: add card value to Initiative; if higher than attack value, miss
                     target:consumeDefense()
-                    result.effects[#result.effects + 1] = "dodged"
-                    if not result.success then
+                    local dodgeValue = defense.value or 0
+                    local newInitiative = baseInitiative + dodgeValue
+                    result.effects[#result.effects + 1] = "dodge_used"
+
+                    if newInitiative > attackValue then
+                        result.success = false
                         result.description = "Dodged! "
+                        result.effects[#result.effects + 1] = "dodged"
+                        return
+                    else
+                        result.effects[#result.effects + 1] = "dodge_failed"
                     end
                 elseif defense.type == "riposte" then
                     -- Riposte: will counter-attack after resolution
@@ -510,9 +723,13 @@ function M.createActionResolver(config)
             end
         end
 
+        -- Resolve hit against Initiative (ties go to attacker unless defender has shield)
+        result.success = (attackValue > baseInitiative) or
+                         (attackValue == baseInitiative and not defenderHasShield)
+
         -- S7.6: Flail specialization - ties count as success
         if not result.success and action.weapon and M.isWeaponType(action.weapon, "FLAIL") then
-            if result.testValue == result.difficulty then
+            if attackValue == baseInitiative then
                 result.success = true
                 result.description = "Flail tie-breaker! "
                 result.effects[#result.effects + 1] = "flail_tie"
@@ -571,16 +788,12 @@ function M.createActionResolver(config)
                 self:applyDamage(target, result.damageDealt, result.effects, action.weapon, action.allEntities)
             end
         else
-            if action.dodgeUsed then
-                result.description = "Dodged! Attack missed."
-            else
-                result.description = "Miss!"
-            end
+            result.description = "Miss!"
         end
 
         -- S4.9: Resolve Riposte counter-attack
         if riposteTriggered and riposteDefense and target then
-            local riposteResult = self:resolveRiposte(target, action.actor, riposteDefense)
+            local riposteResult = self:resolveRiposte(target, action.actor, riposteDefense, attackValue)
             result.riposteResult = riposteResult
             result.description = result.description .. " Riposte! "
             if riposteResult.success then
@@ -604,8 +817,43 @@ function M.createActionResolver(config)
             result.effects[#result.effects + 1] = "engaged_ranged_penalty"
         end
 
-        -- Recalculate success after modifiers
-        result.success = result.testValue >= result.difficulty
+        local attackValue = result.testValue
+        local baseInitiative = result.difficulty
+        local target = action.target
+        local defenderHasShield = target and self:entityHasShield(target)
+        local dodged = false
+        local riposteTriggered = false
+        local riposteDefense = nil
+
+        -- Dodge can negate missile attacks
+        if target and target.hasDefense and target:hasDefense() then
+            local defense = target:getDefense()
+            if defense and defense.type == "dodge" then
+                target:consumeDefense()
+                local dodgeValue = defense.value or 0
+                local newInitiative = baseInitiative + dodgeValue
+                result.effects[#result.effects + 1] = "dodge_used"
+
+                if newInitiative > attackValue then
+                    dodged = true
+                    result.success = false
+                    result.description = "Dodged! "
+                    result.effects[#result.effects + 1] = "dodged"
+                else
+                    result.effects[#result.effects + 1] = "dodge_failed"
+                end
+            elseif defense and defense.type == "riposte" then
+                riposteTriggered = true
+                riposteDefense = target:consumeDefense()
+                result.effects[#result.effects + 1] = "riposte_ready"
+            end
+        end
+
+        if not dodged then
+            -- Resolve hit against Initiative (ties go to attacker unless defender has shield)
+            result.success = (attackValue > baseInitiative) or
+                             (attackValue == baseInitiative and not defenderHasShield)
+        end
 
         -- S7.8: Crossbow must be loaded
         if action.weapon and M.isWeaponType(action.weapon, "CROSSBOW") then
@@ -664,7 +912,20 @@ function M.createActionResolver(config)
                 self:applyDamage(action.target, result.damageDealt, result.effects)
             end
         else
-            result.description = (result.description or "") .. "Miss!"
+            if not result.description or result.description == "" then
+                result.description = "Miss!"
+            end
+        end
+
+        if riposteTriggered and riposteDefense and target then
+            local riposteResult = self:resolveRiposte(target, action.actor, riposteDefense, attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
         end
     end
 
@@ -677,7 +938,7 @@ function M.createActionResolver(config)
     -- @param attacker table: Original attacker being counter-attacked
     -- @param defense table: The consumed defense { type, card, value }
     -- @return table: Result of the riposte attack
-    function resolver:resolveRiposte(defender, attacker, defense)
+    function resolver:resolveRiposte(defender, attacker, defense, attackerValue)
         local riposteResult = {
             success = false,
             isGreat = false,
@@ -694,14 +955,17 @@ function M.createActionResolver(config)
         local card = defense.card
         local cardValue = defense.value or (card and card.value) or 0
 
-        -- Stat modifier (Riposte uses Swords for counter-attack)
-        local statMod = defender.swords or 0
-        local testValue = cardValue + statMod
+        -- Riposte uses card value only (no attribute)
+        local testValue = cardValue
 
-        -- Difficulty is attacker's defense
-        local difficulty = 10 + (attacker.pentacles or 0)
+        local compareValue = attackerValue
+        if not compareValue and attacker then
+            compareValue = 10 + (attacker.pentacles or 0)
+        end
 
-        riposteResult.success = testValue >= difficulty
+        local attackerHasShield = attacker and self:entityHasShield(attacker)
+        riposteResult.success = (testValue > compareValue) or
+                                (testValue == compareValue and not attackerHasShield)
 
         if riposteResult.success then
             riposteResult.damageDealt = 1
@@ -758,6 +1022,14 @@ function M.createActionResolver(config)
     end
 
     function resolver:resolveTrip(action, result)
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
+            return
+        end
+
         if result.success then
             result.description = "Knocked down!"
             result.effects[#result.effects + 1] = "prone"
@@ -768,6 +1040,17 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to trip!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and action.target then
+            local riposteResult = self:resolveRiposte(action.target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     --- S7.3: Disarm with inventory drop
@@ -777,6 +1060,14 @@ function M.createActionResolver(config)
         if not target then
             result.success = false
             result.description = "No target to disarm!"
+            return
+        end
+
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
             return
         end
 
@@ -815,6 +1106,17 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to disarm!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and target then
+            local riposteResult = self:resolveRiposte(target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     --- S7.2: Grapple sets rooted condition
@@ -824,6 +1126,14 @@ function M.createActionResolver(config)
         if not target then
             result.success = false
             result.description = "No target to grapple!"
+            return
+        end
+
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
             return
         end
 
@@ -844,9 +1154,28 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to grapple!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and target then
+            local riposteResult = self:resolveRiposte(target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     function resolver:resolveDisplace(action, result)
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
+            return
+        end
+
         if result.success then
             result.description = "Pushed back!"
             result.effects[#result.effects + 1] = "displaced"
@@ -863,24 +1192,27 @@ function M.createActionResolver(config)
         else
             result.description = "Failed to push!"
         end
+
+        if contest.riposteTriggered and contest.riposteDefense and action.target then
+            local riposteResult = self:resolveRiposte(action.target, action.actor, contest.riposteDefense, contest.attackValue)
+            result.riposteResult = riposteResult
+            result.description = result.description .. " Riposte! "
+            if riposteResult.success then
+                result.description = result.description .. "Counter-attack hits!"
+            else
+                result.description = result.description .. "Counter-attack misses."
+            end
+        end
     end
 
     ----------------------------------------------------------------------------
-    -- CUPS RESOLUTION (Defense/Social)
+    -- CUPS RESOLUTION (Support/Social)
     ----------------------------------------------------------------------------
 
     function resolver:resolveCupsAction(action, result)
-        local actionType = action.type or M.ACTION_TYPES.DEFEND
+        local actionType = action.type or M.ACTION_TYPES.AID
 
-        if actionType == M.ACTION_TYPES.DEFEND then
-            result.success = true
-            result.description = "Taking defensive stance"
-            result.effects[#result.effects + 1] = "defending"
-
-            if action.actor.conditions then
-                action.actor.conditions.defending = true
-            end
-        elseif actionType == M.ACTION_TYPES.DODGE then
+        if actionType == M.ACTION_TYPES.DODGE then
             -- S4.9: Prepare Dodge defense
             self:resolveDodge(action, result)
         elseif actionType == M.ACTION_TYPES.RIPOSTE then
@@ -902,7 +1234,6 @@ function M.createActionResolver(config)
     function resolver:resolveAidAnother(action, result)
         local actor = action.actor
         local target = action.target
-        local card = action.card
 
         if not target then
             result.success = false
@@ -919,10 +1250,8 @@ function M.createActionResolver(config)
         -- Aid always succeeds (no test required)
         result.success = true
 
-        -- Calculate bonus: card value + Cups stat
-        local cardValue = card.value or 0
-        local cupsBonus = actor.cups or 0
-        local totalBonus = cardValue + cupsBonus
+        -- Calculate bonus from resolved action value (respects minor-action rules)
+        local totalBonus = result.testValue or (action.card and action.card.value) or 0
 
         -- Register the aid for the target
         self:registerAid(target, totalBonus, actor.name or "ally")
@@ -955,7 +1284,7 @@ function M.createActionResolver(config)
 
         if success then
             result.success = true
-            result.description = "Preparing to dodge! (+" .. (card.value or 0) .. " to defense)"
+            result.description = "Preparing to dodge! (+" .. (card.value or 0) .. " to Initiative)"
             result.effects[#result.effects + 1] = "dodge_prepared"
 
             self.eventBus:emit("defense_prepared", {
@@ -1037,8 +1366,6 @@ function M.createActionResolver(config)
             self:resolveBanter(action, result)
         elseif actionType == M.ACTION_TYPES.CAST then
             self:resolveCast(action, result)
-        elseif actionType == M.ACTION_TYPES.INTIMIDATE then
-            self:resolveIntimidate(action, result)
         elseif actionType == M.ACTION_TYPES.RECOVER then
             -- S7.4: Recover action
             self:resolveRecover(action, result)
@@ -1199,75 +1526,17 @@ function M.createActionResolver(config)
         end
     end
 
-    --- Resolve Intimidate
-    -- S12.4: Uses disposition modifiers and shifts target toward Fear
-    function resolver:resolveIntimidate(action, result)
-        local target = action.target
-
-        -- S12.4: Apply disposition modifier to difficulty
-        if target then
-            local targetDisposition = target.disposition or "distaste"
-            if disposition_module then
-                local dispositionMod = disposition_module.getSocialModifier(targetDisposition, "intimidate")
-                result.difficulty = result.difficulty + dispositionMod
-                -- Recalculate success
-                result.success = result.testValue >= result.difficulty
-            end
-
-            -- Reveal disposition and morale on ANY intimidate attempt
-            self.eventBus:emit("social_discovery", {
-                target = target,
-                targetId = target.id,
-                discoveries = { "disposition", "morale" },
-            })
-        end
-
-        if result.success then
-            result.description = "Target is frightened!"
-            result.effects[#result.effects + 1] = "frightened"
-
-            if target then
-                -- Apply frightened condition
-                if target.conditions then
-                    target.conditions.frightened = true
-                end
-
-                -- S12.4: Shift disposition toward Fear
-                if target.shiftDisposition then
-                    -- Move directly toward fear
-                    target.disposition = "fear"
-                end
-
-                -- S12.3: Apply morale damage from intimidation
-                if target.modifyMorale then
-                    local moraleDamage = result.isGreat and 4 or 2
-                    target:modifyMorale(-moraleDamage)
-                    result.description = result.description .. string.format(" (Morale -%d)", moraleDamage)
-                end
-
-                -- Great success reveals likes/dislikes (you see what they're afraid of)
-                if result.isGreat then
-                    self.eventBus:emit("social_discovery", {
-                        target = target,
-                        targetId = target.id,
-                        discoveries = { "hates", "wants" },
-                    })
-                end
-            end
-        else
-            result.description = "Intimidation failed!"
-            -- S12.4: Failed intimidation can make target angry
-            if target and target.shiftDisposition then
-                target:shiftDisposition(-1, 1)  -- Toward anger
-            end
-        end
-    end
-
     ----------------------------------------------------------------------------
     -- GENERIC RESOLUTION
     ----------------------------------------------------------------------------
 
     function resolver:resolveGenericAction(action, result)
+        local actionDef = action.actionDef or self:getActionDef(action)
+
+        if actionDef and actionDef.autoSuccess then
+            result.success = true
+        end
+
         if result.success then
             result.description = "Action succeeded!"
         else
@@ -1581,42 +1850,46 @@ function M.createActionResolver(config)
             return
         end
 
-        -- Calculate test value
-        local statMod = actor.pentacles or 0
-        local testValue = (card.value or 0) + statMod
+        local avoidValue = result.testValue or ((card.value or 0) + (actor.pentacles or 0))
+        local engagedEnemies = self:getEngagedEnemies(actor, action.allEntities)
+        local failures = 0
 
-        -- Difficulty: 10 (or based on number of engaged enemies)
-        local difficulty = 10
-        local engagedCount = 0
-        -- S12.1: Get engaged count from zoneSystem
-        if self.zoneSystem then
-            local engagedIds = self.zoneSystem:getEngagedWith(actor.id)
-            engagedCount = #engagedIds
-        end
-        difficulty = difficulty + math.max(0, engagedCount - 1) * 2  -- +2 per additional engaged enemy
+        for _, enemy in ipairs(engagedEnemies) do
+            local enemyInit = self:getTargetInitiative(enemy, action) or (10 + (enemy.pentacles or 0))
+            if avoidValue < enemyInit then
+                failures = failures + 1
 
-        result.testValue = testValue
-        result.difficulty = difficulty
-        result.success = testValue >= difficulty
-
-        if result.success then
-            result.description = "Slipped away! Ready to move safely."
-            result.effects[#result.effects + 1] = "avoid_success"
-
-            -- Set flag that allows next move without parting blows
-            actor.avoidedThisTurn = true
-
-            -- Clear engagements immediately
-            self:clearAllEngagements(actor)
-
-            -- Can now move without taking parting blows
-            if action.destinationZone then
-                actor.zone = action.destinationZone
-                result.description = result.description .. " Moved to " .. action.destinationZone
+                local woundResult = actor:takeWound(false)
+                self.eventBus:emit(events.EVENTS.WOUND_TAKEN, {
+                    entity = actor,
+                    result = woundResult,
+                    source = "avoid_failed",
+                })
             end
+        end
+
+        result.success = (failures == 0)
+        if result.success then
+            result.description = "Avoided successfully."
+            result.effects[#result.effects + 1] = "avoid_success"
         else
-            result.description = "Failed to disengage!"
+            result.description = "Avoided, but took " .. failures .. " Wound(s)."
             result.effects[#result.effects + 1] = "avoid_failed"
+        end
+
+        -- Clear engagements and move regardless of success
+        self:clearAllEngagements(actor)
+
+        if action.destinationZone then
+            local oldZone = actor.zone
+            actor.zone = action.destinationZone
+            result.description = result.description .. " Moved to " .. action.destinationZone
+
+            self.eventBus:emit("entity_zone_changed", {
+                entity = actor,
+                oldZone = oldZone,
+                newZone = action.destinationZone,
+            })
         end
     end
 

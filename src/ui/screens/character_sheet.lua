@@ -799,7 +799,7 @@ function M.createCharacterSheet(config)
         local success, reason = self.selectedPC.inventory:swap(self.dragging.id, targetLoc)
         if success then
             print("[INVENTORY] Moved " .. self.dragging.name .. " to " .. targetLoc)
-            self.eventBus:emit("inventory_changed", {
+            self.eventBus:emit(events.EVENTS.INVENTORY_CHANGED, {
                 entity = self.selectedPC,
                 item = self.dragging,
                 from = self.dragSourceLocation,

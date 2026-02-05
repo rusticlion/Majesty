@@ -9,8 +9,8 @@
 -- Suit -> Action mapping (p. 111-115):
 -- - SWORDS: Attack (melee requires engagement, missile uses ammo)
 -- - PENTACLES: Roughhouse (Trip, Disarm, Displace)
--- - WANDS: Banter (attacks Morale), Intimidate
--- - CUPS: Defend, Aid Another, Heal
+-- - WANDS: Banter (attacks Morale)
+-- - CUPS: Aid Another, Heal, support actions
 
 local events = require('logic.events')
 local constants = require('constants')
@@ -29,23 +29,23 @@ M.COMBAT_HAND_SIZE = 3    -- Cards remaining after initiative
 M.SUIT_ACTIONS = {
     [constants.SUITS.SWORDS] = {
         primary = "attack",
-        options = { "melee", "missile" },
-        description = "Attack - deal wounds",
+        options = { "melee", "missile", "riposte" },
+        description = "Offense - strike and pressure",
     },
     [constants.SUITS.PENTACLES] = {
         primary = "roughhouse",
-        options = { "trip", "disarm", "displace", "grapple" },
-        description = "Roughhouse - battlefield control",
+        options = { "avoid", "dash", "dodge", "trip", "disarm", "displace", "grapple" },
+        description = "Avoid & Roughhouse - mobility and control",
     },
     [constants.SUITS.WANDS] = {
         primary = "banter",
-        options = { "banter", "intimidate", "cast" },
-        description = "Banter - attack morale",
+        options = { "banter", "cast", "recover", "investigate", "detect_magic" },
+        description = "Wands - magic and insight",
     },
     [constants.SUITS.CUPS] = {
-        primary = "defend",
-        options = { "defend", "dodge", "riposte", "heal", "aid", "shield" },
-        description = "Defend - protect and support",
+        primary = "aid",
+        options = { "heal", "aid", "shield", "pull_item", "use_item" },
+        description = "Support - sustain and prepare",
     },
 }
 
@@ -92,6 +92,11 @@ function M.createPlayerHand(config)
 
         -- Listen for challenge end to discard all hands
         self.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
+            self:discardAllHands()
+        end)
+
+        -- Discard remaining cards at end of each round
+        self.eventBus:on(events.EVENTS.CHALLENGE_ROUND_END, function(data)
             self:discardAllHands()
         end)
     end

@@ -51,7 +51,7 @@ local MINOR_ACTION_WINDOW_DURATION = 2.0  -- seconds
 --------------------------------------------------------------------------------
 
 --- Create a new ChallengeController
--- @param config table: { eventBus, playerDeck, gmDeck, guild, zoneSystem }
+-- @param config table: { eventBus, playerDeck, gmDeck, guild, zoneSystem, gameClock }
 -- @return ChallengeController instance
 function M.createChallengeController(config)
     config = config or {}
@@ -60,6 +60,7 @@ function M.createChallengeController(config)
         eventBus   = config.eventBus or events.globalBus,
         playerDeck = config.playerDeck,
         gmDeck     = config.gmDeck,
+        gameClock  = config.gameClock,
         guild      = config.guild or {},  -- PC entities
         zoneSystem = config.zoneSystem,   -- S12.1: Zone registry for engagement tracking
 
@@ -389,6 +390,15 @@ function M.createChallengeController(config)
         -- Round complete when count exceeds 14 (King)
         if self.currentCount > MAX_TURNS then
             print("[Challenge] Round " .. self.currentRound .. " complete!")
+            self.eventBus:emit(events.EVENTS.CHALLENGE_ROUND_END, {
+                round = self.currentRound,
+            })
+            if self.gameClock and self.gameClock.endRound then
+                local reshuffled = self.gameClock:endRound()
+                if reshuffled then
+                    print("[Challenge] The Fool reshuffled both decks at round end.")
+                end
+            end
             self:startNewRound()
             return
         end
@@ -544,6 +554,7 @@ function M.createChallengeController(config)
         action.actor = self.activeEntity
         action.round = self.currentRound
         action.count = self.currentCount
+        action.challengeController = self
 
         -- Move to resolving state
         self.state = M.STATES.RESOLVING
@@ -551,10 +562,6 @@ function M.createChallengeController(config)
 
         -- Emit action event for resolution
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
-
-        -- Resolution happens in action resolver, which will call back
-        -- For now, simulate immediate resolution
-        self:resolveAction(action)
 
         return true
     end
@@ -761,6 +768,7 @@ function M.createChallengeController(config)
         fullAction.actor = minor.entity
         fullAction.card = minor.card
         fullAction.isMinorAction = true  -- Flag for resolver (uses face value only)
+        fullAction.challengeController = self
 
         -- Emit action for resolution
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, fullAction)

@@ -107,6 +107,7 @@ function M.createArenaView(config)
         zoneSystem = config.zoneSystem,
 
         colors = M.COLORS,
+        alpha = 1,
     }
 
     ----------------------------------------------------------------------------
@@ -244,11 +245,38 @@ function M.createArenaView(config)
                 end
             end
         end
+
+        -- Preserve entity assignments after relayout
+        if next(self.entities) then
+            self:rebuildZoneEntities()
+        end
     end
 
     ----------------------------------------------------------------------------
     -- ENTITY MANAGEMENT
     ----------------------------------------------------------------------------
+
+    --- Rebuild zone entity buckets after relayout
+    function arena:rebuildZoneEntities()
+        for _, zone in pairs(self.zones) do
+            zone.entities = {}
+        end
+
+        for _, data in pairs(self.entities) do
+            local zoneId = data.zoneId or (data.entity and data.entity.zone) or "main"
+            local zone = self.zones[zoneId]
+            if not zone then
+                local fallbackId = next(self.zones)
+                zone = fallbackId and self.zones[fallbackId] or nil
+                zoneId = zone and zone.id or zoneId
+            end
+            if zone and data.entity then
+                zone.entities[#zone.entities + 1] = data.entity
+                data.zoneId = zoneId
+                data.entity.zone = zoneId
+            end
+        end
+    end
 
     --- Add an entity to a zone
     function arena:addEntity(entity, zoneId)
@@ -454,8 +482,18 @@ function M.createArenaView(config)
     -- RENDERING
     ----------------------------------------------------------------------------
 
+    function arena:setColor(color)
+        local alpha = (color[4] or 1) * (self.alpha or 1)
+        love.graphics.setColor(color[1], color[2], color[3], alpha)
+    end
+
+    function arena:setColorRGBA(r, g, b, a)
+        local alpha = (a or 1) * (self.alpha or 1)
+        love.graphics.setColor(r, g, b, alpha)
+    end
+
     function arena:draw()
-        if not love or not self.isVisible then return end
+        if not love or not self.isVisible or (self.alpha or 0) <= 0 then return end
 
         -- S13.3: Draw zone adjacency lines (behind zones)
         self:drawAdjacencyLines()
@@ -514,18 +552,18 @@ function M.createArenaView(config)
 
         -- Background
         if hasActiveEntity then
-            love.graphics.setColor(colors.zone_active)
+            self:setColor(colors.zone_active)
         elseif isHovered and self.draggedEntity then
-            love.graphics.setColor(colors.zone_hover)
+            self:setColor(colors.zone_hover)
         elseif isAdjacentToHovered then
-            love.graphics.setColor(colors.zone_adjacent)
+            self:setColor(colors.zone_adjacent)
         else
-            love.graphics.setColor(colors.zone_bg)
+            self:setColor(colors.zone_bg)
         end
         love.graphics.rectangle("fill", zone.x, zone.y, zone.width, zone.height, 6, 6)
 
         -- Border
-        love.graphics.setColor(colors.zone_border)
+        self:setColor(colors.zone_border)
         love.graphics.setLineWidth(2)
         love.graphics.rectangle("line", zone.x, zone.y, zone.width, zone.height, 6, 6)
         love.graphics.setLineWidth(1)
@@ -543,11 +581,11 @@ function M.createArenaView(config)
         local labelY = zone.y + 5
 
         -- Label background
-        love.graphics.setColor(colors.label_bg)
+        self:setColor(colors.label_bg)
         love.graphics.rectangle("fill", labelX, labelY, labelWidth, M.ZONE_LABEL_HEIGHT, 3, 3)
 
         -- Label text
-        love.graphics.setColor(colors.label_text)
+        self:setColor(colors.label_text)
         love.graphics.printf(zone.name, labelX, labelY + 4, labelWidth, "center")
 
         -- S13.4: Draw description below label (if present)
@@ -557,7 +595,7 @@ function M.createArenaView(config)
             local descWidth = zone.width - M.ZONE_PADDING * 2
 
             -- Draw description text (dark ink on parchment background)
-            love.graphics.setColor(colors.desc_text)
+            self:setColor(colors.desc_text)
             love.graphics.printf(zone.description, descX, descY, descWidth, "left")
 
             -- Calculate description height for entity positioning
@@ -612,34 +650,34 @@ function M.createArenaView(config)
 
         -- Active glow
         if isActive then
-            love.graphics.setColor(colors.token_active)
+            self:setColor(colors.token_active)
             love.graphics.circle("fill", x + size/2, y + size/2, size/2 + 4)
         end
 
         -- Token background
         if isDead then
-            love.graphics.setColor(0.3, 0.3, 0.3, 0.7)
+            self:setColorRGBA(0.3, 0.3, 0.3, 0.7)
         elseif isPC then
-            love.graphics.setColor(colors.token_pc)
+            self:setColor(colors.token_pc)
         else
-            love.graphics.setColor(colors.token_npc)
+            self:setColor(colors.token_npc)
         end
         love.graphics.circle("fill", x + size/2, y + size/2, size/2)
 
         -- Border
-        love.graphics.setColor(colors.token_border)
+        self:setColor(colors.token_border)
         love.graphics.setLineWidth(2)
         love.graphics.circle("line", x + size/2, y + size/2, size/2)
         love.graphics.setLineWidth(1)
 
         -- Initials or short name
         local initials = self:getInitials(entity.name or "??")
-        love.graphics.setColor(colors.token_text)
+        self:setColor(colors.token_text)
         love.graphics.printf(initials, x, y + size/2 - 8, size, "center")
 
         -- Dead X
         if isDead then
-            love.graphics.setColor(0.8, 0.2, 0.2, 0.9)
+            self:setColorRGBA(0.8, 0.2, 0.2, 0.9)
             love.graphics.setLineWidth(3)
             love.graphics.line(x + 5, y + 5, x + size - 5, y + size - 5)
             love.graphics.line(x + size - 5, y + 5, x + 5, y + size - 5)
@@ -683,7 +721,7 @@ function M.createArenaView(config)
                     local y2 = e2._tokenY + M.TOKEN_SIZE / 2
 
                     -- Draw clash line
-                    love.graphics.setColor(colors.clash_line)
+                    self:setColor(colors.clash_line)
                     love.graphics.setLineWidth(3)
                     love.graphics.line(x1, y1, x2, y2)
 
@@ -691,14 +729,14 @@ function M.createArenaView(config)
                     local midX = (x1 + x2) / 2
                     local midY = (y1 + y2) / 2
 
-                    love.graphics.setColor(colors.clash_icon)
+                    self:setColor(colors.clash_icon)
                     love.graphics.circle("fill", midX, midY, 8)
-                    love.graphics.setColor(colors.token_border)
+                    self:setColor(colors.token_border)
                     love.graphics.setLineWidth(2)
                     love.graphics.circle("line", midX, midY, 8)
 
                     -- Crossed swords icon (simplified)
-                    love.graphics.setColor(1, 1, 1, 1)
+                    self:setColorRGBA(1, 1, 1, 1)
                     love.graphics.line(midX - 4, midY - 4, midX + 4, midY + 4)
                     love.graphics.line(midX + 4, midY - 4, midX - 4, midY + 4)
 
@@ -716,7 +754,7 @@ function M.createArenaView(config)
         local x = mx - self.dragOffsetX
         local y = my - self.dragOffsetY
 
-        love.graphics.setColor(self.colors.drag_ghost)
+        self:setColor(self.colors.drag_ghost)
         self:drawToken(self.draggedEntity, x, y, M.TOKEN_SIZE)
     end
 
@@ -758,10 +796,10 @@ function M.createArenaView(config)
                         local isHighlighted = (self.hoveredZone == zoneIdA or self.hoveredZone == zoneIdB)
 
                         if isHighlighted then
-                            love.graphics.setColor(colors.adjacency_hover)
+                            self:setColor(colors.adjacency_hover)
                             love.graphics.setLineWidth(3)
                         else
-                            love.graphics.setColor(colors.adjacency_line)
+                            self:setColor(colors.adjacency_line)
                             love.graphics.setLineWidth(2)
                         end
 
@@ -820,22 +858,31 @@ function M.createArenaView(config)
         if button ~= 1 then return false end
 
         -- Check if clicking on a token
-        for _, zone in pairs(self.zones) do
-            for _, entity in ipairs(zone.entities) do
-                if entity._tokenX and self:isInsideToken(x, y, entity._tokenX, entity._tokenY) then
-                    -- S13.7: Hide tooltip when starting to drag
-                    if self.inspectPanel then
-                        self.inspectPanel:onHoverEnd()
-                        self.inspectPanel:hide()
-                    end
-
-                    -- Start dragging
-                    self.draggedEntity = entity
-                    self.dragOffsetX = x - entity._tokenX
-                    self.dragOffsetY = y - entity._tokenY
-                    return true
-                end
+        local entity = self:getEntityAt(x, y)
+        if entity then
+            -- S13.7: Hide tooltip when clicking a token
+            if self.inspectPanel then
+                self.inspectPanel:onHoverEnd()
+                self.inspectPanel:hide()
             end
+
+            self.eventBus:emit(events.EVENTS.ARENA_ENTITY_CLICKED, {
+                entity = entity,
+                x = x,
+                y = y,
+            })
+            return true
+        end
+
+        -- Check if clicking on a zone (for move selection)
+        local zoneId = self:getZoneAt(x, y)
+        if zoneId then
+            self.eventBus:emit(events.EVENTS.ARENA_ZONE_CLICKED, {
+                zoneId = zoneId,
+                x = x,
+                y = y,
+            })
+            return true
         end
 
         return false
@@ -844,26 +891,6 @@ function M.createArenaView(config)
     function arena:mousereleased(x, y, button)
         if not self.isVisible then return false end
         if button ~= 1 then return false end
-
-        if self.draggedEntity then
-            -- Check if dropped on a different zone
-            local targetZone = self:getZoneAt(x, y)
-            if targetZone and targetZone ~= self.entities[self.draggedEntity.id].zoneId then
-                -- Emit move intent (logic will handle parting blows etc.)
-                self.eventBus:emit("entity_move_intent", {
-                    entity = self.draggedEntity,
-                    fromZone = self.entities[self.draggedEntity.id].zoneId,
-                    toZone = targetZone,
-                })
-
-                -- For now, just move directly (S6.3 will add parting blow checks)
-                self:moveEntity(self.draggedEntity, targetZone)
-            end
-
-            self.draggedEntity = nil
-            self.hoveredZone = nil
-            return true
-        end
 
         return false
     end
@@ -986,13 +1013,13 @@ function M.createArenaView(config)
         local color = isValid and self.colors.target_valid or self.colors.target_reticle
 
         -- Outer ring (pulsing)
-        love.graphics.setColor(color[1], color[2], color[3], color[4] * pulse)
+        self:setColorRGBA(color[1], color[2], color[3], (color[4] or 1) * pulse)
         love.graphics.setLineWidth(3)
         love.graphics.circle("line", cx, cy, radius)
 
         -- Crosshairs
         local crossSize = 8
-        love.graphics.setColor(color[1], color[2], color[3], color[4])
+        self:setColorRGBA(color[1], color[2], color[3], color[4] or 1)
         love.graphics.setLineWidth(2)
         -- Top
         love.graphics.line(cx, cy - radius - 5, cx, cy - radius + crossSize)
@@ -1024,10 +1051,10 @@ function M.createArenaView(config)
                         local cy = tokenY + M.TOKEN_SIZE / 2
                         local pulse = math.sin(self.targetReticleTimer * 4) * 0.3 + 0.7
 
-                        love.graphics.setColor(self.colors.target_valid[1],
-                                               self.colors.target_valid[2],
-                                               self.colors.target_valid[3],
-                                               pulse * 0.5)
+                        self:setColorRGBA(self.colors.target_valid[1],
+                                          self.colors.target_valid[2],
+                                          self.colors.target_valid[3],
+                                          pulse * 0.5)
                         love.graphics.circle("fill", cx, cy, M.TOKEN_SIZE / 2 + 6)
                     end
                 end

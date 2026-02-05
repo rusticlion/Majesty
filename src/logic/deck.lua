@@ -82,6 +82,7 @@ function M.createDeck(cards)
     local deck = {
         draw_pile    = {},
         discard_pile = {},
+        onDraw       = nil,
     }
 
     -- Deep copy cards into draw pile (avoid reference trap)
@@ -116,7 +117,11 @@ function M.createDeck(cards)
         end
 
         -- Remove and return top card (last element for O(1) removal)
-        return table.remove(self.draw_pile)
+        local card = table.remove(self.draw_pile)
+        if card and self.onDraw then
+            self.onDraw(card)
+        end
+        return card
     end
 
     ----------------------------------------------------------------------------

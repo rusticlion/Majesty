@@ -146,7 +146,7 @@ M.blueprints = {
         starting_gear = {
             hands = {
                 { name = "Longsword", size = 1, durability = 3 },
-                { name = "Heater Shield", size = 1, durability = 2 },
+                { name = "Heater Shield", size = 1, durability = 2, properties = { tags = { "shield" } } },
             },
             belt = {
                 { name = "Plate Armor", size = 2, isArmor = true, durability = 3 },

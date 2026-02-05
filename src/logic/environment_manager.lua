@@ -78,7 +78,7 @@ function M.createEnvironmentManager(config)
         end)
 
         -- Subscribe to darkness (prolonged darkness causes stress)
-        self.eventBus:on("darkness_fell", function(data)
+        self.eventBus:on(events.EVENTS.DARKNESS_FELL, function(data)
             -- Note: Darkness stress happens over time, not immediately
             -- This is tracked separately via watch count in darkness
         end)

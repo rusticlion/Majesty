@@ -55,22 +55,12 @@ M.ACTIONS = {
         isRanged = true,  -- S12.2: Cannot use while engaged
     },
     {
-        id = "grapple",
-        name = "Grapple",
+        id = "riposte",
+        name = "Riposte",
         suit = M.SUITS.SWORDS,
         attribute = "swords",
-        description = "Seize an enemy. Success engages and prevents their movement.",
-        requiresTarget = true,
-        targetType = "enemy",
-    },
-    {
-        id = "intimidate",
-        name = "Intimidate",
-        suit = M.SUITS.SWORDS,
-        attribute = "swords",
-        description = "Threaten an enemy to reduce their morale.",
-        requiresTarget = true,
-        targetType = "enemy",
+        description = "Prepare to counter-attack. If attacked, strike back with this card.",
+        requiresTarget = false,
     },
 
     ----------------------------------------------------------------------------
@@ -81,7 +71,23 @@ M.ACTIONS = {
         name = "Avoid",
         suit = M.SUITS.PENTACLES,
         attribute = "pentacles",
-        description = "Prepare to dodge an incoming attack. Also clears engagement safely.",
+        description = "Avoid a danger or disengage safely; move to an adjacent zone afterward.",
+        requiresTarget = false,
+    },
+    {
+        id = "dash",
+        name = "Dash",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Move quickly through a zone, potentially avoiding obstacles.",
+        requiresTarget = false,
+    },
+    {
+        id = "dodge",
+        name = "Dodge",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Prepare to dodge. Card value helps you avoid an attack.",
         requiresTarget = false,
     },
     {
@@ -112,6 +118,15 @@ M.ACTIONS = {
         targetType = "enemy",
     },
     {
+        id = "grapple",
+        name = "Grapple",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Seize an enemy. Success engages and prevents their movement.",
+        requiresTarget = true,
+        targetType = "enemy",
+    },
+    {
         id = "pick_lock",
         name = "Pick Lock",
         suit = M.SUITS.PENTACLES,
@@ -119,6 +134,7 @@ M.ACTIONS = {
         description = "Attempt to open a locked door or container.",
         requiresTarget = false,
         requiresItem = "lockpicks",
+        testOfFate = true,
     },
     {
         id = "disarm_trap",
@@ -127,43 +143,12 @@ M.ACTIONS = {
         attribute = "pentacles",
         description = "Safely disarm a detected trap.",
         requiresTarget = false,
-    },
-    {
-        id = "dash",
-        name = "Dash",
-        suit = M.SUITS.PENTACLES,
-        attribute = "pentacles",
-        description = "Move quickly through a zone, potentially avoiding obstacles.",
-        requiresTarget = false,
+        testOfFate = true,
     },
 
     ----------------------------------------------------------------------------
-    -- CUPS (Social / Emotional / Defense)
+    -- CUPS (Social / Support)
     ----------------------------------------------------------------------------
-    {
-        id = "defend",
-        name = "Defend",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",
-        description = "Take a defensive stance, gaining +2 to defense until your next turn.",
-        requiresTarget = false,
-    },
-    {
-        id = "dodge",
-        name = "Dodge",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",
-        description = "Prepare to dodge. Card value adds to defense difficulty when attacked.",
-        requiresTarget = false,
-    },
-    {
-        id = "riposte",
-        name = "Riposte",
-        suit = M.SUITS.CUPS,
-        attribute = "cups",
-        description = "Prepare to counter-attack. If attacked, strike back with this card.",
-        requiresTarget = false,
-    },
     {
         id = "heal",
         name = "Heal",
@@ -200,6 +185,24 @@ M.ACTIONS = {
         requiresTarget = true,
         targetType = "ally",
     },
+    {
+        id = "pull_item",
+        name = "Pull Item",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        description = "Ready an item from your pack to your belt.",
+        requiresTarget = false,
+        autoSuccess = true,
+    },
+    {
+        id = "use_item",
+        name = "Use Item",
+        suit = M.SUITS.CUPS,
+        attribute = "cups",  -- Depends on item, but uses Cups suit
+        description = "Activate an item's special ability.",
+        requiresTarget = false,
+        autoSuccess = true,
+    },
 
     ----------------------------------------------------------------------------
     -- WANDS (Magic / Perception)
@@ -217,7 +220,7 @@ M.ACTIONS = {
         name = "Banter",
         suit = M.SUITS.WANDS,
         attribute = "wands",
-        description = "Distract an enemy with wit, reducing their next action's effectiveness.",
+        description = "Taunt, intimidate, or frighten an enemy to sway morale.",
         requiresTarget = true,
         targetType = "enemy",
     },
@@ -228,6 +231,7 @@ M.ACTIONS = {
         attribute = "wands",
         description = "Search for hidden details, secrets, or clues.",
         requiresTarget = false,
+        testOfFate = true,
     },
     {
         id = "detect_magic",
@@ -236,6 +240,7 @@ M.ACTIONS = {
         attribute = "wands",
         description = "Sense magical auras or enchantments nearby.",
         requiresTarget = false,
+        testOfFate = true,
     },
     {
         id = "recover",
@@ -259,24 +264,6 @@ M.ACTIONS = {
         allowMinor = false,  -- Cannot be a Minor action (normally)
     },
     {
-        id = "pull_item",
-        name = "Pull Item",
-        suit = M.SUITS.MISC,
-        attribute = nil,
-        description = "Ready an item from your pack to your belt.",
-        requiresTarget = false,
-        allowMinor = false,
-    },
-    {
-        id = "use_item",
-        name = "Use Item",
-        suit = M.SUITS.MISC,
-        attribute = nil,  -- Depends on item
-        description = "Activate an item's special ability.",
-        requiresTarget = false,
-        allowMinor = false,
-    },
-    {
         id = "interact",
         name = "Interact",
         suit = M.SUITS.MISC,
@@ -284,6 +271,7 @@ M.ACTIONS = {
         description = "Interact with the environment (pull lever, open door, etc.)",
         requiresTarget = false,
         allowMinor = false,
+        autoSuccess = true,
     },
     {
         id = "reload",

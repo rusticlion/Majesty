@@ -29,6 +29,9 @@ M.data = {
                     type = "decoration",
                     description = "A heavy iron door, twisted completely off its hinges. Whatever did this was strong.",
                     hidden_description = "Deep claw marks score the metal. Something large forced its way in.",
+                    secrets = "Wedged in the twisted frame you find a discarded torch and a stick of chalk.",
+                    investigate_test = { attribute = "swords", difficulty = 10 },
+                    loot = { "torch", "chalk" },
                 },
                 {
                     id = "west_mural",
@@ -38,6 +41,7 @@ M.data = {
                     hidden_description = "One star in the mural seems slightly raised from the wall...",
                     secrets = "Pressing the raised star reveals a hidden latch! A secret door swings open.",
                     investigate_test = { attribute = "pentacles", difficulty = 12 },
+                    reveal_connection = { to = "112_hidden_sanctum" },
                 },
             },
         },
@@ -441,8 +445,7 @@ M.data = {
                 -- Options available to players
                 playerOptions = {
                     { action = "attack", description = "Attack (triggers combat)" },
-                    { action = "banter", description = "Speak with respect (Banter - Cups)" },
-                    { action = "intimidate", description = "Threaten the spirit (Intimidate - Wands)" },
+                    { action = "banter", description = "Speak with respect (Banter - Wands)" },
                     { action = "offer", description = "Make an offering at the altar" },
                     { action = "read_tablets", description = "Study the inscribed tablets" },
                     { action = "leave", description = "Back away slowly and leave" },

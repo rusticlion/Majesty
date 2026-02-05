@@ -36,10 +36,12 @@ local player_hand = require('ui.player_hand')
 local combat_display = require('ui.combat_display')
 local inspect_panel = require('ui.inspect_panel')
 local arena_view = require('ui.arena_view')
+local layout_manager = require('ui.layout_manager')
 local command_board = require('ui.command_board')
 local minor_action_panel = require('ui.minor_action_panel')
 local floating_text = require('ui.floating_text')
 local sound_manager = require('ui.sound_manager')
+local test_of_fate_modal = require('ui.test_of_fate_modal')
 
 -- World systems
 local dungeon_graph = require('world.dungeon_graph')
@@ -90,6 +92,7 @@ gameState = {
     arenaView           = nil,  -- S6.1: Arena tactical schematic
     commandBoard        = nil,  -- S6.2: Categorized command board
     minorActionPanel    = nil,  -- S6.4: Minor action declaration panel
+    pendingTestAction   = nil,  -- S12.5: Pending Test of Fate Challenge action
 
     -- Camp systems (Sprint 8-9)
     campController      = nil,
@@ -100,6 +103,12 @@ gameState = {
 
     -- S11.3: Loot modal
     lootModal           = nil,
+
+    -- S12.5: Test of Fate modal
+    testOfFateModal     = nil,
+
+    -- S13.2: Layout manager for stage-based UI
+    layoutManager       = nil,
 
     -- Party
     guild             = {},    -- Array of adventurer entities
@@ -148,6 +157,24 @@ end
 --------------------------------------------------------------------------------
 -- ACTIVE PC MANAGEMENT
 --------------------------------------------------------------------------------
+
+--- Get the character plate at a screen position (if any)
+local function getPlateAt(x, y)
+    if not gameState.currentScreen or not gameState.currentScreen.characterPlates then
+        return nil, nil
+    end
+
+    for i, plate in ipairs(gameState.currentScreen.characterPlates) do
+        local plateHeight = plate.getHeight and plate:getHeight() or 0
+        local plateWidth = plate.width or 0
+        if x >= plate.x and x <= plate.x + plateWidth and
+           y >= plate.y and y <= plate.y + plateHeight then
+            return plate, i
+        end
+    end
+
+    return nil, nil
+end
 
 --- Get the currently active PC
 function getActivePC()
@@ -200,6 +227,11 @@ function love.load()
 
     -- Create game clock with deck references
     gameState.gameClock = game_clock.createGameClock(gameState.playerDeck, gameState.gmDeck)
+    -- Track The Fool draws for reshuffle logic
+    if gameState.gameClock and gameState.gameClock.onCardDrawn then
+        gameState.playerDeck.onDraw = function(card) gameState.gameClock:onCardDrawn(card) end
+        gameState.gmDeck.onDraw = function(card) gameState.gameClock:onCardDrawn(card) end
+    end
 
     -- Load dungeon
     gameState.dungeon = dungeon_graph.loadFromData(tomb_data.data)
@@ -257,10 +289,12 @@ function love.load()
         eventBus   = gameState.eventBus,
         playerDeck = gameState.playerDeck,
         gmDeck     = gameState.gmDeck,
+        gameClock  = gameState.gameClock,
         guild      = gameState.guild,
         zoneSystem = gameState.zoneRegistry,  -- S12.1: Pass zone registry for engagement clearing
     })
     gameState.challengeController:init()
+    gameState.actionResolver.challengeController = gameState.challengeController
 
     gameState.actionSequencer = action_sequencer.createActionSequencer({
         eventBus = gameState.eventBus,
@@ -300,6 +334,23 @@ function love.load()
     })
     gameState.inspectPanel:init()
 
+    -- S13.2: Create layout manager for stage-based UI
+    gameState.layoutManager = layout_manager.createLayoutManager({
+        eventBus = gameState.eventBus,
+        leftRailWidth = crawl_screen.LAYOUT.LEFT_RAIL_WIDTH,
+        rightRailWidth = crawl_screen.LAYOUT.RIGHT_RAIL_WIDTH,
+        padding = crawl_screen.LAYOUT.PADDING,
+        headerHeight = crawl_screen.LAYOUT.HEADER_HEIGHT,
+        bottomReserve = 200,
+        equipmentBarOffset = 80,
+    })
+    gameState.layoutManager:init()
+    if love then
+        local w, h = love.graphics.getDimensions()
+        gameState.layoutManager:resize(w, h)
+    end
+    gameState.layoutManager:setStage(gameState.phase, true)
+
     -- S6.1: Arena view for tactical combat visualization
     local w, h = love.graphics.getDimensions()
     gameState.arenaView = arena_view.createArenaView({
@@ -312,6 +363,25 @@ function love.load()
         zoneSystem = gameState.zoneRegistry,    -- S13.3: Pass for adjacency queries
     })
     gameState.arenaView:init()
+    -- S13.2: Register arena with layout manager for stage positioning
+    if gameState.layoutManager then
+        gameState.layoutManager:register("arena_view", gameState.arenaView, {
+            apply = function(arena, layout)
+                if layout.x and layout.y then
+                    if arena.x ~= layout.x or arena.y ~= layout.y then
+                        arena:setPosition(layout.x, layout.y)
+                    end
+                end
+                if layout.width and layout.height then
+                    if arena.width ~= layout.width or arena.height ~= layout.height then
+                        arena:resize(layout.width, layout.height)
+                    end
+                end
+                arena.alpha = layout.alpha or 1
+                arena.isVisible = layout.visible
+            end,
+        })
+    end
 
     -- S6.2: Command board for action selection
     gameState.commandBoard = command_board.createCommandBoard({
@@ -343,10 +413,34 @@ function love.load()
         roomManager = gameState.roomManager,
     })
 
+    -- S12.5: Test of Fate modal (used in Crawl and Challenge contexts)
+    gameState.testOfFateModal = test_of_fate_modal.createTestOfFateModal({
+        eventBus = gameState.eventBus,
+        deck = gameState.playerDeck,
+    })
+    gameState.testOfFateModal:init()
+
     -- Wire up challenge action resolution
     gameState.eventBus:on(events.EVENTS.CHALLENGE_ACTION, function(data)
         local result = gameState.actionResolver:resolve(data)
+        if result and result.pendingTestOfFate then
+            gameState.pendingTestAction = data
+            return
+        end
         gameState.challengeController:resolveAction(data)
+    end)
+
+    -- Resolve Test of Fate outcomes for pending Challenge actions
+    gameState.eventBus:on(events.EVENTS.TEST_OF_FATE_COMPLETE, function(data)
+        if not gameState.pendingTestAction then
+            return
+        end
+
+        local action = gameState.pendingTestAction
+        gameState.pendingTestAction = nil
+
+        gameState.actionResolver:resolveTestOfFateOutcome(action, data.result)
+        gameState.challengeController:resolveAction(action)
     end)
 
     -- Wire up action selection from command board
@@ -454,12 +548,22 @@ function love.load()
         end
     end)
 
+    -- S13.2: Arena click events for target/zone selection
+    gameState.eventBus:on(events.EVENTS.ARENA_ENTITY_CLICKED, function(data)
+        handleArenaEntityClick(data)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.ARENA_ZONE_CLICKED, function(data)
+        handleArenaZoneClick(data)
+    end)
+
     -- Create and initialize the crawl screen
     gameState.currentScreen = crawl_screen.createCrawlScreen({
         eventBus     = gameState.eventBus,
         roomManager  = gameState.roomManager,
         watchManager = gameState.watchManager,
         gameState    = gameState,
+        layoutManager = gameState.layoutManager,
     })
     gameState.currentScreen:init()
 
@@ -533,13 +637,27 @@ function love.load()
     -- S10.2: Challenge start/end sounds
     -- S13.2/S13.6: Also update game phase for layout and action gating
     gameState.eventBus:on(events.EVENTS.CHALLENGE_START, function(data)
+        local oldPhase = gameState.phase
         gameState.phase = "challenge"  -- S13.2/S13.6: Set phase for UI gating
+        gameState.eventBus:emit(events.EVENTS.PHASE_CHANGED, {
+            oldPhase = oldPhase,
+            newPhase = "challenge",
+        })
         sound_manager.play(sound_manager.SOUNDS.ROUND_START)
         sound_manager.playMusic(sound_manager.SOUNDS.COMBAT_MUSIC)
     end)
 
     gameState.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
+        local oldPhase = gameState.phase
         gameState.phase = "crawl"  -- S13.2/S13.6: Return to crawl phase
+        gameState.eventBus:emit(events.EVENTS.PHASE_CHANGED, {
+            oldPhase = oldPhase,
+            newPhase = "crawl",
+        })
+        gameState.pendingTestAction = nil
+        if gameState.testOfFateModal then
+            gameState.testOfFateModal:hide()
+        end
         sound_manager.stopMusic()
         if data.victory then
             sound_manager.play(sound_manager.SOUNDS.VICTORY)
@@ -806,6 +924,7 @@ function returnToCity()
         roomManager  = gameState.roomManager,
         watchManager = gameState.watchManager,
         gameState    = gameState,
+        layoutManager = gameState.layoutManager,
     })
     gameState.currentScreen:init()
     gameState.currentScreen:setGuild(gameState.guild)
@@ -888,6 +1007,7 @@ function handlePhaseChange(data)
             roomManager  = gameState.roomManager,
             watchManager = gameState.watchManager,
             gameState    = gameState,
+            layoutManager = gameState.layoutManager,
         })
         gameState.currentScreen:init()
         gameState.currentScreen:setGuild(gameState.guild)
@@ -1092,6 +1212,138 @@ end
 
 --- Handle input during challenge phase
 -- New flow: Q/W/E selects card → Command Board → Select Action → Select Target → Execute
+--- Get card index at mouse position for a PC's hand
+local function getHandCardIndexAt(x, y, pc, maxIndex)
+    local hand = gameState.playerHand
+    local cards = hand:getHand(pc)
+    if #cards == 0 then return nil end
+
+    local w, h = love.graphics.getDimensions()
+    local cardWidth = 100
+    local cardHeight = 140
+    local cardSpacing = 20
+    local totalWidth = (#cards * cardWidth) + ((#cards - 1) * cardSpacing)
+    local startX = (w - totalWidth) / 2
+    local startY = h - cardHeight - 70
+
+    for i, _ in ipairs(cards) do
+        if maxIndex and i > maxIndex then
+            break
+        end
+        local cx = startX + (i - 1) * (cardWidth + cardSpacing)
+        if x >= cx and x <= cx + cardWidth and y >= startY and y <= startY + cardHeight then
+            return i
+        end
+    end
+
+    return nil
+end
+
+--- Select a card for an action (primary or minor)
+local function selectCardForAction(entity, cardIndex, isPrimaryTurn)
+    local hand = gameState.playerHand
+    local cards = hand:getHand(entity)
+    if cardIndex > #cards then
+        print("[COMBAT] No card at position " .. cardIndex)
+        return false
+    end
+
+    local card = cards[cardIndex]
+
+    combatInputState.selectedCard = card
+    combatInputState.selectedCardIndex = cardIndex
+    combatInputState.selectedEntity = entity
+
+    gameState.eventBus:emit("card_selected", {
+        card = card,
+        entity = entity,
+        isPrimaryTurn = isPrimaryTurn,
+        cardIndex = cardIndex,
+    })
+
+    return true
+end
+
+--- Handle combat mouse input (card clicks, initiative clicks)
+local function handleCombatMousePressed(x, y, button)
+    if button ~= 1 then return false end
+
+    local controller = gameState.challengeController
+    if not controller or not controller:isActive() then return false end
+
+    local state = controller:getState()
+
+    -- Initiative phase
+    if state == "pre_round" then
+        local hand = gameState.playerHand
+        -- Allow clicking a plate to select a PC
+        if not hand.selectedPC then
+            local plate = getPlateAt(x, y)
+            if plate and plate.entity and controller.awaitingInitiative[plate.entity.id] then
+                hand.selectedPC = plate.entity
+                print("[INITIATIVE] Select a card for " .. plate.entity.name .. " (Q/W/E/R or click)")
+                return true
+            end
+        end
+
+        if hand.selectedPC and controller.awaitingInitiative[hand.selectedPC.id] then
+            local cardIndex = getHandCardIndexAt(x, y, hand.selectedPC, 4)
+            if cardIndex then
+                local card = hand:useForInitiative(hand.selectedPC, cardIndex)
+                if card then
+                    controller:submitInitiative(hand.selectedPC, card)
+                    hand:clearSelection()
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    -- Minor window
+    if state == "minor_window" then
+        if not combatInputState.minorPC then
+            local plate = getPlateAt(x, y)
+            if plate and plate.entity then
+                local cards = gameState.playerHand:getHand(plate.entity)
+                if #cards > 0 then
+                    combatInputState.minorPC = plate.entity
+                    print("[MINOR] Select a card for " .. plate.entity.name .. " (Q/W/E or click)")
+                    return true
+                end
+            end
+        end
+
+        if combatInputState.minorPC then
+            local cardIndex = getHandCardIndexAt(x, y, combatInputState.minorPC, 3)
+            if cardIndex then
+                selectCardForAction(combatInputState.minorPC, cardIndex, false)
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Primary action selection
+    if state ~= "awaiting_action" then
+        return false
+    end
+
+    local activeEntity = controller:getActiveEntity()
+    if not activeEntity or not activeEntity.isPC then
+        return false
+    end
+
+    local cardIndex = getHandCardIndexAt(x, y, activeEntity, 3)
+    if cardIndex then
+        selectCardForAction(activeEntity, cardIndex, true)
+        print("[COMBAT] " .. activeEntity.name .. " selected a card - choose action from Command Board")
+        return true
+    end
+
+    return false
+end
+
 function handleChallengeInput(key)
     local controller = gameState.challengeController
     local hand = gameState.playerHand
@@ -1139,20 +1391,7 @@ function handleChallengeInput(key)
 
         if cardIndex <= #cards then
             local card = cards[cardIndex]
-
-            -- Store selection state
-            combatInputState.selectedCard = card
-            combatInputState.selectedCardIndex = cardIndex
-            combatInputState.selectedEntity = activeEntity
-
-            -- Emit card_selected to show command board
-            gameState.eventBus:emit("card_selected", {
-                card = card,
-                entity = activeEntity,
-                isPrimaryTurn = true,
-                cardIndex = cardIndex,
-            })
-
+            selectCardForAction(activeEntity, cardIndex, true)
             print("[COMBAT] " .. activeEntity.name .. " selected " .. card.name .. " - choose action from Command Board")
         else
             print("[COMBAT] No card at position " .. cardIndex)
@@ -1225,19 +1464,7 @@ function handleMinorWindowInput(key)
 
             if cardIndex <= #cards then
                 local card = cards[cardIndex]
-
-                -- Store selection and show command board (with minor filtering)
-                combatInputState.selectedCard = card
-                combatInputState.selectedCardIndex = cardIndex
-                combatInputState.selectedEntity = combatInputState.minorPC
-
-                gameState.eventBus:emit("card_selected", {
-                    card = card,
-                    entity = combatInputState.minorPC,
-                    isPrimaryTurn = false,  -- Minor action = suit restricted
-                    cardIndex = cardIndex,
-                })
-
+                selectCardForAction(combatInputState.minorPC, cardIndex, false)
                 print("[MINOR] " .. combatInputState.minorPC.name .. " selected " .. card.name .. " for minor action")
             end
             return
@@ -1287,73 +1514,78 @@ function handleZoneSelection(key)
     end
 end
 
+--- Handle zone selection by clicked zone id
+function handleZoneSelectionById(zoneId)
+    local zones = combatInputState.availableZones
+    if not zones or #zones == 0 then
+        combatInputState.awaitingZone = false
+        return false
+    end
+
+    for _, zone in ipairs(zones) do
+        if zone.id == zoneId then
+            executeSelectedAction(nil, zoneId)
+            return true
+        end
+    end
+
+    print("[COMBAT] Zone not available for move: " .. tostring(zoneId))
+    return false
+end
+
+--- Build valid target list for the current action/actor
+local function getValidTargetsForAction(action, actor)
+    local controller = gameState.challengeController
+    local actorZone = actor and actor.zone
+
+    if not action then return {} end
+
+    local isMelee = (action.id == "melee" or action.id == "grapple" or
+                    action.id == "trip" or action.id == "disarm" or
+                    action.id == "displace")
+
+    local targets = {}
+
+    local function addIfValid(entity)
+        if not (entity.conditions and entity.conditions.dead) then
+            if isMelee then
+                if entity.zone == actorZone then
+                    targets[#targets + 1] = entity
+                end
+            else
+                targets[#targets + 1] = entity
+            end
+        end
+    end
+
+    local targetType = action.targetType or "any"
+
+    if targetType == "enemy" or targetType == "any" then
+        for _, npc in ipairs(controller.npcs or {}) do
+            addIfValid(npc)
+        end
+    end
+
+    if targetType == "ally" or targetType == "any" then
+        for _, pc in ipairs(controller.pcs or {}) do
+            addIfValid(pc)
+        end
+    end
+
+    return targets
+end
+
 --- Handle target selection (number keys to select target)
 function handleTargetSelection(key)
-    local controller = gameState.challengeController
     local action = combatInputState.selectedAction
-    local actorZone = combatInputState.selectedEntity and combatInputState.selectedEntity.zone
 
     if not action then
         combatInputState.awaitingTarget = false
         return
     end
 
-    -- Check if this is a melee action (requires same zone)
-    local isMelee = (action.id == "melee" or action.id == "grapple" or
-                    action.id == "trip" or action.id == "disarm" or
-                    action.id == "displace")
-
     -- Get valid targets based on action type
-    local targets = {}
-    if action.targetType == "enemy" then
-        for _, npc in ipairs(controller.npcs or {}) do
-            if not (npc.conditions and npc.conditions.dead) then
-                if isMelee then
-                    if npc.zone == actorZone then
-                        targets[#targets + 1] = npc
-                    end
-                else
-                    targets[#targets + 1] = npc
-                end
-            end
-        end
-    elseif action.targetType == "ally" then
-        for _, pc in ipairs(controller.pcs or {}) do
-            if not (pc.conditions and pc.conditions.dead) then
-                if isMelee then
-                    if pc.zone == actorZone then
-                        targets[#targets + 1] = pc
-                    end
-                else
-                    targets[#targets + 1] = pc
-                end
-            end
-        end
-    else
-        -- "any" - include all living entities
-        for _, npc in ipairs(controller.npcs or {}) do
-            if not (npc.conditions and npc.conditions.dead) then
-                if isMelee then
-                    if npc.zone == actorZone then
-                        targets[#targets + 1] = npc
-                    end
-                else
-                    targets[#targets + 1] = npc
-                end
-            end
-        end
-        for _, pc in ipairs(controller.pcs or {}) do
-            if not (pc.conditions and pc.conditions.dead) then
-                if isMelee then
-                    if pc.zone == actorZone then
-                        targets[#targets + 1] = pc
-                    end
-                else
-                    targets[#targets + 1] = pc
-                end
-            end
-        end
-    end
+    local targets = getValidTargetsForAction(action, combatInputState.selectedEntity)
 
     -- Number keys to select target
     local keyNum = tonumber(key)
@@ -1369,6 +1601,41 @@ function handleTargetSelection(key)
         resetCombatInputState()
         gameState.eventBus:emit("card_deselected", {})
         print("[COMBAT] Target selection cancelled")
+    end
+end
+
+--- Handle target selection by clicked entity
+function handleTargetSelectionByEntity(entity)
+    local action = combatInputState.selectedAction
+    if not action or not entity then
+        return false
+    end
+
+    local targets = getValidTargetsForAction(action, combatInputState.selectedEntity)
+    for _, target in ipairs(targets) do
+        if target == entity then
+            executeSelectedAction(target)
+            return true
+        end
+    end
+
+    print("[COMBAT] Invalid target for action.")
+    return false
+end
+
+--- Handle arena entity click events (target selection)
+function handleArenaEntityClick(data)
+    if not data or not data.entity then return end
+    if combatInputState.awaitingTarget then
+        handleTargetSelectionByEntity(data.entity)
+    end
+end
+
+--- Handle arena zone click events (move selection)
+function handleArenaZoneClick(data)
+    if not data or not data.zoneId then return end
+    if combatInputState.awaitingZone then
+        handleZoneSelectionById(data.zoneId)
     end
 end
 
@@ -1403,16 +1670,13 @@ function executeSelectedAction(target, destinationZone)
             target = target,
             destinationZone = destinationZone,
             weapon = entity.inventory and entity.inventory:getWieldedWeapon() or nil,
+            allEntities = controller.allCombatants,
         })
 
         print("[MINOR] " .. entity.name .. " declares " .. action.name)
         combatInputState.minorPC = nil  -- Clear PC selection
     else
         -- Execute primary action immediately
-        local cards = hand:getHand(entity)
-        table.remove(cards, cardIndex)
-        gameState.playerDeck:discard(card)
-
         local fullAction = {
             actor = entity,
             target = target,
@@ -1428,7 +1692,18 @@ function executeSelectedAction(target, destinationZone)
         else
             print("[COMBAT] " .. entity.name .. " uses " .. action.name .. " on " .. (target and target.name or "no target"))
         end
-        gameState.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, fullAction)
+
+        local success, err = controller:submitAction(fullAction)
+        if not success then
+            print("[COMBAT] Action submit failed: " .. tostring(err))
+            resetCombatInputState()
+            gameState.eventBus:emit("card_deselected", {})
+            return
+        end
+
+        local cards = hand:getHand(entity)
+        table.remove(cards, cardIndex)
+        gameState.playerDeck:discard(card)
     end
 
     resetCombatInputState()
@@ -1513,6 +1788,9 @@ end
 function love.update(dt)
     if gameState.currentScreen then
         gameState.currentScreen:update(dt)
+    end
+    if gameState.layoutManager then
+        gameState.layoutManager:update(dt)
     end
 
     -- Update challenge systems
@@ -1606,6 +1884,11 @@ function love.draw()
     -- S11.3: Draw loot modal (on top of everything except debug)
     if gameState.lootModal then
         gameState.lootModal:draw()
+    end
+
+    -- S12.5: Draw Test of Fate modal (on top of everything except debug)
+    if gameState.testOfFateModal then
+        gameState.testOfFateModal:draw()
     end
 
     -- Draw debug info
@@ -1962,9 +2245,19 @@ function love.resize(w, h)
     if gameState.currentScreen then
         gameState.currentScreen:resize(w, h)
     end
+    if gameState.layoutManager then
+        gameState.layoutManager:resize(w, h)
+    end
 end
 
 function love.mousepressed(x, y, button)
+    -- S12.5: Test of Fate modal (highest priority when open)
+    if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
+        if gameState.testOfFateModal:mousepressed(x, y, button) then
+            return
+        end
+    end
+
     -- S11.3: Loot modal mouse handling (highest priority when open)
     if gameState.lootModal and gameState.lootModal.isOpen then
         if gameState.lootModal:mousepressed(x, y, button) then
@@ -2026,6 +2319,13 @@ function love.mousepressed(x, y, button)
         end
     end
 
+    -- Combat card selection via click
+    if gameState.challengeController and gameState.challengeController:isActive() then
+        if handleCombatMousePressed(x, y, button) then
+            return
+        end
+    end
+
     -- S6.1: Arena view drag handling
     if gameState.arenaView and gameState.arenaView.isVisible then
         if gameState.arenaView:mousepressed(x, y, button) then
@@ -2059,6 +2359,12 @@ function love.mousereleased(x, y, button)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    -- S12.5: Test of Fate modal hover (highest priority)
+    if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
+        gameState.testOfFateModal:mousemoved(x, y)
+        return
+    end
+
     -- S11.3: Loot modal hover (highest priority)
     if gameState.lootModal and gameState.lootModal.isOpen then
         gameState.lootModal:mousemoved(x, y, dx, dy)
@@ -2092,6 +2398,13 @@ function love.mousemoved(x, y, dx, dy)
 end
 
 function love.keypressed(key)
+    -- S12.5: Test of Fate modal keyboard handling (highest priority when open)
+    if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
+        if gameState.testOfFateModal:keypressed(key) then
+            return
+        end
+    end
+
     -- S11.3: Loot modal keyboard handling (highest priority when open)
     if gameState.lootModal and gameState.lootModal.isOpen then
         if gameState.lootModal:keypressed(key) then

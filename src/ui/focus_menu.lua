@@ -21,8 +21,10 @@ M.STYLES = {
     button_normal   = { 0.2, 0.2, 0.25, 1.0 },
     button_hover    = { 0.3, 0.5, 0.6, 1.0 },
     button_pressed  = { 0.2, 0.4, 0.5, 1.0 },
+    button_disabled = { 0.18, 0.18, 0.2, 0.7 },
     text_normal     = { 0.9, 0.9, 0.85, 1.0 },
     text_hover      = { 1.0, 1.0, 1.0, 1.0 },
+    text_disabled   = { 0.6, 0.6, 0.58, 0.9 },
     title           = { 0.7, 0.85, 1.0, 1.0 },
 }
 
@@ -40,6 +42,7 @@ function M.createFocusMenu(config)
         -- References
         inputManager = config.inputManager,
         roomManager  = config.roomManager,
+        interactionSystem = config.interactionSystem,
         eventBus     = config.eventBus or events.globalBus,
 
         -- Font
@@ -93,19 +96,100 @@ function M.createFocusMenu(config)
         self.x = screenX
         self.y = screenY
 
+        -- Build action options
+        local actionOptions = {}
+        local actionSet = {}
+        if self.interactionSystem and poiData then
+            local actions = self.interactionSystem:getValidActions(poiData)
+            for _, actionData in ipairs(actions) do
+                -- Skip duplicate "examine" entry; scrutiny already covers a close look
+                if actionData.action ~= "examine" then
+                    actionSet[actionData.action] = true
+                    local watchCost = (actionData.level_required == "investigate")
+                    local label = "Act: " .. (actionData.description or actionData.action)
+                    if watchCost then
+                        label = label .. " (Watch)"
+                    end
+                    local option = {
+                        kind = "action",
+                        action = actionData.action,
+                        level = actionData.level_required,
+                        watchCost = watchCost,
+                        description = label,
+                        callback = function()
+                            self:selectOption(actionData.action)
+                        end,
+                    }
+
+                    -- Bound by Fate: disable repeated Test of Fate attempts
+                    if self.roomManager and self.roomId and self.poiId then
+                        local isInvestigationAction =
+                            actionData.level_required == "investigate" or
+                            actionData.action == "investigate" or
+                            actionData.action == "search" or
+                            actionData.action == "trap_check"
+                        if isInvestigationAction then
+                            local status = self.roomManager:getBoundByFateStatus(self.roomId, self.poiId, "investigate", {})
+                            if status and status.allowed == false then
+                                option.disabled = true
+                                option.description = option.description .. " (Result stands)"
+                            end
+                        end
+                    end
+
+                    actionOptions[#actionOptions + 1] = option
+                end
+            end
+        end
+
+        -- Add a generic Investigate action if the POI has deeper info
+        if poiData and (poiData.investigate_test or poiData.secrets or poiData.investigate_description) then
+            if not actionSet.search and not actionSet.trap_check then
+                local option = {
+                    kind = "action",
+                    action = "investigate",
+                    level = "investigate",
+                    watchCost = true,
+                    description = "Act: Investigate (Watch)",
+                    callback = function()
+                        self:selectOption("investigate")
+                    end,
+                }
+
+                if self.roomManager and self.roomId and self.poiId then
+                    local status = self.roomManager:getBoundByFateStatus(self.roomId, self.poiId, "investigate", {})
+                    if status and status.allowed == false then
+                        option.disabled = true
+                        option.description = option.description .. " (Result stands)"
+                    end
+                end
+
+                actionOptions[#actionOptions + 1] = option
+            end
+        end
+
         -- Get scrutiny verbs from room manager
         self.options = {}
         if self.roomManager then
             local verbs = self.roomManager:getScrutinyVerbs(poiData)
             for i, verbData in ipairs(verbs) do
-                self.options[i] = {
-                    verb = verbData.verb,
-                    description = verbData.desc or verbData.description or verbData.verb,
-                    callback = function()
-                        self:selectOption(verbData.verb)
-                    end,
-                }
+                -- If search is offered as an action, avoid duplicate in scrutiny list
+                if verbData.verb ~= "search" or not actionSet.search then
+                    self.options[#self.options + 1] = {
+                        kind = "scrutinize",
+                        verb = verbData.verb,
+                        description = "Scrutinize: " .. (verbData.desc or verbData.description or verbData.verb),
+                        callback = function()
+                            self:selectOption(verbData.verb)
+                        end,
+                    }
+                end
             end
+        end
+
+        -- Append action options after scrutiny options
+        for _, actionOption in ipairs(actionOptions) do
+            self.options[#self.options + 1] = actionOption
         end
 
         -- Add "Cancel" option
@@ -195,19 +279,41 @@ function M.createFocusMenu(config)
             return
         end
 
-        -- Get POI info at scrutiny level
-        local result = nil
-        if self.roomManager then
-            result = self.roomManager:getPOIInfo(self.roomId, self.poiId, "scrutinize", verb)
+        local option = nil
+        for _, opt in ipairs(self.options) do
+            if opt.verb == verb or opt.action == verb then
+                option = opt
+                break
+            end
         end
 
-        -- Emit selection event
-        self.eventBus:emit(events.EVENTS.SCRUTINY_SELECTED, {
-            poiId = self.poiId,
-            roomId = self.roomId,
-            verb = verb,
-            result = result,
-        })
+        if option and option.disabled then
+            return
+        end
+
+        if option and option.kind == "action" then
+            self.eventBus:emit(events.EVENTS.POI_ACTION_SELECTED, {
+                poiId = self.poiId,
+                roomId = self.roomId,
+                action = option.action,
+                level = option.level,
+                watchCost = option.watchCost or false,
+            })
+        else
+            -- Get POI info at scrutiny level
+            local result = nil
+            if self.roomManager then
+                result = self.roomManager:getPOIInfo(self.roomId, self.poiId, "scrutinize", verb)
+            end
+
+            -- Emit selection event
+            self.eventBus:emit(events.EVENTS.SCRUTINY_SELECTED, {
+                poiId = self.poiId,
+                roomId = self.roomId,
+                verb = verb,
+                result = result,
+            })
+        end
 
         -- Close menu
         self:close()
@@ -230,6 +336,11 @@ function M.createFocusMenu(config)
         -- Check which button was pressed
         local index = self:getButtonAt(x, y)
         if index then
+            local option = self.options[index]
+            if option and option.disabled then
+                self.pressedIndex = nil
+                return true
+            end
             self.pressedIndex = index
         end
 
@@ -245,7 +356,12 @@ function M.createFocusMenu(config)
         -- If released on same button that was pressed, activate it
         if index and index == self.pressedIndex then
             local option = self.options[index]
-            if option and option.callback then
+            if option and option.disabled then
+                self.eventBus:emit(events.EVENTS.BOUND_BY_FATE_BLOCKED, {
+                    poiId = self.poiId,
+                    roomId = self.roomId,
+                })
+            elseif option and option.callback then
                 option.callback()
             end
         end
@@ -257,8 +373,12 @@ function M.createFocusMenu(config)
     --- Handle mouse movement
     function menu:onMouseMoved(x, y)
         if not self.isOpen then return end
-
-        self.hoveredIndex = self:getButtonAt(x, y)
+        local index = self:getButtonAt(x, y)
+        if index and self.options[index] and self.options[index].disabled then
+            self.hoveredIndex = nil
+            return
+        end
+        self.hoveredIndex = index
     end
 
     --- Check if point is inside menu
@@ -358,16 +478,19 @@ function M.createFocusMenu(config)
         for i, option in ipairs(self.options) do
             local isHovered = (i == self.hoveredIndex)
             local isPressed = (i == self.pressedIndex)
+            local isDisabled = option.disabled == true
 
             -- Button background
             local bgColor = self.styles.button_normal
-            if isPressed then
+            if isDisabled then
+                bgColor = self.styles.button_disabled
+            elseif isPressed then
                 bgColor = self.styles.button_pressed
             elseif isHovered then
                 bgColor = self.styles.button_hover
             end
 
-            love.graphics.setColor(bgColor[1], bgColor[2], bgColor[3], bgColor[4] * alpha)
+            love.graphics.setColor(bgColor[1], bgColor[2], bgColor[3], (bgColor[4] or 1) * alpha)
             love.graphics.rectangle(
                 "fill",
                 self.x + self.padding,
@@ -378,7 +501,12 @@ function M.createFocusMenu(config)
             )
 
             -- Button text
-            local textColor = isHovered and self.styles.text_hover or self.styles.text_normal
+            local textColor = self.styles.text_normal
+            if isDisabled then
+                textColor = self.styles.text_disabled
+            elseif isHovered then
+                textColor = self.styles.text_hover
+            end
             love.graphics.setColor(textColor[1], textColor[2], textColor[3], alpha)
             love.graphics.printf(
                 option.description,

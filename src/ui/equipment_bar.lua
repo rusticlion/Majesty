@@ -22,6 +22,14 @@ M.PADDING = 10
 M.HANDS_SLOTS = 2
 M.BELT_SLOTS = 4
 
+local function isItemLit(item)
+    local props = item and item.properties
+    if not props then return false end
+    if props.isLit ~= nil then return props.isLit end
+    if props.is_lit ~= nil then return props.is_lit end
+    return false
+end
+
 --------------------------------------------------------------------------------
 -- COLORS
 --------------------------------------------------------------------------------
@@ -82,6 +90,7 @@ function M.createEquipmentBar(config)
         slotBounds = {},  -- [location_index] = { x, y, w, h, location, index }
 
         isVisible = true,
+        alpha = 1,
     }
 
     ----------------------------------------------------------------------------
@@ -294,18 +303,28 @@ function M.createEquipmentBar(config)
     -- DRAW
     ----------------------------------------------------------------------------
 
+    function bar:applyColor(color)
+        local alpha = (color[4] or 1) * (self.alpha or 1)
+        love.graphics.setColor(color[1], color[2], color[3], alpha)
+    end
+
+    function bar:applyColorRGBA(r, g, b, a)
+        local alpha = (a or 1) * (self.alpha or 1)
+        love.graphics.setColor(r, g, b, alpha)
+    end
+
     function bar:draw()
-        if not self.isVisible then return end
+        if not self.isVisible or (self.alpha or 0) <= 0 then return end
         if not love then return end
 
         local pc = self:getSelectedPC()
         if not pc then return end
 
         -- Panel background
-        love.graphics.setColor(M.COLORS.panel_bg)
+        self:applyColor(M.COLORS.panel_bg)
         love.graphics.rectangle("fill", self.x, self.y, self.width, self.height, 6, 6)
 
-        love.graphics.setColor(M.COLORS.panel_border)
+        self:applyColor(M.COLORS.panel_border)
         love.graphics.setLineWidth(1)
         love.graphics.rectangle("line", self.x, self.y, self.width, self.height, 6, 6)
 
@@ -324,7 +343,7 @@ function M.createEquipmentBar(config)
         self:drawSection("belt", "Belt", beltItems, M.BELT_SLOTS, M.COLORS.belt_label)
 
         -- Draw PC name
-        love.graphics.setColor(M.COLORS.text_dim)
+        self:applyColor(M.COLORS.text_dim)
         love.graphics.print(pc.name, self.x + self.width - 60, self.y + 4)
 
         -- Draw drag ghost
@@ -338,7 +357,7 @@ function M.createEquipmentBar(config)
         if not firstBounds then return end
 
         -- Section label
-        love.graphics.setColor(labelColor)
+        self:applyColor(labelColor)
         love.graphics.print(label, firstBounds.x, self.y + M.PADDING)
 
         -- Draw slots
@@ -362,22 +381,22 @@ function M.createEquipmentBar(config)
 
         -- Slot background
         if isDragSource then
-            love.graphics.setColor(M.COLORS.slot_dragging)
+            self:applyColor(M.COLORS.slot_dragging)
         elseif item and isHovered then
-            love.graphics.setColor(M.COLORS.slot_hover)
+            self:applyColor(M.COLORS.slot_hover)
         elseif item then
-            love.graphics.setColor(M.COLORS.slot_filled)
+            self:applyColor(M.COLORS.slot_filled)
         else
-            love.graphics.setColor(M.COLORS.slot_empty)
+            self:applyColor(M.COLORS.slot_empty)
         end
         love.graphics.rectangle("fill", bounds.x, bounds.y, bounds.w, bounds.h, 4, 4)
 
         -- Slot border
         if isHovered and item and not isDragSource then
-            love.graphics.setColor(M.COLORS.slot_border_hover)
+            self:applyColor(M.COLORS.slot_border_hover)
             love.graphics.setLineWidth(2)
         else
-            love.graphics.setColor(M.COLORS.slot_border)
+            self:applyColor(M.COLORS.slot_border)
             love.graphics.setLineWidth(1)
         end
         love.graphics.rectangle("line", bounds.x, bounds.y, bounds.w, bounds.h, 4, 4)
@@ -392,11 +411,11 @@ function M.createEquipmentBar(config)
     function bar:drawItemInSlot(item, x, y, w, h)
         -- Item icon (simple colored circle with initial)
         local iconColor = self:getItemColor(item)
-        love.graphics.setColor(iconColor)
+        self:applyColor(iconColor)
         love.graphics.circle("fill", x + w/2, y + h/2, w/3)
 
         -- Item initial
-        love.graphics.setColor(M.COLORS.text)
+        self:applyColor(M.COLORS.text)
         local initial = string.sub(item.name or "?", 1, 1):upper()
         local font = love.graphics.getFont()
         local textW = font:getWidth(initial)
@@ -405,13 +424,13 @@ function M.createEquipmentBar(config)
 
         -- Quantity for stackables
         if item.stackable and item.quantity and item.quantity > 1 then
-            love.graphics.setColor(M.COLORS.text_quantity)
+            self:applyColor(M.COLORS.text_quantity)
             love.graphics.print("x" .. item.quantity, x + w - 20, y + h - 14)
         end
 
         -- Lit indicator for light sources
-        if item.properties and item.properties.is_lit then
-            love.graphics.setColor(1, 0.9, 0.3, 0.9)
+        if item.properties and isItemLit(item) then
+            self:applyColorRGBA(1, 0.9, 0.3, 0.9)
             love.graphics.circle("fill", x + w - 8, y + 8, 4)
         end
     end
@@ -420,7 +439,7 @@ function M.createEquipmentBar(config)
         if item.properties and item.properties.key then
             return { 0.8, 0.7, 0.3 }  -- Gold for keys
         elseif item.properties and item.properties.light_source then
-            if item.properties.is_lit then
+            if isItemLit(item) then
                 return { 1, 0.8, 0.3 }  -- Bright orange when lit
             else
                 return { 0.7, 0.4, 0.2 }  -- Brown when unlit
@@ -447,14 +466,14 @@ function M.createEquipmentBar(config)
         local ghostY = mouseY - self.dragOffsetY
 
         -- Semi-transparent background
-        love.graphics.setColor(0.2, 0.2, 0.25, 0.9)
+        self:applyColorRGBA(0.2, 0.2, 0.25, 0.9)
         love.graphics.rectangle("fill", ghostX, ghostY, M.SLOT_SIZE, M.SLOT_SIZE, 4, 4)
 
         -- Item content
         self:drawItemInSlot(item, ghostX, ghostY, M.SLOT_SIZE, M.SLOT_SIZE)
 
         -- Drag hint
-        love.graphics.setColor(1, 1, 1, 0.8)
+        self:applyColorRGBA(1, 1, 1, 0.8)
         love.graphics.print("Drop on POI", ghostX, ghostY + M.SLOT_SIZE + 2)
     end
 

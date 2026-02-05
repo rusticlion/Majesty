@@ -54,14 +54,14 @@ M.BUTTON_WIDTH = 120
 --------------------------------------------------------------------------------
 
 --- Create a Test of Fate Modal
--- @param config table: { eventBus, gmDeck }
+-- @param config table: { eventBus, deck }
 -- @return TestOfFateModal instance
 function M.createTestOfFateModal(config)
     config = config or {}
 
     local modal = {
         eventBus = config.eventBus or events.globalBus,
-        gmDeck = config.gmDeck,
+        deck = config.deck,
 
         -- State
         isVisible = false,
@@ -96,6 +96,41 @@ function M.createTestOfFateModal(config)
     -- TEST FLOW
     ----------------------------------------------------------------------------
 
+    local function getResolve(entity)
+        if not entity then return 0 end
+        if type(entity.resolve) == "table" then
+            return entity.resolve.current or 0
+        end
+        return entity.resolve or 0
+    end
+
+    local function spendResolve(entity, amount)
+        if not entity then return false end
+        amount = amount or 1
+
+        if entity.spendResolve then
+            return entity:spendResolve(amount)
+        end
+
+        if type(entity.resolve) == "table" then
+            if (entity.resolve.current or 0) < amount then
+                return false
+            end
+            entity.resolve.current = entity.resolve.current - amount
+            return true
+        end
+
+        if type(entity.resolve) == "number" then
+            if entity.resolve < amount then
+                return false
+            end
+            entity.resolve = entity.resolve - amount
+            return true
+        end
+
+        return false
+    end
+
     --- Start a Test of Fate
     -- @param config table: { attribute, difficulty, entity, favor, description, onSuccess, onFailure }
     function modal:startTest(config)
@@ -105,9 +140,9 @@ function M.createTestOfFateModal(config)
         self.pushCard = nil
         self.result = nil
 
-        -- Draw initial card from GM deck
-        if self.gmDeck then
-            self.initialCard = self.gmDeck:draw()
+        -- Draw initial card from deck (minor arcana)
+        if self.deck then
+            self.initialCard = self.deck:draw()
         else
             -- Fallback: simulate a card
             self.initialCard = { name = "Test Card", value = math.random(1, 14), suit = math.random(1, 4) }
@@ -137,13 +172,11 @@ function M.createTestOfFateModal(config)
         local entity = self.testConfig.entity
 
         -- Check if entity has Resolve to spend
-        if entity.resolve and entity.resolve > 0 then
-            -- Spend Resolve
-            entity.resolve = entity.resolve - 1
+        if getResolve(entity) > 0 and spendResolve(entity, 1) then
 
             -- Draw push card
-            if self.gmDeck then
-                self.pushCard = self.gmDeck:draw()
+            if self.deck then
+                self.pushCard = self.deck:draw()
             else
                 self.pushCard = { name = "Push Card", value = math.random(1, 14), suit = math.random(1, 4) }
             end
@@ -188,11 +221,23 @@ function M.createTestOfFateModal(config)
         self:hide()
     end
 
+    function modal:discardDrawnCards()
+        if not self.deck or not self.deck.discard then return end
+
+        if self.initialCard then
+            self.deck:discard(self.initialCard)
+            self.initialCard = nil
+        end
+        if self.pushCard then
+            self.deck:discard(self.pushCard)
+            self.pushCard = nil
+        end
+    end
+
     function modal:hide()
+        self:discardDrawnCards()
         self.isVisible = false
         self.testConfig = nil
-        self.initialCard = nil
-        self.pushCard = nil
         self.result = nil
     end
 
@@ -312,7 +357,8 @@ function M.createTestOfFateModal(config)
         -- Push Fate button (only if can push and has Resolve)
         local canPush = self.result and resolver.canPush(self.result)
         local entity = self.testConfig and self.testConfig.entity
-        local hasResolve = entity and entity.resolve and entity.resolve > 0
+        local resolveCount = getResolve(entity)
+        local hasResolve = resolveCount > 0
         local showPush = canPush and hasResolve and not self.pushCard
 
         if showPush then
@@ -326,7 +372,7 @@ function M.createTestOfFateModal(config)
             love.graphics.rectangle("line", pushX, buttonY, M.BUTTON_WIDTH, M.BUTTON_HEIGHT, 4, 4)
 
             love.graphics.setColor(self.colors.button_text)
-            local pushText = string.format("Push Fate (%d)", entity.resolve or 0)
+            local pushText = string.format("Push Fate (%d)", resolveCount)
             love.graphics.printf(pushText, pushX, buttonY + 12, M.BUTTON_WIDTH, "center")
 
             -- Store button bounds

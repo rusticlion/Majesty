@@ -55,7 +55,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.8,  -- 80% likely to fight
         negotiable = false,      -- Cannot parley while angry
         banterDifficulty = -2,   -- Easier to banter (they're distracted by rage)
-        intimidateDifficulty = 2, -- Harder to intimidate (already aggressive)
     },
     distaste = {
         name = "Distaste",
@@ -63,7 +62,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.4,
         negotiable = true,
         banterDifficulty = 0,
-        intimidateDifficulty = 0,
     },
     sadness = {
         name = "Sadness",
@@ -71,7 +69,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.2,
         negotiable = true,
         banterDifficulty = 2,    -- Harder to banter (they don't care)
-        intimidateDifficulty = -2, -- Easier to intimidate (already demoralized)
     },
     joy = {
         name = "Joy",
@@ -79,7 +76,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.1,
         negotiable = true,
         banterDifficulty = 2,    -- Harder to banter (good mood)
-        intimidateDifficulty = 2, -- Harder to intimidate (confident)
     },
     surprise = {
         name = "Surprise",
@@ -87,7 +83,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.5,
         negotiable = true,
         banterDifficulty = 0,
-        intimidateDifficulty = -2, -- Easier to intimidate (off-balance)
     },
     trust = {
         name = "Trust",
@@ -95,7 +90,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.1,
         negotiable = true,
         banterDifficulty = 4,    -- Very hard to banter (they trust you)
-        intimidateDifficulty = 4, -- Very hard to intimidate (they trust you)
     },
     fear = {
         name = "Fear",
@@ -103,7 +97,6 @@ M.PROPERTIES = {
         combatLikelihood = 0.3,  -- Might fight from desperation
         negotiable = true,
         banterDifficulty = 0,
-        intimidateDifficulty = -4, -- Very easy to intimidate (already scared)
     },
 }
 
@@ -126,10 +119,6 @@ M.TRIGGERS = {
 
     -- Failed banter: shifts toward Anger (counter-clockwise)
     banter_fail = { direction = M.SHIFT.COUNTER_CLOCKWISE, amount = 1 },
-
-    -- Successful intimidate: shifts toward Fear
-    intimidate_success = { target = "fear", amount = 1 },
-    intimidate_great = { target = "fear", amount = 2 },
 
     -- Combat damage: shifts toward Anger or Fear (based on advantage)
     damage_dealt = { direction = M.SHIFT.COUNTER_CLOCKWISE, amount = 1 },  -- NPC angry
@@ -245,14 +234,12 @@ end
 
 --- Get difficulty modifier for social actions
 -- @param disposition string: The disposition
--- @param actionType string: "banter" or "intimidate"
+-- @param actionType string: "banter"
 -- @return number: Modifier to add to difficulty
 function M.getSocialModifier(disposition, actionType)
     local props = M.getProperties(disposition)
     if actionType == "banter" then
         return props.banterDifficulty or 0
-    elseif actionType == "intimidate" then
-        return props.intimidateDifficulty or 0
     end
     return 0
 end

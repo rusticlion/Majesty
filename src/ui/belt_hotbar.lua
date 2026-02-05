@@ -83,6 +83,22 @@ function M.createBeltHotbar(config)
     -- ITEM USE
     ----------------------------------------------------------------------------
 
+    local function isItemLit(item)
+        local props = item and item.properties
+        if not props then return false end
+        if props.isLit ~= nil then return props.isLit end
+        if props.is_lit ~= nil then return props.is_lit end
+        return false
+    end
+
+    local function setItemLit(item, lit)
+        if not item.properties then
+            item.properties = {}
+        end
+        item.properties.isLit = lit
+        item.properties.is_lit = lit
+    end
+
     --- Use an item from the belt
     -- @param slotIndex number: 1-4 belt slot
     function hotbar:useItem(slotIndex)
@@ -120,18 +136,18 @@ function M.createBeltHotbar(config)
         local flickerCount = item.properties.flicker_count or 3
 
         -- Check if already lit
-        if item.properties.is_lit then
+        if isItemLit(item) then
             print("[HOTBAR] " .. pc.name .. " extinguishes " .. item.name)
-            item.properties.is_lit = false
-            self.eventBus:emit("light_source_toggled", {
+            setItemLit(item, false)
+            self.eventBus:emit(events.EVENTS.LIGHT_SOURCE_TOGGLED, {
                 entity = pc,
                 item = item,
                 lit = false,
             })
         else
             print("[HOTBAR] " .. pc.name .. " lights " .. item.name .. " (" .. flickerCount .. " flickers remaining)")
-            item.properties.is_lit = true
-            self.eventBus:emit("light_source_toggled", {
+            setItemLit(item, true)
+            self.eventBus:emit(events.EVENTS.LIGHT_SOURCE_TOGGLED, {
                 entity = pc,
                 item = item,
                 lit = true,
@@ -274,7 +290,7 @@ function M.createBeltHotbar(config)
         local iconColor = { 0.6, 0.6, 0.6 }
 
         if item.properties and item.properties.light_source then
-            if item.properties.is_lit then
+            if isItemLit(item) then
                 iconColor = { 1, 0.8, 0.3 }  -- Lit torch = orange/yellow
             else
                 iconColor = { 0.7, 0.4, 0.2 }  -- Unlit torch = brown
@@ -301,7 +317,7 @@ function M.createBeltHotbar(config)
         end
 
         -- Draw lit indicator
-        if item.properties and item.properties.is_lit then
+        if item.properties and isItemLit(item) then
             love.graphics.setColor(1, 0.9, 0.3, 0.8)
             love.graphics.circle("fill", x + size - 8, y + 8, 4)
         end

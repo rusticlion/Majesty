@@ -89,6 +89,27 @@ function M.createItem(config)
     return item
 end
 
+--- Deep-copy table values so item instances never share mutable template state.
+local function deepCopy(value, seen)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    seen = seen or {}
+    if seen[value] then
+        return seen[value]
+    end
+
+    local copy = {}
+    seen[value] = copy
+
+    for k, v in pairs(value) do
+        copy[deepCopy(k, seen)] = deepCopy(v, seen)
+    end
+
+    return copy
+end
+
 --- S11.3: Create an item from a template ID
 -- @param templateId string: The template ID from item_templates.lua
 -- @param overrides table: Optional property overrides
@@ -104,13 +125,10 @@ function M.createItemFromTemplate(templateId, overrides)
     end
 
     -- Merge template with overrides
-    local config = {}
-    for k, v in pairs(template) do
-        config[k] = v
-    end
+    local config = deepCopy(template)
     if overrides then
         for k, v in pairs(overrides) do
-            config[k] = v
+            config[k] = deepCopy(v)
         end
     end
 

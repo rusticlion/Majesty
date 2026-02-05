@@ -105,6 +105,11 @@ function M.createLightSystem(config)
             self:recalculateLightLevels()
         end)
 
+        -- Legacy/auxiliary UI source: explicit light toggles
+        self.eventBus:on(events.EVENTS.LIGHT_SOURCE_TOGGLED, function(data)
+            self:handleLightSourceToggled(data)
+        end)
+
         -- Initial light check
         self:recalculateLightLevels()
     end
@@ -112,6 +117,53 @@ function M.createLightSystem(config)
     ----------------------------------------------------------------------------
     -- LIGHT SOURCE TRACKING
     ----------------------------------------------------------------------------
+
+    --- Read lit state from either canonical or legacy field names.
+    function system:getItemLitState(item)
+        if not item or not item.properties then
+            return true
+        end
+        if item.properties.isLit ~= nil then
+            return item.properties.isLit
+        end
+        if item.properties.is_lit ~= nil then
+            return item.properties.is_lit
+        end
+        return true
+    end
+
+    --- Write lit state to canonical and legacy field names for compatibility.
+    function system:setItemLitState(item, isLit)
+        if not item.properties then
+            item.properties = {}
+        end
+        item.properties.isLit = isLit
+        item.properties.is_lit = isLit
+    end
+
+    --- Build a normalized light config from item properties.
+    function system:buildLightConfigFromProperties(item)
+        local props = item and item.properties or {}
+        local source = props and props.light_source
+
+        local config = {
+            flicker_max = props.flicker_count or 3,
+            consumable = props.consumable ~= false,
+            requires_hands = props.requires_hands ~= false,
+            provides_belt_light = props.provides_belt_light == true,
+            fragile_on_belt = props.fragile_on_belt == true,
+        }
+
+        if type(source) == "table" then
+            if source.flicker_max ~= nil then config.flicker_max = source.flicker_max end
+            if source.consumable ~= nil then config.consumable = source.consumable end
+            if source.requires_hands ~= nil then config.requires_hands = source.requires_hands end
+            if source.provides_belt_light ~= nil then config.provides_belt_light = source.provides_belt_light end
+            if source.fragile_on_belt ~= nil then config.fragile_on_belt = source.fragile_on_belt end
+        end
+
+        return config
+    end
 
     --- Check if an item is a light source
     -- @param item table: Inventory item
@@ -128,7 +180,7 @@ function M.createLightSystem(config)
 
         -- Check for light_source property on custom items
         if item.properties and item.properties.light_source then
-            return true, item.properties.light_source
+            return true, self:buildLightConfigFromProperties(item)
         end
 
         return false, nil
@@ -148,14 +200,14 @@ function M.createLightSystem(config)
         end
 
         -- Check if explicitly lit (defaults to true if not set, for backward compat)
-        -- Items with isLit = false are "unlit" and don't provide light
-        if item.properties and item.properties.isLit == false then
+        if self:getItemLitState(item) == false then
             return false
         end
 
         -- Check flicker count
         local flickerCount = item.properties and item.properties.flicker_count
-        if flickerCount and flickerCount <= 0 then
+        local infiniteSource = lightConfig and (lightConfig.flicker_max or 0) <= 0
+        if not infiniteSource and flickerCount and flickerCount <= 0 then
             return false
         end
 
@@ -179,7 +231,7 @@ function M.createLightSystem(config)
             item.properties = {}
         end
 
-        item.properties.isLit = true
+        self:setItemLitState(item, true)
         item.properties.extinguished = false
 
         -- Initialize flicker count if not set
@@ -204,10 +256,27 @@ function M.createLightSystem(config)
             item.properties = {}
         end
 
-        item.properties.isLit = false
+        self:setItemLitState(item, false)
 
         self:recalculateLightLevels()
         return true
+    end
+
+    --- Handle explicit light source toggle events from UI layers.
+    -- @param data table: { item, lit }
+    function system:handleLightSourceToggled(data)
+        local item = data and data.item
+        if not item then
+            return
+        end
+
+        if data.lit == true then
+            self:lightItem(item)
+        elseif data.lit == false then
+            self:extinguishItem(item)
+        else
+            self:recalculateLightLevels()
+        end
     end
 
     --- Check if an entity has a light source in their hands
@@ -322,8 +391,14 @@ function M.createLightSystem(config)
     -- @param data table: { card, category, value }
     function system:handleTorchesGutter(data)
         local sources = self:findActiveLightSources()
+        local degradableSources = {}
+        for _, source in ipairs(sources) do
+            if source.lightConfig and (source.lightConfig.flicker_max or 0) > 0 then
+                degradableSources[#degradableSources + 1] = source
+            end
+        end
 
-        if #sources == 0 then
+        if #degradableSources == 0 then
             -- No light sources to degrade - darkness intensifies
             self:recalculateLightLevels()
             return
@@ -331,7 +406,7 @@ function M.createLightSystem(config)
 
         -- Find the primary light holder (first adventurer holding light in hands)
         local primarySource = nil
-        for _, source in ipairs(sources) do
+        for _, source in ipairs(degradableSources) do
             if source.location == "hands" then
                 primarySource = source
                 break
@@ -340,7 +415,7 @@ function M.createLightSystem(config)
 
         -- Fall back to first available source
         if not primarySource then
-            primarySource = sources[1]
+            primarySource = degradableSources[1]
         end
 
         -- Decrement flicker count
@@ -359,7 +434,7 @@ function M.createLightSystem(config)
         item.properties.flicker_count = item.properties.flicker_count - 1
 
         -- Emit event for UI updates
-        self.eventBus:emit("light_flickered", {
+        self.eventBus:emit(events.EVENTS.LIGHT_FLICKERED, {
             entity       = primarySource.entity,
             item         = item,
             remaining    = item.properties.flicker_count,
@@ -380,13 +455,17 @@ function M.createLightSystem(config)
     function system:extinguishLight(source)
         local item = source.item
         local lightConfig = source.lightConfig
+        if not item.properties then
+            item.properties = {}
+        end
+        self:setItemLitState(item, false)
 
         if lightConfig.consumable then
             -- Consumable lights are destroyed (torches, candles)
             item.destroyed = true
             item.properties.extinguished = true
 
-            self.eventBus:emit("light_destroyed", {
+            self.eventBus:emit(events.EVENTS.LIGHT_DESTROYED, {
                 entity = source.entity,
                 item   = item,
             })
@@ -394,7 +473,7 @@ function M.createLightSystem(config)
             -- Non-consumable lights need refueling (lanterns)
             item.properties.extinguished = true
 
-            self.eventBus:emit("light_extinguished", {
+            self.eventBus:emit(events.EVENTS.LIGHT_EXTINGUISHED, {
                 entity = source.entity,
                 item   = item,
                 needsFuel = true,
@@ -444,6 +523,7 @@ function M.createLightSystem(config)
         end
         item.properties.broken = true
         item.properties.extinguished = true
+        self:setItemLitState(item, false)
 
         -- Emit lantern broken event
         self.eventBus:emit(events.EVENTS.LANTERN_BROKEN, {
@@ -492,11 +572,6 @@ function M.createLightSystem(config)
 
     --- Recalculate light levels for all entities
     function system:recalculateLightLevels()
-        local previousLevels = {}
-        for id, level in pairs(self.entityLightLevels) do
-            previousLevels[id] = level
-        end
-
         -- Calculate new levels for each entity
         for _, entity in ipairs(self.guild) do
             local entityId = entity.id or tostring(entity)
@@ -523,7 +598,7 @@ function M.createLightSystem(config)
         if previousPartyLevel ~= self.currentLightLevel then
             local sources = self:findActiveLightSources()
 
-            self.eventBus:emit("light_level_changed", {
+            self.eventBus:emit(events.EVENTS.PARTY_LIGHT_CHANGED, {
                 previous = previousPartyLevel,
                 current  = self.currentLightLevel,
                 sources  = #sources,
@@ -591,7 +666,7 @@ function M.createLightSystem(config)
         end
 
         if darkCount > 0 then
-            self.eventBus:emit("darkness_fell", {
+            self.eventBus:emit(events.EVENTS.DARKNESS_FELL, {
                 affectedCount = darkCount,
             })
         end
@@ -615,7 +690,7 @@ function M.createLightSystem(config)
         end
 
         if restoredCount > 0 then
-            self.eventBus:emit("darkness_lifted", {
+            self.eventBus:emit(events.EVENTS.DARKNESS_LIFTED, {
                 affectedCount = restoredCount,
             })
         end
@@ -644,6 +719,7 @@ function M.createLightSystem(config)
 
         item.properties.flicker_count = lightConfig.flicker_max
         item.properties.extinguished = false
+        self:setItemLitState(item, true)
 
         self:recalculateLightLevels()
         return true
@@ -675,6 +751,7 @@ function M.createLightSystem(config)
         end
         lantern.properties.flicker_count = M.LIGHT_SOURCES["Lantern"].flicker_max
         lantern.properties.extinguished = false
+        self:setItemLitState(lantern, true)
 
         self:recalculateLightLevels()
         return true

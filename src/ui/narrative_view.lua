@@ -144,6 +144,10 @@ function M.createNarrativeView(config)
 
         -- Hover state
         hoveredPOI = nil,
+
+        -- Layout visibility (for stage fades)
+        alpha = 1,
+        isVisible = true,
     }
 
     ----------------------------------------------------------------------------
@@ -346,12 +350,16 @@ function M.createNarrativeView(config)
     --- Draw the narrative view
     -- Call this from love.draw()
     function view:draw()
-        if not love then
+        if not love or not self.isVisible or (self.alpha or 0) <= 0 then
             return  -- Can't draw without LÖVE
+        end
+        local alpha = self.alpha or 1
+        local function setColor(color)
+            love.graphics.setColor(color[1], color[2], color[3], (color[4] or 1) * alpha)
         end
 
         -- Draw background
-        love.graphics.setColor(self.colors.background)
+        setColor(self.colors.background)
         love.graphics.rectangle("fill", self.x, self.y, self.width, self.height)
 
         -- Set font
@@ -376,12 +384,12 @@ function M.createNarrativeView(config)
             -- Set color based on token type
             if token.type == M.TOKEN_TYPES.POI then
                 if self.hoveredPOI == token.poiId then
-                    love.graphics.setColor(self.colors.poi_hover)
+                    setColor(self.colors.poi_hover)
                 else
-                    love.graphics.setColor(self.colors.poi)
+                    setColor(self.colors.poi)
                 end
             else
-                love.graphics.setColor(self.colors.text)
+                setColor(self.colors.text)
             end
 
             -- Draw text with proper newline and word wrapping
@@ -458,6 +466,20 @@ function M.createNarrativeView(config)
     --- Check if typewriter effect is complete
     function view:isTypewriterComplete()
         return self.typewriterPos >= #self.rawText
+    end
+
+    --- Set visibility and manage POI hitboxes
+    function view:setVisible(visible)
+        if self.isVisible == visible then return end
+        self.isVisible = visible
+
+        if not visible and self.inputManager then
+            for poiId, _ in pairs(self.poiHitboxes) do
+                self.inputManager:unregisterHitbox(poiId)
+            end
+        elseif visible then
+            self:calculateHitboxes()
+        end
     end
 
     --- Skip to end of typewriter effect

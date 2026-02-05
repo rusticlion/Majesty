@@ -27,10 +27,12 @@ M.EVENTS = {
     -- Combat/Challenge
     CHALLENGE_START       = "challenge_start",
     CHALLENGE_END         = "challenge_end",
+    CHALLENGE_ROUND_END   = "challenge_round_end",
     CHALLENGE_TURN_START  = "challenge_turn_start",
     CHALLENGE_TURN_END    = "challenge_turn_end",
     CHALLENGE_ACTION      = "challenge_action",
     CHALLENGE_RESOLUTION  = "challenge_resolution",
+    INITIATIVE_REVEALED   = "initiative_revealed",
     MINOR_ACTION_WINDOW   = "minor_action_window",
     MINOR_ACTION_USED     = "minor_action_used",
     UI_SEQUENCE_COMPLETE  = "ui_sequence_complete",
@@ -77,6 +79,13 @@ M.EVENTS = {
     -- Light System
     LANTERN_BROKEN        = "lantern_broken",
     ENTITY_LIGHT_CHANGED  = "entity_light_changed",
+    PARTY_LIGHT_CHANGED   = "light_level_changed",
+    LIGHT_FLICKERED       = "light_flickered",
+    LIGHT_DESTROYED       = "light_destroyed",
+    LIGHT_EXTINGUISHED    = "light_extinguished",
+    DARKNESS_FELL         = "darkness_fell",
+    DARKNESS_LIFTED       = "darkness_lifted",
+    LIGHT_SOURCE_TOGGLED  = "light_source_toggled",
 
     -- Inventory
     INVENTORY_CHANGED     = "inventory_changed",
@@ -89,7 +98,10 @@ M.EVENTS = {
     DRAG_CANCELLED   = "drag_cancelled",
     DROP_ON_TARGET   = "drop_on_target",
     POI_CLICKED      = "poi_clicked",
+    POI_ACTION_SELECTED = "poi_action_selected",
     BUTTON_CLICKED   = "button_clicked",
+    ARENA_ENTITY_CLICKED = "arena_entity_clicked",
+    ARENA_ZONE_CLICKED   = "arena_zone_clicked",
 
     -- Focus Menu (T2_13)
     SCRUTINY_SELECTED = "scrutiny_selected",
@@ -100,6 +112,9 @@ M.EVENTS = {
     REQUEST_TEST_OF_FATE  = "request_test_of_fate",
     TEST_OF_FATE_COMPLETE = "test_of_fate_complete",
     TEST_FATE_PUSHED      = "test_fate_pushed",
+
+    -- Bound by Fate (Crawl UI)
+    BOUND_BY_FATE_BLOCKED = "bound_by_fate_blocked",
 }
 
 --------------------------------------------------------------------------------

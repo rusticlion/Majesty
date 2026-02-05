@@ -424,11 +424,6 @@ function M.createNPCAI(config)
             defense = defense + 2
         end
 
-        -- Defensive stance
-        if pc.conditions and pc.conditions.defending then
-            defense = defense + 2
-        end
-
         -- Wounded penalty
         if pc.conditions then
             if pc.conditions.staggered then
