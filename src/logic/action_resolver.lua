@@ -2109,6 +2109,70 @@ function M.createActionResolver(config)
         return enemies
     end
 
+    --- Resolve movement adjacency using zone registry when available,
+    -- otherwise fall back to challenge zone data.
+    function resolver:canMoveBetweenZones(action, fromZoneId, toZoneId)
+        if not toZoneId then
+            return true, nil
+        end
+        if not fromZoneId or fromZoneId == toZoneId then
+            return true, nil
+        end
+
+        if self.zoneSystem and self.zoneSystem.getZone and self.zoneSystem.areZonesAdjacent then
+            local fromZone = self.zoneSystem:getZone(fromZoneId)
+            local toZone = self.zoneSystem:getZone(toZoneId)
+            if fromZone and toZone then
+                if self.zoneSystem:areZonesAdjacent(fromZoneId, toZoneId) then
+                    return true, nil
+                end
+                return false, "zones_not_adjacent"
+            end
+            if toZone == nil then
+                return false, "zone_not_found"
+            end
+        end
+
+        local zones = action and action.challengeController and action.challengeController.zones
+        if not zones or #zones == 0 then
+            return true, nil
+        end
+
+        local byId = {}
+        for _, zone in ipairs(zones) do
+            byId[zone.id] = zone
+        end
+
+        local fromZone = byId[fromZoneId]
+        local toZone = byId[toZoneId]
+        if not toZone then
+            return false, "zone_not_found"
+        end
+        if not fromZone then
+            return true, nil
+        end
+
+        if fromZone.adjacent_to then
+            for _, adjId in ipairs(fromZone.adjacent_to) do
+                if adjId == toZoneId then
+                    return true, nil
+                end
+            end
+            return false, "zones_not_adjacent"
+        end
+
+        if toZone.adjacent_to then
+            for _, adjId in ipairs(toZone.adjacent_to) do
+                if adjId == fromZoneId then
+                    return true, nil
+                end
+            end
+            return false, "zones_not_adjacent"
+        end
+
+        return true, nil
+    end
+
     ----------------------------------------------------------------------------
     -- S6.3: PARTING BLOWS
     ----------------------------------------------------------------------------
@@ -2199,6 +2263,21 @@ function M.createActionResolver(config)
             return
         end
 
+        if destZone then
+            local canMove, moveError = self:canMoveBetweenZones(action, oldZone, destZone)
+            if not canMove then
+                result.success = false
+                if moveError == "zone_not_found" then
+                    result.description = "Move failed: destination zone is invalid."
+                    result.effects[#result.effects + 1] = "zone_not_found"
+                else
+                    result.description = "Move failed: destination zone is not adjacent."
+                    result.effects[#result.effects + 1] = "non_adjacent_move_blocked"
+                end
+                return
+            end
+        end
+
         -- Check for parting blows if engaged
         if actor.is_engaged then
             local partingResult = self:checkPartingBlows(actor, allEntities)
@@ -2222,6 +2301,19 @@ function M.createActionResolver(config)
         -- Movement succeeds
         result.success = true
         if destZone then
+            if self.zoneSystem and actor and actor.id then
+                local placed, err = self.zoneSystem:placeEntity(actor.id, destZone)
+                if not placed then
+                    result.success = false
+                    result.description = "Move failed: destination zone could not be entered."
+                    result.effects[#result.effects + 1] = "zone_sync_failed"
+                    if err then
+                        result.effects[#result.effects + 1] = "zone_sync_error_" .. tostring(err)
+                    end
+                    return
+                end
+            end
+
             actor.zone = destZone
             result.description = "Moved to " .. destZone
 
@@ -2269,6 +2361,7 @@ function M.createActionResolver(config)
     function resolver:resolveAvoid(action, result)
         local actor = action.actor
         local card = action.card
+        local destinationZone = action.destinationZone
 
         -- S7.2: Check for rooted condition
         if actor.conditions and actor.conditions.rooted then
@@ -2276,6 +2369,21 @@ function M.createActionResolver(config)
             result.description = "Rooted! Cannot avoid."
             result.effects[#result.effects + 1] = "rooted_blocked"
             return
+        end
+
+        if destinationZone then
+            local canMove, moveError = self:canMoveBetweenZones(action, actor.zone, destinationZone)
+            if not canMove then
+                result.success = false
+                if moveError == "zone_not_found" then
+                    result.description = "Avoid failed: destination zone is invalid."
+                    result.effects[#result.effects + 1] = "zone_not_found"
+                else
+                    result.description = "Avoid failed: destination zone is not adjacent."
+                    result.effects[#result.effects + 1] = "non_adjacent_move_blocked"
+                end
+                return
+            end
         end
 
         local avoidValue = result.testValue or ((card.value or 0) + (actor.pentacles or 0))
@@ -2308,15 +2416,27 @@ function M.createActionResolver(config)
         -- Clear engagements and move regardless of success
         self:clearAllEngagements(actor)
 
-        if action.destinationZone then
+        if destinationZone then
             local oldZone = actor.zone
-            actor.zone = action.destinationZone
-            result.description = result.description .. " Moved to " .. action.destinationZone
+            if self.zoneSystem and actor and actor.id then
+                local placed, err = self.zoneSystem:placeEntity(actor.id, destinationZone)
+                if not placed then
+                    result.success = false
+                    result.description = "Avoid failed: destination zone could not be entered."
+                    result.effects[#result.effects + 1] = "zone_sync_failed"
+                    if err then
+                        result.effects[#result.effects + 1] = "zone_sync_error_" .. tostring(err)
+                    end
+                    return
+                end
+            end
+            actor.zone = destinationZone
+            result.description = result.description .. " Moved to " .. destinationZone
 
             self.eventBus:emit("entity_zone_changed", {
                 entity = actor,
                 oldZone = oldZone,
-                newZone = action.destinationZone,
+                newZone = destinationZone,
             })
         end
     end

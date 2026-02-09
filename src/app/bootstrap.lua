@@ -152,6 +152,7 @@ function M.initialize(config)
         challengeController = gameState.challengeController,
         actionResolver      = gameState.actionResolver,
         gmDeck              = gameState.gmDeck,
+        zoneSystem          = gameState.zoneRegistry,
     })
     gameState.npcAI:init()
 

@@ -155,6 +155,42 @@ function M.createChallengeController(config)
         -- Build combatant list
         self:buildCombatantList()
 
+        -- Keep zone registry in sync so adjacency checks are authoritative.
+        if self.zoneSystem then
+            local zones = self.zones
+            if not zones or #zones == 0 then
+                zones = {}
+                if self.zoneId then
+                    zones[1] = { id = self.zoneId, name = self.zoneId }
+                else
+                    zones[1] = { id = "main", name = "Main" }
+                end
+                self.zones = zones
+            end
+
+            self.zoneSystem:setRoomZones(zones)
+            self.zoneSystem:clearAllEngagements()
+
+            local fallbackZoneId = (zones[1] and zones[1].id) or self.zoneId
+            for _, entity in ipairs(self.allCombatants) do
+                local zoneId = entity.zone or fallbackZoneId
+                if zoneId then
+                    local placed, err = self.zoneSystem:placeEntity(entity.id, zoneId)
+                    if not placed and fallbackZoneId then
+                        placed, err = self.zoneSystem:placeEntity(entity.id, fallbackZoneId)
+                        if placed then
+                            zoneId = fallbackZoneId
+                        end
+                    end
+                    if placed then
+                        entity.zone = zoneId
+                    else
+                        print("[Challenge] Warning: could not place " .. tostring(entity.id) .. " in zone (" .. tostring(err) .. ")")
+                    end
+                end
+            end
+        end
+
         -- Initialize state
         self.state = M.STATES.STARTING
         self.currentRound = 0

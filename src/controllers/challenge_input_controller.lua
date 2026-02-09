@@ -159,6 +159,35 @@ function M.createChallengeInputController(config)
         return targets
     end
 
+    local function getAvailableDestinationZones(actor)
+        local challengeController = gameState.challengeController
+        local zones = (challengeController and challengeController.zones) or {}
+        local currentZone = actor and actor.zone
+        local zoneSystem = gameState.zoneRegistry or (challengeController and challengeController.zoneSystem)
+
+        local availableZones = {}
+        for _, zone in ipairs(zones) do
+            if zone.id ~= currentZone then
+                local isAdjacent = true
+                if zoneSystem and currentZone and zoneSystem.getZone and zoneSystem.areZonesAdjacent then
+                    local fromZone = zoneSystem:getZone(currentZone)
+                    local toZone = zoneSystem:getZone(zone.id)
+                    if fromZone and toZone then
+                        isAdjacent = zoneSystem:areZonesAdjacent(currentZone, zone.id)
+                    elseif toZone == nil then
+                        isAdjacent = false
+                    end
+                end
+
+                if isAdjacent then
+                    availableZones[#availableZones + 1] = zone
+                end
+            end
+        end
+
+        return availableZones
+    end
+
     local function getVigilanceFollowUpTargetPolicy(followUpAction)
         if not followUpAction then
             return "none"
@@ -310,30 +339,30 @@ function M.createChallengeInputController(config)
             return
         end
 
-        if data.action.id == "move" or data.action.id == "dash" then
-            local challengeController = gameState.challengeController
-            local zones = challengeController.zones or {}
-            local currentZone = inputState.selectedEntity and inputState.selectedEntity.zone
-
-            local availableZones = {}
-            for _, zone in ipairs(zones) do
-                if zone.id ~= currentZone then
-                    availableZones[#availableZones + 1] = zone
-                end
-            end
+        if data.action.id == "move" or data.action.id == "dash" or data.action.id == "avoid" then
+            local availableZones = getAvailableDestinationZones(inputState.selectedEntity)
 
             if #availableZones > 0 then
                 inputState.awaitingZone = true
                 inputState.availableZones = availableZones
 
-                print("[COMBAT] Select destination zone (1-" .. #availableZones .. "):")
+                if data.action.id == "avoid" then
+                    print("[COMBAT] Select adjacent destination zone (1-" .. #availableZones .. "), or press Space to avoid in place:")
+                else
+                    print("[COMBAT] Select adjacent destination zone (1-" .. #availableZones .. "):")
+                end
                 for i, zone in ipairs(availableZones) do
                     print("  " .. i .. ": " .. zone.name)
                 end
             else
-                print("[COMBAT] No other zones to move to!")
-                resetCombatInputState()
-                eventBus:emit("card_deselected", {})
+                if data.action.id == "avoid" then
+                    print("[COMBAT] No adjacent zones available. Resolving Avoid in place.")
+                    executeSelectedAction(nil)
+                else
+                    print("[COMBAT] No adjacent zones available!")
+                    resetCombatInputState()
+                    eventBus:emit("card_deselected", {})
+                end
             end
             return
         end
@@ -578,6 +607,11 @@ function M.createChallengeInputController(config)
 
         if not zones or #zones == 0 then
             inputState.awaitingZone = false
+            return
+        end
+
+        if key == "space" and inputState.selectedAction and inputState.selectedAction.id == "avoid" then
+            executeSelectedAction(nil)
             return
         end
 

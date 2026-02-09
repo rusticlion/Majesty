@@ -45,14 +45,15 @@ local function createCard(name, suit, value, is_major)
         is_major = is_major or false,
     }
 
-    -- S12.6: Add Greater/Lesser Doom classification for Major Arcana
+    -- S12.6: Add Lesser/Greater Doom classification for Major Arcana
+    -- Rulebook parity: I-XIV = lesser doom, XV-XXI = greater doom
     if is_major and value then
         if value >= 1 and value <= 14 then
-            card.isGreaterDoom = true
-            card.isLesserDoom = false
-        elseif value >= 15 and value <= 21 then
             card.isGreaterDoom = false
             card.isLesserDoom = true
+        elseif value >= 15 and value <= 21 then
+            card.isGreaterDoom = true
+            card.isLesserDoom = false
         end
     end
 

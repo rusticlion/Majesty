@@ -3,15 +3,15 @@
 -- Ticket S4.5: Basic NPC decision-making for challenges
 --
 -- AI Decision Logic:
--- 1. Elite/Lord NPCs with Greater Doom (15-21) use it immediately
+-- 1. Elite/Lord NPCs with Greater Doom (15-21) try to use it immediately
 -- 2. Otherwise, attack the PC with lowest current defense
 -- 3. Mob Rule: NPCs in same zone get Favor/Piercing bonuses
 --
 -- This is intentionally simple - NPCs should feel dangerous but fair.
 
 local events = require('logic.events')
-local constants = require('constants')
 local action_resolver = require('logic.action_resolver')
+local deck = require('logic.deck')
 
 local M = {}
 
@@ -27,13 +27,17 @@ M.RANKS = {
 
 --------------------------------------------------------------------------------
 -- S12.6: DOOM CARD CLASSIFICATION
--- Greater Doom: Major Arcana 1-14 (Magician through Temperance) - Standard NPC cards
--- Lesser Doom:  Major Arcana 15-21 (Devil through World) - Powerful special cards
+-- Lesser Doom:  Major Arcana 1-14 (Magician through Temperance) - standard actions
+-- Greater Doom: Major Arcana 15-21 (Devil through World) - potent special effects
 --
--- Elite/Lord NPCs can use Lesser Dooms for devastating attacks
+-- Rulebook parity: ordinary challenge actions use lesser dooms.
 --------------------------------------------------------------------------------
-local GREATER_DOOM_MAX = 14  -- Cards 1-14 are Greater Doom (common)
-local LESSER_DOOM_MIN = 15   -- Cards 15-21 are Lesser Doom (powerful)
+local LARGE_SIZE_VALUES = {
+    large = true,
+    huge = true,
+    giant = true,
+    colossal = true,
+}
 
 --------------------------------------------------------------------------------
 -- NPC AI FACTORY
@@ -54,7 +58,8 @@ function M.createNPCAI(config)
 
         -- GM's hand (cards available for NPC actions)
         hand = {},
-        handSize = 3,  -- NPCs typically have access to 3 cards
+        baseHandSize = 3,
+        lastPreparedRound = nil,
     }
 
     ----------------------------------------------------------------------------
@@ -72,14 +77,21 @@ function M.createNPCAI(config)
             self:handleNPCInitiative(data)
         end)
 
-        -- Listen for challenge start to draw initial hand
+        -- Start with an empty hand; round setup draws with parity formula.
         self.eventBus:on(events.EVENTS.CHALLENGE_START, function(data)
-            self:drawHand()
+            self.hand = {}
+            self.lastPreparedRound = nil
+        end)
+
+        -- Draw a fresh hand at the start of each round.
+        self.eventBus:on("initiative_phase_start", function(data)
+            self:refreshRoundHand(data and data.round)
         end)
 
         -- Listen for challenge end to discard hand
         self.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
             self:discardHand()
+            self.lastPreparedRound = nil
         end)
     end
 
@@ -93,9 +105,14 @@ function M.createNPCAI(config)
         local npc = data.npc
         if not npc then return end
 
-        -- Ensure we have cards
+        -- Ensure we have cards.
+        -- If the round hand was exhausted, draw a single emergency card
+        -- so initiative submission cannot deadlock the challenge loop.
         if #self.hand == 0 then
-            self:drawHand()
+            local emergencyCard = self:drawEmergencyCard("initiative")
+            if emergencyCard then
+                self.hand[#self.hand + 1] = emergencyCard
+            end
         end
 
         if #self.hand == 0 then
@@ -126,10 +143,18 @@ function M.createNPCAI(config)
         local rank = npc.rank or M.RANKS.SOLDIER
         local behavior = npc.behavior or "aggressive"
 
-        -- Sort hand by value for easier selection
+        -- Initiative normally uses lesser dooms (1-14).
+        -- If none exist, fall back to any card to avoid dead turns.
         local sorted = {}
         for i, card in ipairs(self.hand) do
-            sorted[#sorted + 1] = { index = i, value = card.value or 0 }
+            if self:isLesserDoom(card) then
+                sorted[#sorted + 1] = { index = i, value = card.value or 0 }
+            end
+        end
+        if #sorted == 0 then
+            for i, card in ipairs(self.hand) do
+                sorted[#sorted + 1] = { index = i, value = card.value or 0 }
+            end
         end
         table.sort(sorted, function(a, b)
             return a.value < b.value
@@ -154,17 +179,176 @@ function M.createNPCAI(config)
     -- HAND MANAGEMENT
     ----------------------------------------------------------------------------
 
-    --- Draw cards into GM hand
-    function ai:drawHand()
+    function ai:isDefeated(entity)
+        if not entity then
+            return true
+        end
+        return entity.conditions and entity.conditions.dead
+    end
+
+    function ai:isLesserDoom(card)
+        return deck.isLesserDoom(card)
+    end
+
+    function ai:isGreaterDoom(card)
+        return deck.isGreaterDoom(card)
+    end
+
+    function ai:isLargerThanHuman(npc)
+        if not npc then
+            return false
+        end
+        if npc.isLargerThanHuman ~= nil then
+            return npc.isLargerThanHuman
+        end
+
+        local size = npc.size
+        if type(size) == "number" then
+            return size > 1
+        end
+        if type(size) == "string" then
+            return LARGE_SIZE_VALUES[size:lower()] == true
+        end
+        return false
+    end
+
+    function ai:hasAnyLesserDoom()
+        for _, card in ipairs(self.hand) do
+            if self:isLesserDoom(card) then
+                return true
+            end
+        end
+        return false
+    end
+
+    function ai:calculateRoundDrawCount()
+        local drawCount = self.baseHandSize
+        local controller = self.challengeController
+        if not controller then
+            return drawCount
+        end
+
+        local livingNPCs = {}
+        local livingPCs = {}
+
+        for _, npc in ipairs(controller.npcs or {}) do
+            if not self:isDefeated(npc) then
+                livingNPCs[#livingNPCs + 1] = npc
+            end
+        end
+
+        for _, pc in ipairs(controller.pcs or {}) do
+            if not self:isDefeated(pc) then
+                livingPCs[#livingPCs + 1] = pc
+            end
+        end
+
+        if #livingNPCs == 0 then
+            return drawCount
+        end
+
+        local enemyTypes = {}
+        local hasElite = false
+        local hasLord = false
+        local largerCount = 0
+
+        for _, npc in ipairs(livingNPCs) do
+            local typeKey = npc.blueprintId or npc.enemyType or npc.species or npc.name or npc.id
+            enemyTypes[typeKey] = true
+
+            local rank = (npc.rank or ""):lower()
+            if rank == M.RANKS.ELITE then
+                hasElite = true
+            end
+            if rank == M.RANKS.LORD or rank == "dungeon_lord" then
+                hasLord = true
+            end
+            if self:isLargerThanHuman(npc) then
+                largerCount = largerCount + 1
+            end
+        end
+
+        local enemyTypeCount = 0
+        for _, _ in pairs(enemyTypes) do
+            enemyTypeCount = enemyTypeCount + 1
+        end
+
+        drawCount = drawCount + enemyTypeCount
+
+        local pcCount = #livingPCs
+        local npcCount = #livingNPCs
+        if pcCount > 0 and npcCount > pcCount then
+            drawCount = drawCount + 1
+        end
+        if pcCount > 0 and npcCount >= (pcCount * 2) then
+            drawCount = drawCount + 1
+        end
+
+        drawCount = drawCount + largerCount
+        if hasElite then
+            drawCount = drawCount + 2
+        end
+        if hasLord then
+            drawCount = drawCount + 3
+        end
+
+        -- Challenge controller currently asks each NPC to submit initiative
+        -- individually. Keep a minimum so every living NPC can contribute one card.
+        drawCount = math.max(drawCount, #livingNPCs)
+
+        return math.max(1, drawCount)
+    end
+
+    --- Draw cards into GM hand (fresh hand each round)
+    function ai:drawHand(drawCount)
         self.hand = {}
         if not self.gmDeck then return end
 
-        for _ = 1, self.handSize do
+        local toDraw = drawCount or self.baseHandSize
+        for _ = 1, toDraw do
             local card = self.gmDeck:draw()
             if card then
                 self.hand[#self.hand + 1] = card
             end
         end
+    end
+
+    --- Draw a fresh hand using GM round formula (with one mulligan when unusable).
+    function ai:refreshRoundHand(round)
+        if round and self.lastPreparedRound == round then
+            return
+        end
+
+        if not self.gmDeck then
+            self.hand = {}
+            return
+        end
+
+        self:discardHand()
+        local drawCount = self:calculateRoundDrawCount()
+        self:drawHand(drawCount)
+
+        if #self.hand > 0 and not self:hasAnyLesserDoom() then
+            print("[NPC AI] Mulliganing hand (no lesser dooms).")
+            self:discardHand()
+            self:drawHand(drawCount)
+        end
+
+        self.lastPreparedRound = round or self.lastPreparedRound
+        print("[NPC AI] Drew " .. #self.hand .. " GM cards for round.")
+    end
+
+    --- Draw one fallback card to prevent initiative deadlocks if the hand is empty.
+    function ai:drawEmergencyCard(context)
+        if not self.gmDeck then
+            return nil
+        end
+
+        local card = self.gmDeck:draw()
+        if card then
+            print("[NPC AI] Emergency draw for " .. tostring(context) .. ": " .. (card.name or "?"))
+        end
+        return card
     end
 
     --- Discard all cards in hand
@@ -177,16 +361,6 @@ function M.createNPCAI(config)
         self.hand = {}
     end
 
-    --- Draw a single card (after using one)
-    function ai:drawCard()
-        if not self.gmDeck then return nil end
-        local card = self.gmDeck:draw()
-        if card then
-            self.hand[#self.hand + 1] = card
-        end
-        return card
-    end
-
     --- Use a card from hand (remove and return it)
     function ai:useCard(index)
         if index and index <= #self.hand then
@@ -194,8 +368,6 @@ function M.createNPCAI(config)
             if self.gmDeck then
                 self.gmDeck:discard(card)
             end
-            -- Draw replacement
-            self:drawCard()
             return card
         end
         return nil
@@ -239,7 +411,10 @@ function M.createNPCAI(config)
     -- @return table: Action to take, or nil
     function ai:decide(npc, pcs)
         if #self.hand == 0 then
-            self:drawHand()
+            local emergencyCard = self:drawEmergencyCard("action")
+            if emergencyCard then
+                self.hand[#self.hand + 1] = emergencyCard
+            end
         end
 
         if #self.hand == 0 then
@@ -248,17 +423,15 @@ function M.createNPCAI(config)
 
         local rank = npc.rank or M.RANKS.SOLDIER
 
-        -- Step 1: Check for Lesser Doom usage (Elite/Lord only)
-        -- S12.6: Lesser Doom (15-21) are the powerful devastating cards
+        -- Step 1: Elite/Lord attempt a greater doom play first.
         if rank == M.RANKS.ELITE or rank == M.RANKS.LORD then
-            local lesserDoomIndex = self:findLesserDoom()
-            if lesserDoomIndex then
+            local greaterDoomIndex = self:findGreaterDoom()
+            if greaterDoomIndex then
                 local target = self:selectTarget(npc, pcs, true)  -- melee only
                 if target then
-                    local card = self:useCard(lesserDoomIndex)
-                    -- Mark this as a Lesser Doom attack for special effects
+                    local card = self:useCard(greaterDoomIndex)
                     local action = self:createAttackAction(npc, target, card)
-                    action.isLesserDoom = true
+                    action.isGreaterDoom = true
                     return action
                 end
             end
@@ -267,8 +440,8 @@ function M.createNPCAI(config)
         -- Step 2: Try melee attack (same zone only)
         local meleeTarget = self:selectTarget(npc, pcs, true)  -- melee only
         if meleeTarget then
-            -- Select best card for attack (highest value)
-            local cardIndex = self:selectBestCard()
+            -- Select best challenge-action card (prefer lesser doom).
+            local cardIndex = self:selectBestActionCard()
             local card = self:useCard(cardIndex)
 
             if card then
@@ -280,13 +453,18 @@ function M.createNPCAI(config)
         -- Step 3: No melee target - try to move toward a target
         local anyTarget = self:selectTarget(npc, pcs, false)  -- any target
         if anyTarget and anyTarget.zone ~= npc.zone then
-            -- Move toward the target's zone
-            local cardIndex = self:selectBestCard()
+            local destinationZone = self:selectMoveDestination(npc, anyTarget.zone)
+            if not destinationZone then
+                print("[NPC AI] " .. (npc.name or "NPC") .. " has no adjacent movement options")
+                return nil
+            end
+
+            local cardIndex = self:selectBestActionCard()
             local card = self:useCard(cardIndex)
 
             if card then
-                print("[NPC AI] " .. (npc.name or "NPC") .. " moves from " .. (npc.zone or "?") .. " to " .. (anyTarget.zone or "?"))
-                return self:createMoveAction(npc, anyTarget.zone, card)
+                print("[NPC AI] " .. (npc.name or "NPC") .. " moves from " .. (npc.zone or "?") .. " to " .. destinationZone)
+                return self:createMoveAction(npc, destinationZone, card)
             end
         end
 
@@ -299,45 +477,53 @@ function M.createNPCAI(config)
     -- CARD SELECTION
     ----------------------------------------------------------------------------
 
-    --- S12.6: Find a Greater Doom (1-14) in hand
-    -- Greater Dooms are the standard Major Arcana cards for NPC actions
+    --- S12.6: Find a Greater Doom (15-21) in hand
+    -- Greater dooms are potent special cards.
     -- @return number|nil: Index of Greater Doom card, or nil
     function ai:findGreaterDoom()
         for i, card in ipairs(self.hand) do
-            if card.is_major and card.value >= 1 and card.value <= GREATER_DOOM_MAX then
+            if self:isGreaterDoom(card) then
                 return i
             end
         end
         return nil
     end
 
-    --- S12.6: Find a Lesser Doom (15-21) in hand
-    -- Lesser Dooms are powerful cards, only Elite/Lord NPCs use them aggressively
+    --- S12.6: Find a Lesser Doom (1-14) in hand
+    -- Lesser dooms are used for standard initiative and challenge actions.
     -- @return number|nil: Index of Lesser Doom card, or nil
     function ai:findLesserDoom()
         for i, card in ipairs(self.hand) do
-            if card.is_major and card.value >= LESSER_DOOM_MIN then
+            if self:isLesserDoom(card) then
                 return i
             end
         end
         return nil
     end
 
-    --- Select the best card for an attack
-    -- @return number: Index of best card (highest value)
-    function ai:selectBestCard()
-        local bestIndex = 1
+    --- Select the best card for normal challenge actions.
+    -- Prefers highest lesser doom; falls back to highest card if needed.
+    -- @return number|nil: Index of best card
+    function ai:selectBestActionCard()
+        local bestLesserIndex = nil
+        local bestLesserValue = -1
+        local bestAnyIndex = nil
         local bestValue = 0
 
         for i, card in ipairs(self.hand) do
             local value = card.value or 0
             if value > bestValue then
                 bestValue = value
-                bestIndex = i
+                bestAnyIndex = i
+            end
+
+            if self:isLesserDoom(card) and value > bestLesserValue then
+                bestLesserValue = value
+                bestLesserIndex = i
             end
         end
 
-        return bestIndex
+        return bestLesserIndex or bestAnyIndex
     end
 
     --- Select a card matching a specific suit
@@ -350,6 +536,76 @@ function M.createNPCAI(config)
             end
         end
         return nil
+    end
+
+    ----------------------------------------------------------------------------
+    -- MOVEMENT HELPERS
+    ----------------------------------------------------------------------------
+
+    function ai:getAdjacentZones(zoneId)
+        if self.zoneSystem and self.zoneSystem.getAdjacentZones then
+            return self.zoneSystem:getAdjacentZones(zoneId)
+        end
+
+        local zones = {}
+        local allZones = self.challengeController and self.challengeController.zones or {}
+        local byId = {}
+        for _, zone in ipairs(allZones) do
+            byId[zone.id] = zone
+        end
+        local currentZone = byId[zoneId]
+
+        local function hasAdjacency(zone, targetId)
+            if not zone or not zone.adjacent_to then
+                return nil
+            end
+            for _, adjId in ipairs(zone.adjacent_to) do
+                if adjId == targetId then
+                    return true
+                end
+            end
+            return false
+        end
+
+        for _, zone in ipairs(allZones) do
+            if zone.id ~= zoneId then
+                local adjacent = true
+                local fromAdj = hasAdjacency(currentZone, zone.id)
+                if fromAdj ~= nil then
+                    adjacent = fromAdj
+                else
+                    local toAdj = hasAdjacency(zone, zoneId)
+                    if toAdj ~= nil then
+                        adjacent = toAdj
+                    end
+                end
+
+                if adjacent then
+                    zones[#zones + 1] = zone.id
+                end
+            end
+        end
+        return zones
+    end
+
+    function ai:selectMoveDestination(npc, targetZoneId)
+        if not npc or not npc.zone or not targetZoneId or npc.zone == targetZoneId then
+            return nil
+        end
+
+        local adjacent = self:getAdjacentZones(npc.zone)
+        if #adjacent == 0 then
+            return nil
+        end
+        table.sort(adjacent)
+
+        for _, zoneId in ipairs(adjacent) do
+            if zoneId == targetZoneId then
+                return zoneId
+            end
+        end
+
+        return adjacent[1]
     end
 
     ----------------------------------------------------------------------------

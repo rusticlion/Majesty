@@ -21,21 +21,20 @@ local function deepCopyCard(card)
 end
 
 --------------------------------------------------------------------------------
--- S12.6: GREATER / LESSER DOOM HELPERS
--- Greater Doom: Major Arcana I-XIV (The Magician through Temperance)
--- Lesser Doom: Major Arcana XV-XXI (The Devil through The World)
+-- Lesser Doom: Major Arcana I-XIV (The Magician through Temperance)
+-- Greater Doom: Major Arcana XV-XXI (The Devil through The World)
 --------------------------------------------------------------------------------
 
---- Check if a card is a Greater Doom (Major Arcana 1-14)
+--- Check if a card is a Greater Doom (Major Arcana 15-21)
 function M.isGreaterDoom(card)
     if not card or not card.is_major then return false end
-    return card.value >= 1 and card.value <= 14
+    return card.value >= 15 and card.value <= 21
 end
 
---- Check if a card is a Lesser Doom (Major Arcana 15-21)
+--- Check if a card is a Lesser Doom (Major Arcana 1-14)
 function M.isLesserDoom(card)
     if not card or not card.is_major then return false end
-    return card.value >= 15 and card.value <= 21
+    return card.value >= 1 and card.value <= 14
 end
 
 --- Get the Doom classification of a card
@@ -44,11 +43,24 @@ end
 function M.getDoomType(card)
     if not card or not card.is_major then return nil end
     if card.value >= 1 and card.value <= 14 then
-        return "greater"
-    elseif card.value >= 15 and card.value <= 21 then
         return "lesser"
+    elseif card.value >= 15 and card.value <= 21 then
+        return "greater"
     end
     return nil
+end
+
+--- Check if a card is a challenge-action doom (Major Arcana 1-14)
+-- Rulebook: normal enemy challenge actions use lesser dooms.
+function M.isChallengeActionDoom(card)
+    if not card or not card.is_major then return false end
+    return card.value >= 1 and card.value <= 14
+end
+
+--- Check if a card is a greater doom trigger card (Major Arcana 15-21)
+function M.isGreaterDoomTrigger(card)
+    if not card or not card.is_major then return false end
+    return card.value >= 15 and card.value <= 21
 end
 
 local function deepCopyCards(cards)
