@@ -9,6 +9,42 @@ local base_entity = require('entities.base_entity')
 
 local M = {}
 
+local function normalizeTalentData(data)
+    if type(data) == "table" then
+        local normalized = {}
+        for key, value in pairs(data) do
+            normalized[key] = value
+        end
+        normalized.mastered = normalized.mastered or false
+        normalized.wounded = normalized.wounded or false
+        normalized.xp_invested = normalized.xp_invested or 0
+        return normalized
+    end
+
+    return {
+        mastered    = data == true,
+        wounded     = false,
+        xp_invested = 0,
+    }
+end
+
+local function normalizeTalents(talents)
+    local normalized = {}
+
+    for key, data in pairs(talents or {}) do
+        if type(key) == "number" then
+            local talentId = type(data) == "table" and (data.id or data.talentId) or data
+            if talentId then
+                normalized[talentId] = normalizeTalentData(data)
+            end
+        else
+            normalized[key] = normalizeTalentData(data)
+        end
+    end
+
+    return normalized
+end
+
 --------------------------------------------------------------------------------
 -- BOND STATUS CONSTANTS
 --------------------------------------------------------------------------------
@@ -45,6 +81,9 @@ function M.createAdventurer(config)
         current = config.resolve or 4,
         max     = config.resolveMax or 4,
     }
+
+    -- Lore bids refresh to 4 in camp; initialize to 4 for fresh expeditions.
+    adventurer.loreBids = config.loreBids or 4
 
     --- Spend resolve points
     -- @param amount number: How much to spend
@@ -178,7 +217,7 @@ function M.createAdventurer(config)
     -- NO hardcoded talent logic here - just data storage
     -- ChallengeManager will look up what talents actually do
     ----------------------------------------------------------------------------
-    adventurer.talents = config.talents or {}
+    adventurer.talents = normalizeTalents(config.talents)
 
     --- Add a talent
     -- @param talentId string: The talent's ID (e.g., "aegis", "war_stories")

@@ -11,6 +11,72 @@ local M = {}
 local constants = require('constants')
 local SUITS = constants.SUITS
 
+local function countEntries(tableValue)
+    local count = 0
+    if not tableValue then
+        return count
+    end
+
+    for _ in pairs(tableValue) do
+        count = count + 1
+    end
+
+    return count
+end
+
+local function sortedTalentIds(talents)
+    local ids = {}
+    if not talents then
+        return ids
+    end
+
+    for id in pairs(talents) do
+        ids[#ids + 1] = id
+    end
+
+    table.sort(ids, function(a, b)
+        return tostring(a) < tostring(b)
+    end)
+
+    return ids
+end
+
+local function woundNextTalent(entity)
+    for _, talentId in ipairs(sortedTalentIds(entity.talents)) do
+        local talent = entity.talents[talentId]
+        if type(talent) == "table" and not talent.wounded then
+            talent.wounded = true
+            entity._woundedTalentOrder = entity._woundedTalentOrder or {}
+            entity._woundedTalentOrder[#entity._woundedTalentOrder + 1] = talentId
+            return talentId
+        end
+    end
+
+    return nil
+end
+
+local function healLastWoundedTalent(entity)
+    local order = entity._woundedTalentOrder
+    while order and #order > 0 do
+        local talentId = table.remove(order)
+        local talent = entity.talents and entity.talents[talentId]
+        if type(talent) == "table" and talent.wounded then
+            talent.wounded = false
+            return talentId
+        end
+    end
+
+    for _, talentId in ipairs(sortedTalentIds(entity.talents)) do
+        local talent = entity.talents[talentId]
+        if type(talent) == "table" and talent.wounded then
+            talent.wounded = false
+            return talentId
+        end
+    end
+
+    return nil
+end
+
 --------------------------------------------------------------------------------
 -- CONDITION CONSTANTS
 -- Using simple booleans for easy UI queries ("Red Flashing" effects)
@@ -219,6 +285,14 @@ function M.createEntity(config)
     end
 
     ----------------------------------------------------------------------------
+    -- TALENT ACCESS
+    ----------------------------------------------------------------------------
+
+    function entity:getTalentCount()
+        return countEntries(self.talents)
+    end
+
+    ----------------------------------------------------------------------------
     -- TAKE WOUND (S7.7: Updated with damage types)
     -- Priority order: Notch Armor → Wound Talent → Staggered → Injured → Death's Door
     -- Returns: string describing what absorbed the wound, or nil if dead
@@ -268,9 +342,10 @@ function M.createEntity(config)
 
         -- Priority 2: Wound a Talent (up to max, usually 2)
         -- Must have actual talents to wound, not just empty slots
-        local talentCount = self.talents and #self.talents or 0
+        local talentCount = self:getTalentCount()
         if self.woundedTalents < self.talentWoundSlots and talentCount > 0 and self.woundedTalents < talentCount then
             self.woundedTalents = self.woundedTalents + 1
+            woundNextTalent(self)
             return "talent_wounded"
         end
 
@@ -387,6 +462,7 @@ function M.createEntity(config)
 
         if self.woundedTalents > 0 then
             self.woundedTalents = self.woundedTalents - 1
+            healLastWoundedTalent(self)
             return "talent_healed", nil
         end
 
@@ -514,7 +590,7 @@ function M.createEntity(config)
         remaining = remaining + (self.armorSlots - self.armorNotches)
 
         -- Talent wound slots (limited by actual talent count)
-        local talentCount = self.talents and #self.talents or 0
+        local talentCount = self:getTalentCount()
         local availableTalentSlots = math.min(self.talentWoundSlots, talentCount)
         remaining = remaining + (availableTalentSlots - self.woundedTalents)
 

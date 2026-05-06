@@ -15,6 +15,7 @@ local environment_manager = require('logic.environment_manager')
 local challenge_controller = require('logic.challenge_controller')
 local action_resolver = require('logic.action_resolver')
 local npc_ai = require('logic.npc_ai')
+local bid_lore_engine = require('logic.bid_lore_engine')
 local challenge_input_controller = require('controllers.challenge_input_controller')
 local key_input_router = require('controllers.key_input_router')
 local mouse_input_router = require('controllers.mouse_input_router')
@@ -32,6 +33,7 @@ local minor_action_panel = require('ui.minor_action_panel')
 local floating_text = require('ui.floating_text')
 local sound_manager = require('ui.sound_manager')
 local test_of_fate_modal = require('ui.test_of_fate_modal')
+local bid_lore_modal = require('ui.bid_lore_modal')
 local character_sheet = require('ui.screens.character_sheet')
 local loot_modal = require('ui.loot_modal')
 local crawl_screen = require('ui.screens.crawl_screen')
@@ -125,10 +127,15 @@ function M.initialize(config)
         eventBus = gameState.eventBus,
     })
 
+    gameState.bidLoreEngine = bid_lore_engine.createBidLoreEngine({
+        eventBus = gameState.eventBus,
+    })
+
     -- Create challenge systems
     gameState.actionResolver = action_resolver.createActionResolver({
         eventBus   = gameState.eventBus,
         zoneSystem = gameState.zoneRegistry,
+        bidLoreEngine = gameState.bidLoreEngine,
     })
 
     gameState.challengeController = challenge_controller.createChallengeController({
@@ -262,10 +269,20 @@ function M.initialize(config)
     })
     gameState.testOfFateModal:init()
 
+    gameState.bidLoreModal = bid_lore_modal.createBidLoreModal({
+        eventBus = gameState.eventBus,
+        engine = gameState.bidLoreEngine,
+    })
+    gameState.bidLoreModal:init()
+
     gameState.eventBus:on(events.EVENTS.CHALLENGE_ACTION, function(data)
         local result = gameState.actionResolver:resolve(data)
         if result and result.pendingTestOfFate then
             gameState.pendingTestAction = data
+            return
+        end
+        if result and result.pendingBidLore then
+            gameState.pendingLoreAction = data
             return
         end
         gameState.challengeController:resolveAction(data)
@@ -280,6 +297,18 @@ function M.initialize(config)
         gameState.pendingTestAction = nil
 
         gameState.actionResolver:resolveTestOfFateOutcome(action, data.result)
+        gameState.challengeController:resolveAction(action)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.BID_LORE_COMPLETE, function(data)
+        if not gameState.pendingLoreAction then
+            return
+        end
+
+        local action = gameState.pendingLoreAction
+        gameState.pendingLoreAction = nil
+
+        gameState.actionResolver:resolveBidLoreOutcome(action, data.result)
         gameState.challengeController:resolveAction(action)
     end)
 
@@ -383,8 +412,12 @@ function M.initialize(config)
             newPhase = "crawl",
         })
         gameState.pendingTestAction = nil
+        gameState.pendingLoreAction = nil
         if gameState.testOfFateModal then
             gameState.testOfFateModal:hide()
+        end
+        if gameState.bidLoreModal then
+            gameState.bidLoreModal:hide()
         end
         sound_manager.stopMusic()
         if data.victory then

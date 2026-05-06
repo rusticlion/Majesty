@@ -159,7 +159,7 @@ end
 --------------------------------------------------------------------------------
 
 --- Create a new ActionResolver
--- @param config table: { eventBus, zoneSystem }
+-- @param config table: { eventBus, zoneSystem, bidLoreEngine }
 -- @return ActionResolver instance
 function M.createActionResolver(config)
     config = config or {}
@@ -167,6 +167,7 @@ function M.createActionResolver(config)
     local resolver = {
         eventBus   = config.eventBus or events.globalBus,
         zoneSystem = config.zoneSystem,
+        bidLoreEngine = config.bidLoreEngine,
         challengeController = config.challengeController,
         -- S12.1: Engagements now tracked by zoneSystem (zone_system.lua)
         -- The zoneSystem is the single source of truth for engagement state
@@ -335,6 +336,43 @@ function M.createActionResolver(config)
         return result
     end
 
+    function resolver:requestBidLore(action, actionDef, result)
+        local controller = action.challengeController or self.challengeController
+        local availableSubjects = {}
+        local questionTypes = {}
+
+        if self.bidLoreEngine then
+            if self.bidLoreEngine.getAvailableSubjects then
+                availableSubjects = self.bidLoreEngine:getAvailableSubjects({
+                    actor = action.actor,
+                    action = action,
+                    challengeController = controller,
+                    roomId = controller and controller.roomId or nil,
+                })
+            end
+            if self.bidLoreEngine.getQuestionTypes then
+                questionTypes = self.bidLoreEngine:getQuestionTypes()
+            end
+        end
+
+        self.eventBus:emit(events.EVENTS.REQUEST_BID_LORE, {
+            entity = action.actor,
+            actor = action.actor,
+            action = action,
+            actionDef = actionDef,
+            challengeController = controller,
+            roomId = controller and controller.roomId or nil,
+            availableSubjects = availableSubjects,
+            questionTypes = questionTypes,
+        })
+
+        result.pendingBidLore = true
+        result.description = "Bid Lore underway."
+        action.result = result
+
+        return result
+    end
+
     function resolver:resolveTestOfFateOutcome(action, testResult)
         local result = {
             success = testResult and testResult.success or false,
@@ -351,6 +389,59 @@ function M.createActionResolver(config)
         else
             result.description = "Test of Fate failed."
         end
+
+        action.result = result
+        return result
+    end
+
+    function resolver:resolveBidLoreOutcome(action, bidLoreResult)
+        local actor = action and action.actor
+        local verdict = bidLoreResult and bidLoreResult.verdict or "rephrase_needed"
+        local accepted = verdict == "accepted"
+
+        local result = {
+            success = accepted,
+            isGreat = false,
+            damageDealt = 0,
+            effects = { "lore_bid" },
+            description = "",
+            bidLore = bidLoreResult,
+        }
+
+        if accepted then
+            if actor then
+                local current = actor.loreBids or 0
+                actor.loreBids = math.max(0, current - 1)
+            end
+            result.effects[#result.effects + 1] = "lore_spent"
+            result.effects[#result.effects + 1] = "lore_accepted"
+
+            local response = bidLoreResult and bidLoreResult.response or {}
+            local summary = response.summary or "Lore answer provided."
+            local implication = response.implication
+            result.description = "Bid Lore accepted: " .. summary
+            if implication and implication ~= "" then
+                result.description = result.description .. " " .. implication
+            end
+        elseif verdict == "rejected_subject_unavailable" then
+            result.effects[#result.effects + 1] = "lore_rejected_subject"
+            result.description = "Bid Lore rejected: " .. (bidLoreResult and bidLoreResult.reason or "Subject unavailable.")
+        elseif verdict == "rejected_unknown_with_motif" then
+            result.effects[#result.effects + 1] = "lore_rejected_motif"
+            result.description = "Bid Lore rejected: " .. (bidLoreResult and bidLoreResult.reason or "Motif mismatch.")
+        else
+            result.effects[#result.effects + 1] = "lore_rephrase_needed"
+            result.description = "Bid Lore needs rephrase: " .. (bidLoreResult and bidLoreResult.reason or "Refine the question.")
+        end
+
+        self.eventBus:emit(events.EVENTS.BID_LORE_VERDICT, {
+            actor = actor,
+            action = action,
+            verdict = verdict,
+            loreSpend = accepted,
+            selection = bidLoreResult and bidLoreResult.selection or nil,
+            scoreBreakdown = bidLoreResult and bidLoreResult.scoreBreakdown or nil,
+        })
 
         action.result = result
         return result
@@ -470,6 +561,8 @@ function M.createActionResolver(config)
         if actionDef then
             action.actionDef = actionDef
         end
+        local actionType = self:normalizeActionType(action.type or "generic")
+        action.normalizedType = actionType
 
         -- S4.9: Check for The Fool interrupt
         if M.isFool(card) then
@@ -480,6 +573,11 @@ function M.createActionResolver(config)
         local controller = action.challengeController or self.challengeController
         if actionDef and actionDef.testOfFate and controller and controller.isActive and controller:isActive() then
             return self:requestTestOfFate(action, actionDef, result)
+        end
+
+        -- Bid Lore resolves asynchronously through the Bid Lore modal.
+        if actionType == M.ACTION_TYPES.BID_LORE and controller and controller.isActive and controller:isActive() then
+            return self:requestBidLore(action, actionDef, result)
         end
 
         -- Calculate modifier from action's associated attribute (or card-only rules)
@@ -500,9 +598,6 @@ function M.createActionResolver(config)
 
         -- Route to specific resolution based on ACTION TYPE (not card suit)
         -- This allows using any card for any action on primary turns
-        local actionType = self:normalizeActionType(action.type or "generic")
-        action.normalizedType = actionType
-
         -- Swords actions (combat)
         if actionType == M.ACTION_TYPES.MELEE or actionType == M.ACTION_TYPES.MISSILE then
             self:resolveSwordsAction(action, result)

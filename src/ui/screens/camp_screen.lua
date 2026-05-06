@@ -113,6 +113,7 @@ function M.createCampScreen(config)
 
         -- Prompt overlay (S9.3)
         promptOverlay  = nil,       -- { text, callback }
+        subscriptions  = {},
 
         -- Fire animation
         fireTimer      = 0,
@@ -138,24 +139,49 @@ function M.createCampScreen(config)
         end
     end
 
+    function screen:listen(eventType, callback)
+        local unsubscribe = self.eventBus:on(eventType, callback)
+        self.subscriptions[#self.subscriptions + 1] = unsubscribe
+        return unsubscribe
+    end
+
+    function screen:unsubscribeEvents()
+        for _, unsubscribe in ipairs(self.subscriptions) do
+            unsubscribe()
+        end
+        self.subscriptions = {}
+    end
+
+    function screen:destroy()
+        self:unsubscribeEvents()
+
+        for _, plate in ipairs(self.characterPlates or {}) do
+            if plate.destroy then
+                plate:destroy()
+            end
+        end
+    end
+
     function screen:subscribeEvents()
+        self:unsubscribeEvents()
+
         -- Camp step changed
-        self.eventBus:on(camp_controller.EVENTS.CAMP_STEP_CHANGED, function(data)
+        self:listen(camp_controller.EVENTS.CAMP_STEP_CHANGED, function(data)
             self:onStepChanged(data)
         end)
 
         -- Camp action taken
-        self.eventBus:on(camp_controller.EVENTS.CAMP_ACTION_TAKEN, function(data)
+        self:listen(camp_controller.EVENTS.CAMP_ACTION_TAKEN, function(data)
             self:onActionTaken(data)
         end)
 
         -- Ration consumed
-        self.eventBus:on(camp_controller.EVENTS.RATION_CONSUMED, function(data)
+        self:listen(camp_controller.EVENTS.RATION_CONSUMED, function(data)
             self:onRationConsumed(data)
         end)
 
         -- Bond spent
-        self.eventBus:on(camp_controller.EVENTS.BOND_SPENT, function(data)
+        self:listen(camp_controller.EVENTS.BOND_SPENT, function(data)
             self:onBondSpent(data)
         end)
     end
@@ -196,6 +222,12 @@ function M.createCampScreen(config)
     ----------------------------------------------------------------------------
 
     function screen:createCharacterPlates()
+        for _, plate in ipairs(self.characterPlates or {}) do
+            if plate.destroy then
+                plate:destroy()
+            end
+        end
+
         self.characterPlates = {}
 
         for i, adventurer in ipairs(self.guild) do

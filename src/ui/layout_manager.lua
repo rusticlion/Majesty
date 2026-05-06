@@ -98,6 +98,10 @@ function M.createLayoutManager(config)
         self:applyStageLayout(self.stage, true)
     end
 
+    function manager:unregister(id)
+        self.elements[id] = nil
+    end
+
     ----------------------------------------------------------------------------
     -- STAGE CONTROL
     ----------------------------------------------------------------------------

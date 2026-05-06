@@ -91,6 +91,8 @@ function M.createEquipmentBar(config)
 
         isVisible = true,
         alpha = 1,
+
+        unsubscribeActivePC = nil,
     }
 
     ----------------------------------------------------------------------------
@@ -522,15 +524,24 @@ function M.createEquipmentBar(config)
     end
 
     function bar:init()
+        self:destroy()
+
         -- Sync with global active PC state
         if gameState and gameState.activePCIndex then
             self.selectedPC = gameState.activePCIndex
         end
 
         -- Listen for active PC changes
-        self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
+        self.unsubscribeActivePC = self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
             self.selectedPC = data.newIndex
         end)
+    end
+
+    function bar:destroy()
+        if self.unsubscribeActivePC then
+            self.unsubscribeActivePC()
+            self.unsubscribeActivePC = nil
+        end
     end
 
     function bar:keypressed(key)

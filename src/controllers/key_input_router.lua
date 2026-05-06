@@ -20,6 +20,12 @@ function M.createKeyInputRouter(config)
     }
 
     function router:keypressed(key)
+        if gameState.bidLoreModal and gameState.bidLoreModal.isVisible then
+            if gameState.bidLoreModal:keypressed(key) then
+                return true
+            end
+        end
+
         if gameState.testOfFateModal and gameState.testOfFateModal.isVisible then
             if gameState.testOfFateModal:keypressed(key) then
                 return true

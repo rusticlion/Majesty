@@ -113,6 +113,11 @@ M.EVENTS = {
     TEST_OF_FATE_COMPLETE = "test_of_fate_complete",
     TEST_FATE_PUSHED      = "test_fate_pushed",
 
+    -- Bid Lore (Challenge async action)
+    REQUEST_BID_LORE      = "request_bid_lore",
+    BID_LORE_COMPLETE     = "bid_lore_complete",
+    BID_LORE_VERDICT      = "bid_lore_verdict",
+
     -- Bound by Fate (Crawl UI)
     BOUND_BY_FATE_BLOCKED = "bound_by_fate_blocked",
 }

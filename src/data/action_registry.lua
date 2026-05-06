@@ -310,6 +310,7 @@ M.ACTIONS = {
         attribute = nil,
         description = "Bid lore during a Challenge to recall esoteric details.",
         requiresTarget = false,
+        requiresLoreBid = true,
         allowMinor = false,
         autoSuccess = true,
         challengeAction = true,
@@ -517,6 +518,13 @@ function M.checkActionRequirements(action, entity)
             end
         else
             return false, "Requires " .. action.requiresItem
+        end
+    end
+
+    if action.requiresLoreBid then
+        local loreBids = entity and entity.loreBids or 0
+        if loreBids <= 0 then
+            return false, "No lore bids remaining"
         end
     end
 

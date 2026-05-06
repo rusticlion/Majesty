@@ -42,6 +42,8 @@ function M.createBeltHotbar(config)
 
         -- Visibility
         isVisible = true,
+
+        unsubscribeActivePC = nil,
     }
 
     ----------------------------------------------------------------------------
@@ -49,15 +51,24 @@ function M.createBeltHotbar(config)
     ----------------------------------------------------------------------------
 
     function hotbar:init()
+        self:destroy()
+
         -- Sync with global active PC state
         if gameState and gameState.activePCIndex then
             self.selectedPC = gameState.activePCIndex
         end
 
         -- Listen for active PC changes
-        self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
+        self.unsubscribeActivePC = self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
             self.selectedPC = data.newIndex
         end)
+    end
+
+    function hotbar:destroy()
+        if self.unsubscribeActivePC then
+            self.unsubscribeActivePC()
+            self.unsubscribeActivePC = nil
+        end
     end
 
     ----------------------------------------------------------------------------

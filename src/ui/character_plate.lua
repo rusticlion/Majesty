@@ -193,6 +193,23 @@ M.CONDITION_GLYPHS = {
     },
 }
 
+local function getSortedTalentSlots(talents)
+    local slots = {}
+
+    for talentId, talentData in pairs(talents or {}) do
+        slots[#slots + 1] = {
+            id = talentId,
+            data = talentData,
+        }
+    end
+
+    table.sort(slots, function(a, b)
+        return tostring(a.id) < tostring(b.id)
+    end)
+
+    return slots
+end
+
 --------------------------------------------------------------------------------
 -- CHARACTER PLATE FACTORY
 --------------------------------------------------------------------------------
@@ -226,6 +243,8 @@ function M.createCharacterPlate(config)
         highlightTimer  = 0,
         highlightDuration = 0.8,
 
+        unsubscribeWound = nil,
+
         -- Colors
         colors = config.colors or M.COLORS,
     }
@@ -235,12 +254,21 @@ function M.createCharacterPlate(config)
     ----------------------------------------------------------------------------
 
     function plate:init()
+        self:destroy()
+
         -- Subscribe to wound events for animation
-        self.eventBus:on(events.EVENTS.WOUND_TAKEN, function(data)
+        self.unsubscribeWound = self.eventBus:on(events.EVENTS.WOUND_TAKEN, function(data)
             if data.entity == self.entity then
                 self:triggerWoundAnimation(data.result)
             end
         end)
+    end
+
+    function plate:destroy()
+        if self.unsubscribeWound then
+            self.unsubscribeWound()
+            self.unsubscribeWound = nil
+        end
     end
 
     ----------------------------------------------------------------------------
@@ -444,7 +472,7 @@ function M.createCharacterPlate(config)
     --- Draw the talent tray (7 dots)
     function plate:drawTalentTray(x, y)
         local e = self.entity
-        local talents = e.talents or {}
+        local talents = getSortedTalentSlots(e.talents)
         local woundedCount = e.woundedTalents or 0
 
         local dotSpacing = self.talentDotSize + 4
@@ -453,13 +481,14 @@ function M.createCharacterPlate(config)
         for i = 1, maxTalents do
             local dotX = x + (i - 1) * dotSpacing
             local talent = talents[i]
+            local talentData = talent and talent.data
 
             -- Determine dot state
             local state = "empty"
-            if talent then
-                if i <= woundedCount then
+            if talentData then
+                if talentData.wounded or i <= woundedCount then
                     state = "wounded"
-                elseif talent.mastered then
+                elseif talentData.mastered then
                     state = "mastered"
                 else
                     state = "training"

@@ -64,6 +64,8 @@ gameState = {
     keyInputRouter      = nil,  -- Extracted keypress routing
     mouseInputRouter    = nil,  -- Extracted mouse routing
     pendingTestAction   = nil,  -- S12.5: Pending Test of Fate Challenge action
+    pendingLoreAction   = nil,  -- Bid Lore: pending async Challenge action
+    bidLoreEngine       = nil,  -- Bid Lore adjudication engine
 
     -- Camp systems (Sprint 8-9)
     campController      = nil,
@@ -77,6 +79,9 @@ gameState = {
 
     -- S12.5: Test of Fate modal
     testOfFateModal     = nil,
+
+    -- Bid Lore modal
+    bidLoreModal        = nil,
 
     -- S13.2: Layout manager for stage-based UI
     layoutManager       = nil,
@@ -99,6 +104,14 @@ gameState = {
     -- Victory condition tracking
     vellumMapFound    = false,
 }
+
+local function setCurrentScreen(screen)
+    if gameState.currentScreen and gameState.currentScreen.destroy then
+        gameState.currentScreen:destroy()
+    end
+
+    gameState.currentScreen = screen
+end
 
 -- Combat input state (for multi-step selection flow)
 -- Shared between challenge_input_controller and Challenge overlay rendering.
@@ -305,12 +318,12 @@ end
 function showEndOfDemoScreen(reason)
     print("=== SHOWING END OF DEMO SCREEN ===")
 
-    gameState.currentScreen = end_of_demo_screen.createEndOfDemoScreen({
+    setCurrentScreen(end_of_demo_screen.createEndOfDemoScreen({
         eventBus = gameState.eventBus,
         guild = gameState.guild,
         victoryReason = reason,
         onReturnToCity = returnToCity,
-    })
+    }))
     gameState.currentScreen:init()
     gameState.phase = "end_of_demo"
 end
@@ -409,13 +422,13 @@ function returnToCity()
     gameState.vellumMapFound = false
 
     -- 5. Transition back to crawl screen
-    gameState.currentScreen = crawl_screen.createCrawlScreen({
+    setCurrentScreen(crawl_screen.createCrawlScreen({
         eventBus     = gameState.eventBus,
         roomManager  = gameState.roomManager,
         watchManager = gameState.watchManager,
         gameState    = gameState,
         layoutManager = gameState.layoutManager,
-    })
+    }))
     gameState.currentScreen:init()
     gameState.currentScreen:setGuild(gameState.guild)
     gameState.currentScreen:enterRoom("101_entrance")
@@ -479,7 +492,7 @@ function startCampPhase()
     })
 
     -- Switch to camp screen
-    gameState.currentScreen = gameState.campScreen
+    setCurrentScreen(gameState.campScreen)
     gameState.phase = "camp"
 
     print("[CAMP] Camp started! Shelter: " .. tostring(hasShelter) .. ", Bedrolls: " .. tostring(hasBedrolls))
@@ -492,13 +505,13 @@ function handlePhaseChange(data)
         print("[PHASE] Returning to crawl phase")
 
         -- Recreate crawl screen (state is preserved in managers)
-        gameState.currentScreen = crawl_screen.createCrawlScreen({
+        setCurrentScreen(crawl_screen.createCrawlScreen({
             eventBus     = gameState.eventBus,
             roomManager  = gameState.roomManager,
             watchManager = gameState.watchManager,
             gameState    = gameState,
             layoutManager = gameState.layoutManager,
-        })
+        }))
         gameState.currentScreen:init()
         gameState.currentScreen:setGuild(gameState.guild)
 
@@ -813,6 +826,10 @@ function love.draw()
     -- S12.5: Draw Test of Fate modal (on top of everything except debug)
     if gameState.testOfFateModal then
         gameState.testOfFateModal:draw()
+    end
+
+    if gameState.bidLoreModal then
+        gameState.bidLoreModal:draw()
     end
 
     -- Draw debug info

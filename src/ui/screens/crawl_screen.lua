@@ -132,6 +132,7 @@ function M.createCrawlScreen(config)
             pendingToggle = nil,
             combineWindow = 0.25,
         },
+        subscriptions = {},
 
         -- Textures (loaded in init)
         vellumTexture = nil,
@@ -229,6 +230,39 @@ function M.createCrawlScreen(config)
         self:loadTextures()
     end
 
+    function screen:listen(eventType, callback)
+        local unsubscribe = self.eventBus:on(eventType, callback)
+        self.subscriptions[#self.subscriptions + 1] = unsubscribe
+        return unsubscribe
+    end
+
+    function screen:unsubscribeEvents()
+        for _, unsubscribe in ipairs(self.subscriptions) do
+            unsubscribe()
+        end
+        self.subscriptions = {}
+    end
+
+    function screen:destroy()
+        self:unsubscribeEvents()
+
+        if self.equipmentBar and self.equipmentBar.destroy then
+            self.equipmentBar:destroy()
+        end
+
+        for _, plate in ipairs(self.characterPlates or {}) do
+            if plate.destroy then
+                plate:destroy()
+            end
+        end
+
+        if self.layoutManager and self.layoutManager.unregister then
+            self.layoutManager:unregister("narrative_view")
+            self.layoutManager:unregister("equipment_bar")
+            self.layoutManager:unregister("room_context_panel")
+        end
+    end
+
     --- Load texture assets
     function screen:loadTextures()
         if not love then return end
@@ -245,8 +279,10 @@ function M.createCrawlScreen(config)
 
     --- Subscribe to relevant events
     function screen:subscribeEvents()
+        self:unsubscribeEvents()
+
         -- POI clicked -> check if exit or feature
-        self.eventBus:on(events.EVENTS.POI_CLICKED, function(data)
+        self:listen(events.EVENTS.POI_CLICKED, function(data)
             -- Check if this is an exit POI
             if data.poiId and data.poiId:sub(1, 5) == "exit_" then
                 -- Extract target room ID from "exit_<roomId>"
@@ -265,74 +301,78 @@ function M.createCrawlScreen(config)
         end)
 
         -- Drop on target -> trigger investigation or movement
-        self.eventBus:on(events.EVENTS.DROP_ON_TARGET, function(data)
+        self:listen(events.EVENTS.DROP_ON_TARGET, function(data)
             self:handleDrop(data)
         end)
 
         -- Meatgrinder roll -> update dread card
-        self.eventBus:on(events.EVENTS.MEATGRINDER_ROLL, function(data)
+        self:listen(events.EVENTS.MEATGRINDER_ROLL, function(data)
             self.dreadCard = data.card
         end)
 
         -- Watch passed -> could update UI
-        self.eventBus:on(events.EVENTS.WATCH_PASSED, function(data)
+        self:listen(events.EVENTS.WATCH_PASSED, function(data)
             -- Refresh room description or show event
         end)
 
         -- Room entered -> update display
-        self.eventBus:on(events.EVENTS.ROOM_ENTERED, function(data)
+        self:listen(events.EVENTS.ROOM_ENTERED, function(data)
             self:enterRoom(data.roomId)
         end)
 
         -- Scrutiny selected -> show result in narrative
-        self.eventBus:on(events.EVENTS.SCRUTINY_SELECTED, function(data)
+        self:listen(events.EVENTS.SCRUTINY_SELECTED, function(data)
             self:handleScrutinyResult(data)
         end)
 
         -- POI action selected -> resolve interaction
-        self.eventBus:on(events.EVENTS.POI_ACTION_SELECTED, function(data)
+        self:listen(events.EVENTS.POI_ACTION_SELECTED, function(data)
             self:handlePoiActionSelected(data)
         end)
 
         -- Bound by Fate note (disabled actions)
-        self.eventBus:on(events.EVENTS.BOUND_BY_FATE_BLOCKED, function()
+        self:listen(events.EVENTS.BOUND_BY_FATE_BLOCKED, function()
             self:notifyBoundByFate()
         end)
 
         -- Test of Fate result -> resolve pending crawl investigations
-        self.eventBus:on(events.EVENTS.TEST_OF_FATE_COMPLETE, function(data)
+        self:listen(events.EVENTS.TEST_OF_FATE_COMPLETE, function(data)
             self:handleTestOfFateComplete(data)
         end)
 
         -- Item used on POI -> handle interaction (keys on doors, poles on traps, etc.)
-        self.eventBus:on(events.EVENTS.USE_ITEM_ON_POI, function(data)
+        self:listen(events.EVENTS.USE_ITEM_ON_POI, function(data)
             self:handleItemOnPOI(data)
         end)
 
         -- Light-system narrative hooks
-        self.eventBus:on(events.EVENTS.LIGHT_SOURCE_TOGGLED, function(data)
+        self:listen(events.EVENTS.LIGHT_SOURCE_TOGGLED, function(data)
             self:handleLightSourceToggled(data)
         end)
-        self.eventBus:on(events.EVENTS.LIGHT_FLICKERED, function(data)
+        self:listen(events.EVENTS.LIGHT_FLICKERED, function(data)
             self:handleLightFlickered(data)
         end)
-        self.eventBus:on(events.EVENTS.LIGHT_DESTROYED, function(data)
+        self:listen(events.EVENTS.LIGHT_DESTROYED, function(data)
             self:handleLightDestroyed(data)
         end)
-        self.eventBus:on(events.EVENTS.LIGHT_EXTINGUISHED, function(data)
+        self:listen(events.EVENTS.LIGHT_EXTINGUISHED, function(data)
             self:handleLightExtinguished(data)
         end)
-        self.eventBus:on(events.EVENTS.LANTERN_BROKEN, function(data)
+        self:listen(events.EVENTS.LANTERN_BROKEN, function(data)
             self:handleLanternBroken(data)
         end)
-        self.eventBus:on(events.EVENTS.PARTY_LIGHT_CHANGED, function(data)
+        self:listen(events.EVENTS.PARTY_LIGHT_CHANGED, function(data)
             self:handlePartyLightChanged(data)
         end)
-        self.eventBus:on(events.EVENTS.DARKNESS_FELL, function(data)
+        self:listen(events.EVENTS.DARKNESS_FELL, function(data)
             self:handleDarknessFell(data)
         end)
-        self.eventBus:on(events.EVENTS.DARKNESS_LIFTED, function(data)
+        self:listen(events.EVENTS.DARKNESS_LIFTED, function(data)
             self:handleDarknessLifted(data)
+        end)
+
+        self:listen(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
+            self:updateActivePlate(data.newIndex)
         end)
     end
 
@@ -1206,6 +1246,12 @@ function M.createCrawlScreen(config)
 
     --- Create character plate components for each guild member (S5.1)
     function screen:createCharacterPlates()
+        for _, plate in ipairs(self.characterPlates or {}) do
+            if plate.destroy then
+                plate:destroy()
+            end
+        end
+
         self.characterPlates = {}
 
         local y = M.LAYOUT.HEADER_HEIGHT + M.LAYOUT.PADDING
@@ -1234,10 +1280,6 @@ function M.createCrawlScreen(config)
             y = y + plate:getHeight() + M.LAYOUT.PADDING
         end
 
-        -- Subscribe to active PC changes
-        self.eventBus:on(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
-            self:updateActivePlate(data.newIndex)
-        end)
     end
 
     --- Update which plate shows as active
