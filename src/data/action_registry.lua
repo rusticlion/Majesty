@@ -18,6 +18,112 @@ M.SUITS = {
     MISC      = "misc",  -- Miscellaneous (any suit)
 }
 
+local function normalizeTalentId(talentId)
+    return tostring(talentId or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+end
+
+local function hasUsableTalent(entity, talentId)
+    if not entity or type(entity.talents) ~= "table" then
+        return false
+    end
+
+    local requested = normalizeTalentId(talentId)
+    for key, talent in pairs(entity.talents) do
+        local matches = normalizeTalentId(key) == requested
+        if not matches and type(talent) == "table" then
+            matches = normalizeTalentId(talent.id or talent.name or talent.talentId) == requested
+        end
+        if matches then
+            if type(talent) == "table" then
+                return talent.wounded ~= true
+            end
+            return talent == true
+        end
+    end
+
+    return false
+end
+
+local function itemIsArchwoodWand(item)
+    if not item or item.destroyed then
+        return false
+    end
+
+    local props = item.properties or {}
+    if props.archwood and props.wand then
+        return true
+    end
+
+    local id = normalizeTalentId(item.templateId or item.id or item.name)
+    return id == "wand_archwood" or id == "wand_of_archwood"
+end
+
+local function getArchwoodWandInHands(entity)
+    local inv = entity and entity.inventory
+    if not inv then
+        return nil
+    end
+
+    local hands = inv.getItems and inv:getItems("hands") or inv.hands or {}
+    for _, item in ipairs(hands or {}) do
+        if itemIsArchwoodWand(item) then
+            return item
+        end
+    end
+
+    return nil
+end
+
+local function hasArchwoodWandInHands(entity)
+    return getArchwoodWandInHands(entity) ~= nil
+end
+
+local function itemIsMeleeWeapon(item)
+    return item and item.isWeapon and not item.isRanged
+end
+
+local function itemIsDagger(item)
+    if not item then
+        return false
+    end
+    local weaponType = normalizeTalentId(item.weaponType or item.type or item.name)
+    return weaponType == "dagger"
+end
+
+local function getTwoHandedFocusWeapon(entity)
+    local inv = entity and entity.inventory
+    if not inv then
+        return nil
+    end
+
+    local weapon = inv.getWieldedWeapon and inv:getWieldedWeapon()
+    if not itemIsMeleeWeapon(weapon) or itemIsDagger(weapon) then
+        return nil
+    end
+
+    local props = weapon.properties or {}
+    if weapon.twoHanded or weapon.two_handed or props.twoHanded or props.two_handed or
+       props.twoHandedFocus then
+        return weapon
+    end
+
+    local weaponSize = weapon.size or 1
+    if weaponSize >= 2 then
+        return weapon
+    end
+
+    local freeHands = inv.availableSlots and inv:availableSlots("hands") or 0
+    if freeHands >= 1 then
+        return weapon
+    end
+
+    return nil
+end
+
+local function canUseTwoHandedFocus(entity)
+    return hasUsableTalent(entity, "two_handed_focus") and getTwoHandedFocusWeapon(entity) ~= nil
+end
+
 --------------------------------------------------------------------------------
 -- ACTION DEFINITIONS
 --------------------------------------------------------------------------------
@@ -99,6 +205,18 @@ M.ACTIONS = {
         challengeAction = true,
     },
     {
+        id = "roughhouse",
+        name = "Roughhouse",
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        description = "Attempt a maneuver, then choose Disarm, Displace, Root, or Trip.",
+        requiresTarget = true,
+        targetType = "enemy",
+        challengeAction = true,
+        roughhouseEffects = { "disarm", "displace", "root", "trip", "exhaust", "notch", "silence" },
+        fightDirtyEffects = { exhaust = true, notch = true, silence = true },
+    },
+    {
         id = "trip",
         name = "Trip",
         suit = M.SUITS.PENTACLES,
@@ -107,6 +225,7 @@ M.ACTIONS = {
         requiresTarget = true,
         targetType = "enemy",
         challengeAction = true,
+        showInCommandBoard = false,
     },
     {
         id = "disarm",
@@ -117,6 +236,7 @@ M.ACTIONS = {
         requiresTarget = true,
         targetType = "enemy",
         challengeAction = true,
+        showInCommandBoard = false,
     },
     {
         id = "displace",
@@ -127,6 +247,7 @@ M.ACTIONS = {
         requiresTarget = true,
         targetType = "enemy",
         challengeAction = true,
+        showInCommandBoard = false,
     },
     {
         id = "grapple",
@@ -137,6 +258,7 @@ M.ACTIONS = {
         requiresTarget = true,
         targetType = "enemy",
         challengeAction = true,
+        showInCommandBoard = false,
     },
     {
         id = "pick_lock",
@@ -478,9 +600,13 @@ function M.checkActionRequirements(action, entity)
 
         if entity and entity.inventory then
             local weapon = entity.inventory:getWieldedWeapon()
+            if not weapon and action.requiresWeaponType == "ranged" and hasUsableTalent(entity, "gramarye") then
+                weapon = getArchwoodWandInHands(entity)
+            end
             if weapon then
                 if action.requiresWeaponType == "ranged" then
-                    hasRequiredWeapon = weapon.isRanged == true
+                    hasRequiredWeapon = weapon.isRanged == true or
+                        (hasUsableTalent(entity, "gramarye") and itemIsArchwoodWand(weapon))
                 elseif action.requiresWeaponType == "melee" then
                     hasRequiredWeapon = weapon.isMelee == true or (weapon.isWeapon and not weapon.isRanged)
                 else
@@ -503,7 +629,8 @@ function M.checkActionRequirements(action, entity)
     if action.requiresCompanion then
         local hasCompanion = entity and (
             entity.companion ~= nil or
-            (type(entity.companions) == "table" and next(entity.companions) ~= nil)
+            (type(entity.companions) == "table" and next(entity.companions) ~= nil) or
+            (type(entity.animalCompanions) == "table" and next(entity.animalCompanions) ~= nil)
         )
         if not hasCompanion then
             return false, "Requires companion"
@@ -583,6 +710,8 @@ function M.getAvailableActions(card, isPrimaryTurn, entity)
             -- On minor turn, only suit-matched actions (excluding misc)
             if action.suit == cardSuit and action.allowMinor ~= false then
                 canUse = true
+            elseif M.canUseMinorActionWithCard(action, cardSuit, entity) then
+                canUse = true
             end
         end
 
@@ -596,6 +725,26 @@ function M.getAvailableActions(card, isPrimaryTurn, entity)
     end
 
     return available
+end
+
+function M.canUseMinorActionWithCard(action, cardSuit, entity)
+    if not action or action.allowMinor == false then
+        return false
+    end
+
+    if action.id == "roughhouse" and cardSuit == M.SUITS.SWORDS then
+        return hasUsableTalent(entity, "fight_dirty")
+    end
+
+    if action.id == "missile" and cardSuit == M.SUITS.WANDS then
+        return hasUsableTalent(entity, "gramarye") and hasArchwoodWandInHands(entity)
+    end
+
+    if action.id == "melee" and (cardSuit == M.SUITS.SWORDS or cardSuit == M.SUITS.PENTACLES) then
+        return canUseTwoHandedFocus(entity)
+    end
+
+    return false
 end
 
 --- Convert card deck suit number to action suit string

@@ -227,8 +227,8 @@ function M.createMeatgrinder(config)
     end
 
     --- Create a unique key for tracking consumed events
-    local function makeConsumedKey(category, roomId)
-        return (roomId or "global") .. ":" .. category
+    local function makeConsumedKey(category, roomId, cardValue)
+        return (roomId or "global") .. ":" .. category .. ":" .. tostring(cardValue)
     end
 
     --- Resolve a Meatgrinder event
@@ -249,8 +249,9 @@ function M.createMeatgrinder(config)
         -- Check if this specific event was already consumed (p. 91)
         -- "If the cards are shuffled and the GM draws the same event twice,
         -- nothing happens and the guild has a watch of respite."
-        local consumedKey = makeConsumedKey(category, roomId)
-        if self.consumed[consumedKey] then
+        local consumedKey = makeConsumedKey(category, roomId, card.value)
+        local canBeConsumed = category ~= M.CATEGORIES.TORCHES_GUTTER
+        if canBeConsumed and self.consumed[consumedKey] then
             return createResult(category, {
                 description = "A moment of respite. The Underworld holds its breath.",
                 effects = { { type = "respite" } },
@@ -267,9 +268,14 @@ function M.createMeatgrinder(config)
         -- Execute handler
         local result = handler(card, currentRoom, context)
 
-        -- Mark as consumed
-        self.consumed[consumedKey] = true
-        result.consumed = true
+        -- Mark as consumed. Torches gutter results are exempt: the rulebook says
+        -- they can occur multiple times and are not marked off.
+        if canBeConsumed then
+            self.consumed[consumedKey] = true
+            result.consumed = true
+        else
+            result.consumed = false
+        end
 
         -- Emit event for other systems
         self.eventBus:emit(events.EVENTS.MEATGRINDER_ROLL, {
@@ -292,9 +298,19 @@ function M.createMeatgrinder(config)
     end
 
     --- Check if an event type is consumed for a room
-    function grinder:isConsumed(category, roomId)
-        local key = makeConsumedKey(category, roomId)
-        return self.consumed[key] or false
+    function grinder:isConsumed(category, roomId, cardValue)
+        if cardValue ~= nil then
+            local key = makeConsumedKey(category, roomId, cardValue)
+            return self.consumed[key] or false
+        end
+
+        local prefix = (roomId or "global") .. ":" .. category .. ":"
+        for key, _ in pairs(self.consumed or {}) do
+            if string.sub(key, 1, #prefix) == prefix then
+                return true
+            end
+        end
+        return false
     end
 
     --- Get all consumed events

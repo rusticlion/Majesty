@@ -18,6 +18,39 @@ M.blueprints = {
     -- UNDEAD
     ----------------------------------------------------------------------------
 
+    zombie = {
+        name = "Zombie",
+        attributes = {
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 1,
+        defense = 0,
+        instantDestruction = true,
+        baseMorale = 20,
+        undead = true,
+        tags = { "undead", "zombie" },
+        aiTags = { "undead", "zombie", "mindless" },
+        social = {
+            likes = { "fond_memory_of_life" },
+            hates = { "living" },
+        },
+        lesserDooms = {
+            {
+                id = "devour_the_living",
+                name = "Devour the Living",
+                description = "Devour a knocked-out or Death's Door living creature to Heal 2 Wounds.",
+            },
+        },
+        greaterDoom = {
+            id = "last_grasp",
+            name = "Last Grasp",
+            description = "Discard a greater doom to ignore a Wound and spawn a severed limb.",
+        },
+    },
+
     skeleton_brute = {
         name = "Skeleton Brute",
         attributes = {
@@ -31,6 +64,9 @@ M.blueprints = {
         defense = 0,  -- No armor, just bones
         instantDestruction = true,  -- Undead don't go to Death's Door, just fall apart
         baseMorale = 20,  -- S12.3: Undead feel no fear
+        undead = true,
+        tags = { "undead", "skeleton" },
+        aiTags = { "undead", "skeleton", "mindless" },
         starting_gear = {
             hands = {
                 { name = "Rusty Sword", size = 1, durability = 2 },
@@ -50,6 +86,9 @@ M.blueprints = {
         defense = 0,
         instantDestruction = true,  -- Undead
         baseMorale = 20,  -- S12.3: Undead feel no fear
+        undead = true,
+        tags = { "undead", "skeleton" },
+        aiTags = { "undead", "skeleton", "mindless" },
         starting_gear = {
             hands = {
                 { name = "Cracked Bow", size = 2, durability = 1 },
@@ -172,7 +211,28 @@ M.blueprints = {
         defense = 2,  -- Chitinous carapace
         baseMorale = 14,  -- S12.3: Cunning predators, will retreat if outmatched
         disposition = "surprise",  -- S12.4: Psychic predators assess before acting
+        tags = { "monster", "arachnid", "brain_spider" },
+        alchemy = {
+            reagentTemplateId = "brain_spider_reagent",
+            yield = 1,
+        },
         starting_gear = {},  -- Natural weapons (fangs and psychic attacks)
+
+        -- Appendix E: Web. When the brain spider Attacks, discard a greater
+        -- doom card to web a target instead of dealing damage.
+        greaterDooms = {
+            {
+                id = "web",
+                name = "Web",
+                activation = "attack_rider",
+                description = "On a successful Attack, deal no damage but wrap the target in webs. The target is Rooted until all limbs are freed with Recover.",
+                effect = {
+                    type = "web",
+                    limbs = 4,
+                    suppressDamage = true,
+                },
+            },
+        },
     },
 
     puppet_mummy = {
@@ -224,6 +284,11 @@ M.blueprints = {
         health = 5,
         defense = 4,  -- Reinforced psychic carapace
         baseMorale = 18,  -- S12.3: Cunning boss, will use every trick before fleeing
+        tags = { "monster", "arachnid", "brain_spider", "boss" },
+        alchemy = {
+            reagentTemplateId = "brain_spider_reagent",
+            yield = 1,
+        },
         starting_gear = {},
 
         -- Greater Doom: A devastating special ability
@@ -241,6 +306,98 @@ M.blueprints = {
 
         -- Boss-specific AI behaviors
         aiTags = { "boss", "psychic", "summons_minions" },
+    },
+
+    small_ooze = {
+        name = "Small Ooze",
+        attributes = {
+            swords    = 2,
+            pentacles = 1,
+            cups      = 0,
+            wands     = 2,
+        },
+        health = 2,
+        defense = 1,
+        baseMorale = 20,
+        tags = { "monster", "ooze", "slime" },
+        aiTags = { "ooze", "mindless" },
+        alchemy = {
+            reagentTemplateId = "slime_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    ----------------------------------------------------------------------------
+    -- MALEFICENCE SPAWNS
+    ----------------------------------------------------------------------------
+
+    imp = {
+        name = "Imp",
+        attributes = {
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 2,
+        defense = 0,
+        baseMorale = 20,
+        tags = { "spirit", "imp" },
+        aiTags = { "imp", "spirit", "wimp", "lowest_initiative" },
+        social = {
+            likes = { "weird_stinks" },
+            hates = { "iron", "cats", "clean_water" },
+        },
+        lesserDooms = {
+            {
+                id = "vomit",
+                name = "Vomit",
+                description = "A successful Attack can deal no damage and Notch one target item.",
+            },
+            {
+                id = "piss_and_shit",
+                name = "Piss and Shit",
+                description = "A successful Roughhouse can also make the target Stressed.",
+            },
+        },
+        starting_gear = {},
+    },
+
+    hekatephage = {
+        name = "Hekatephage",
+        attributes = {
+            swords    = 0,
+            pentacles = 4,
+            cups      = 0,
+            wands     = 6,
+        },
+        health = 4,
+        defense = 0,
+        baseMorale = 20,
+        instantDestruction = true,
+        tags = { "spirit", "shrouded", "intangible", "magic_eater" },
+        aiTags = { "spirit", "shrouded", "intangible", "magic_eater" },
+        starting_gear = {},
+    },
+
+    stone_twin = {
+        name = "Stone Twin",
+        attributes = {
+            swords    = 4,
+            pentacles = 4,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 4,
+        defense = 4,
+        baseMorale = 20,
+        instantDestruction = true,
+        construct = true,
+        automaton = true,
+        tags = { "construct", "stone", "twin" },
+        aiTags = { "construct", "stone_twin", "assassin" },
+        starting_gear = {},
     },
 
     ----------------------------------------------------------------------------

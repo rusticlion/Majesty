@@ -19,6 +19,7 @@ local character_plate = require('ui.character_plate')
 local equipment_bar = require('ui.equipment_bar')
 local interaction = require('logic.interaction')
 local item_interaction = require('logic.item_interaction')
+local alchemy = require('logic.alchemy')
 local resolver = require('logic.resolver')
 local constants = require('constants')
 
@@ -75,6 +76,15 @@ local function getNowSeconds()
     return os.clock()
 end
 
+local function listContains(list, value)
+    for _, item in ipairs(list or {}) do
+        if item == value then
+            return true
+        end
+    end
+    return false
+end
+
 --------------------------------------------------------------------------------
 -- CRAWL SCREEN FACTORY
 --------------------------------------------------------------------------------
@@ -118,6 +128,7 @@ function M.createCrawlScreen(config)
         exitHitboxes  = {},       -- Room exit clickable areas
         currentRoomDescription = nil,
         pendingTestOfFate = nil,
+        pendingCrawlBidLore = nil,
         testHistoryDrawer = {
             isExpanded = false,
             collapsedHeight = 28,
@@ -192,6 +203,9 @@ function M.createCrawlScreen(config)
             inputManager = self.inputManager,
             roomManager = self.roomManager,
             interactionSystem = self.interactionSystem,
+            bidLoreProvider = function(data)
+                return self:buildCrawlBidLoreFocusOption(data)
+            end,
         })
 
         -- Create equipment bar (hands + belt, positioned in calculateLayout)
@@ -340,6 +354,11 @@ function M.createCrawlScreen(config)
             self:handleTestOfFateComplete(data)
         end)
 
+        -- Bid Lore result -> resolve pending crawl lore bids
+        self:listen(events.EVENTS.BID_LORE_COMPLETE, function(data)
+            self:handleCrawlBidLoreComplete(data)
+        end)
+
         -- Item used on POI -> handle interaction (keys on doors, poles on traps, etc.)
         self:listen(events.EVENTS.USE_ITEM_ON_POI, function(data)
             self:handleItemOnPOI(data)
@@ -373,6 +392,10 @@ function M.createCrawlScreen(config)
 
         self:listen(events.EVENTS.ACTIVE_PC_CHANGED, function(data)
             self:updateActivePlate(data.newIndex)
+        end)
+
+        self:listen(events.EVENTS.ENTITY_DEFEATED, function(data)
+            self:handleEntityDefeated(data)
         end)
     end
 
@@ -475,6 +498,212 @@ function M.createCrawlScreen(config)
             return false
         end
         return true
+    end
+
+    function screen:getActionResolver()
+        return self.gameState and self.gameState.actionResolver or nil
+    end
+
+    function screen:getBidLoreEngine()
+        if self.gameState then
+            if self.gameState.bidLoreEngine then
+                return self.gameState.bidLoreEngine
+            end
+            local actionResolver = self.gameState.actionResolver
+            if actionResolver and actionResolver.bidLoreEngine then
+                return actionResolver.bidLoreEngine
+            end
+        end
+        return nil
+    end
+
+    function screen:getRoomBidLoreSubjects(actor, roomId)
+        local engine = self:getBidLoreEngine()
+        if not engine or not roomId then
+            return {}
+        end
+
+        local available = engine:getAvailableSubjects({
+            actor = actor,
+            roomId = roomId,
+            action = {
+                type = "bid_lore",
+                context = "crawl",
+                roomId = roomId,
+            },
+        })
+
+        local roomSubjects = {}
+        for _, subject in ipairs(available or {}) do
+            local authored = engine.getSubject and engine:getSubject(subject.id) or nil
+            if authored and listContains(authored.roomIds, roomId) then
+                roomSubjects[#roomSubjects + 1] = subject
+            end
+        end
+
+        return roomSubjects
+    end
+
+    function screen:buildCrawlBidLoreFocusOption(data)
+        data = data or {}
+        local actor = self:getActivePC()
+        local roomId = data.roomId or self.currentRoomId
+        local subjects = self:getRoomBidLoreSubjects(actor, roomId)
+        if #subjects == 0 then
+            return nil
+        end
+
+        local label = "Act: Bid Lore"
+        if #subjects == 1 then
+            label = label .. " (" .. (subjects[1].name or "room lore") .. ")"
+        else
+            label = label .. " (" .. tostring(#subjects) .. " subjects)"
+        end
+
+        local option = {
+            kind = "action",
+            action = "bid_lore",
+            level = "scrutinize",
+            watchCost = false,
+            description = label,
+            subjectCount = #subjects,
+        }
+
+        if not actor or (actor.loreBids or 0) <= 0 then
+            local actionResolver = self:getActionResolver()
+            local canUseResolve = actionResolver and actionResolver.canSpendLoremasterResolveForLore and
+                actionResolver:canSpendLoremasterResolveForLore(actor)
+            if canUseResolve then
+                option.spendResolveForLore = true
+                option.description = option.description .. " (Spend Resolve)"
+            else
+                option.disabled = true
+                option.description = option.description .. " (No lore bids)"
+            end
+        end
+
+        return option
+    end
+
+    function screen:openCrawlBidLore(actor, feature, data)
+        data = data or {}
+        local roomId = data.roomId or self.currentRoomId
+        local actionResolver = self:getActionResolver()
+        local engine = self:getBidLoreEngine()
+
+        if not actor then
+            self:appendNarrativeBlock("BID LORE", "No active adventurer can bid lore right now.")
+            return false
+        end
+
+        if self.pendingCrawlBidLore then
+            self:appendNarrativeBlock("BID LORE", "A lore bid is already underway.")
+            return false
+        end
+
+        if not actionResolver or not engine then
+            self:appendNarrativeBlock("BID LORE", "No lore engine is available.")
+            return false
+        end
+
+        local spendResolveForLore = data.spendResolveForLore == true
+        if (actor.loreBids or 0) <= 0 then
+            local canUseResolve = actionResolver.canSpendLoremasterResolveForLore and
+                actionResolver:canSpendLoremasterResolveForLore(actor)
+            if canUseResolve then
+                spendResolveForLore = true
+            else
+                self:appendNarrativeBlock("BID LORE", "No lore bids remaining.")
+                return false
+            end
+        end
+
+        local availableSubjects = self:getRoomBidLoreSubjects(actor, roomId)
+        if #availableSubjects == 0 then
+            self:appendNarrativeBlock("BID LORE", "No keyed lore subject is available here.")
+            return false
+        end
+
+        local action = {
+            actor = actor,
+            type = "bid_lore",
+            context = "crawl",
+            roomId = roomId,
+            featureId = feature and feature.id or data.poiId,
+            spendResolveForLore = spendResolveForLore,
+        }
+
+        self.pendingCrawlBidLore = {
+            actor = actor,
+            roomId = roomId,
+            featureId = feature and feature.id or data.poiId,
+            action = action,
+        }
+
+        self.eventBus:emit(events.EVENTS.REQUEST_BID_LORE, {
+            actor = actor,
+            action = action,
+            roomId = roomId,
+            availableSubjects = availableSubjects,
+        })
+
+        return true
+    end
+
+    function screen:handleCrawlBidLoreComplete(data)
+        if not self.pendingCrawlBidLore then
+            return
+        end
+
+        local action = data and data.action or {}
+        if action.context ~= "crawl" then
+            return
+        end
+
+        local pending = self.pendingCrawlBidLore
+        self.pendingCrawlBidLore = nil
+
+        local actionResolver = self:getActionResolver()
+        if not actionResolver then
+            self:appendNarrativeBlock("BID LORE", "No lore engine is available.")
+            return
+        end
+
+        local rawResult = data and data.result or nil
+        local result = nil
+
+        if rawResult and rawResult.cancelled then
+            result = actionResolver:resolveBidLoreOutcome({
+                actor = pending.actor,
+                type = "bid_lore",
+                context = "crawl",
+                roomId = pending.roomId,
+            }, rawResult)
+            result.crawlBidLore = true
+            result.challengeAction = false
+            result.cardCost = false
+            result.effects = result.effects or {}
+            result.effects[#result.effects + 1] = "crawl_lore_bid"
+        else
+            local selection = rawResult and rawResult.selection or {}
+            result = actionResolver:resolveCrawlBidLore({
+                actor = pending.actor,
+                roomId = pending.roomId,
+                subjectId = selection.subjectId,
+                questionType = selection.questionType,
+                motif = selection.motif,
+                focus = selection.focus,
+                targetNpcId = selection.npcId,
+                targetNpcBlueprintId = selection.npcBlueprintId,
+                spendResolveForLore = pending.action and pending.action.spendResolveForLore or false,
+            })
+        end
+
+        if result and result.description then
+            self:appendNarrativeBlock("BID LORE", result.description)
+        else
+            self:appendNarrativeBlock("BID LORE", "No answer was recorded.")
+        end
     end
 
     function screen:buildLightToggleMessage(data)
@@ -992,8 +1221,46 @@ function M.createCrawlScreen(config)
 
         local actor = self:getActivePC()
 
-        if data.watchCost then
-            self:spendWatch("You take time to " .. (data.action or "act") .. ".")
+        if data.action == "bid_lore" then
+            self:openCrawlBidLore(actor, feature, data)
+            return
+        end
+
+        if data.action == "make_offering" or data.action == "study_lore" then
+            local result = self.roomManager and
+                self.roomManager:resolveSocialFeatureProcedure(self.currentRoomId, feature.id, data.action, actor)
+            if result and result.description then
+                self:appendNarrativeBlock("SOCIAL", result.description)
+            end
+            return
+        end
+
+        if data.action == "harvest_reagent" then
+            local ok, result, harvest = alchemy.resolveHarvestReagent(actor, feature, {
+                watchManager = self.watchManager,
+                eventBus = self.eventBus,
+            })
+            if not ok then
+                self:appendNarrativeBlock("ALCHEMY", result or "You cannot harvest a reagent here.")
+                return
+            end
+
+            local reagent = harvest and harvest.reagent
+            local watchNumber = harvest and harvest.watchResult and harvest.watchResult.watchNumber
+            local message = "You spend a watch harvesting and bottling " ..
+                ((reagent and reagent.name) or "an alchemical reagent") .. "."
+            if watchNumber then
+                message = message .. " (Watch " .. watchNumber .. ")"
+            end
+            self:appendNarrativeBlock("ALCHEMY", message)
+
+            if self.roomManager and feature.id then
+                self.roomManager:updateFeatureState(self.currentRoomId, feature.id, {
+                    alchemy = feature.alchemy,
+                    reagentsHarvested = feature.alchemy and feature.alchemy.depleted or nil,
+                })
+            end
+            return
         end
 
         -- Map investigation-style actions to the Test of Fate flow
@@ -1025,6 +1292,26 @@ function M.createCrawlScreen(config)
         end
     end
 
+    function screen:handleEntityDefeated(data)
+        local entity = data and data.entity
+        if not entity or entity.isPC or not self.roomManager or not self.currentRoomId then
+            return
+        end
+
+        local currentWatch = nil
+        if self.watchManager and self.watchManager.getWatchCount then
+            currentWatch = self.watchManager:getWatchCount()
+        end
+
+        local corpse = self.roomManager:addCorpseForEntity(self.currentRoomId, entity, {
+            currentWatch = currentWatch,
+        })
+        if corpse then
+            self:appendNarrativeBlock("AFTERMATH", corpse.description)
+            self:refreshRoomDescription()
+        end
+    end
+
     --- Handle clicking on an exit to move the party
     function screen:handleExitClick(targetRoomId)
         if not self.watchManager then
@@ -1037,7 +1324,13 @@ function M.createCrawlScreen(config)
         local success, result = self.watchManager:moveParty(targetRoomId)
 
         if success then
-            print("[handleExitClick] Move successful! Watch: " .. result.watchResult.watchNumber)
+            if result.watchResult then
+                print("[handleExitClick] Move successful! Watch: " .. result.watchResult.watchNumber)
+            else
+                print("[handleExitClick] Move successful! Mapped route progress: " ..
+                    tostring(result.mappedRoomTravelProgress or 0) .. "/" ..
+                    tostring(result.mappedRoomTravelPerWatch or 1))
+            end
             -- Room change is handled by ROOM_ENTERED event
         else
             print("[handleExitClick] Move failed: " .. (result.error or "unknown"))

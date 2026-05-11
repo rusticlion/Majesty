@@ -17,6 +17,13 @@ M.RESULTS = {
     GREAT_FAILURE = "great_failure",
 }
 
+M.GROUP_RESULTS = {
+    SUCCESS    = "success",
+    TIGHT_SPOT = "tight_spot",
+    FAILURE    = "failure",
+    DISASTER   = "disaster",
+}
+
 --------------------------------------------------------------------------------
 -- CONSTANTS
 --------------------------------------------------------------------------------
@@ -121,6 +128,46 @@ end
 --------------------------------------------------------------------------------
 function M.canPush(result)
     return result.result == M.RESULTS.FAILURE
+end
+
+--------------------------------------------------------------------------------
+-- GROUP TESTS
+--------------------------------------------------------------------------------
+function M.getGroupTestHits(testResult)
+    local resultType = type(testResult) == "table" and testResult.result or testResult
+    if resultType == M.RESULTS.GREAT_SUCCESS then
+        return 2
+    elseif resultType == M.RESULTS.SUCCESS then
+        return 1
+    elseif resultType == M.RESULTS.GREAT_FAILURE then
+        return -1
+    end
+    return 0
+end
+
+function M.resolveGroupTest(testResults)
+    local hits = 0
+    for _, testResult in ipairs(testResults or {}) do
+        hits = hits + M.getGroupTestHits(testResult)
+    end
+
+    local resultType
+    if hits >= 2 then
+        resultType = M.GROUP_RESULTS.SUCCESS
+    elseif hits == 1 then
+        resultType = M.GROUP_RESULTS.TIGHT_SPOT
+    elseif hits == 0 then
+        resultType = M.GROUP_RESULTS.FAILURE
+    else
+        resultType = M.GROUP_RESULTS.DISASTER
+    end
+
+    return {
+        result = resultType,
+        success = resultType == M.GROUP_RESULTS.SUCCESS,
+        hits = hits,
+        tests = testResults or {},
+    }
 end
 
 --------------------------------------------------------------------------------

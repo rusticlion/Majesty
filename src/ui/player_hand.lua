@@ -34,7 +34,7 @@ M.SUIT_ACTIONS = {
     },
     [constants.SUITS.PENTACLES] = {
         primary = "roughhouse",
-        options = { "avoid", "dash", "dodge", "trip", "disarm", "displace", "grapple" },
+        options = { "avoid", "dash", "dodge", "roughhouse", "trip", "disarm", "displace", "grapple" },
         description = "Avoid & Roughhouse - mobility and control",
     },
     [constants.SUITS.WANDS] = {
@@ -123,8 +123,11 @@ function M.createPlayerHand(config)
             initiativeCard = nil,
         }
 
-        -- Draw FULL_HAND_SIZE cards
-        for _ = 1, M.FULL_HAND_SIZE do
+        local drawPenalty = math.max(0, pc.stinkingCloudDrawPenalty or pc.challengeDrawPenalty or 0)
+        local drawCount = math.max(0, M.FULL_HAND_SIZE - drawPenalty)
+
+        -- Draw FULL_HAND_SIZE cards, reduced by active start-of-round effects.
+        for _ = 1, drawCount do
             local card = self.playerDeck:draw()
             if card then
                 self.hands[pc.id].cards[#self.hands[pc.id].cards + 1] = card
@@ -165,6 +168,67 @@ function M.createPlayerHand(config)
     --- Get card count for a PC
     function hand:getCardCount(pc)
         return #self:getHand(pc)
+    end
+
+    --- Discard one Challenge card from a PC's current hand.
+    -- @param pc table: The PC whose hand is affected
+    -- @param opts table|nil: { card = cardRef, index = number }
+    -- @return table|nil, number|nil, string|nil: discarded card, index, error
+    function hand:discardCard(pc, opts)
+        if not pc or not pc.id then
+            return nil, nil, "invalid_pc"
+        end
+
+        local handData = self.hands[pc.id]
+        if not handData or not handData.cards or #handData.cards == 0 then
+            return nil, nil, "no_challenge_card"
+        end
+
+        opts = opts or {}
+        local cards = handData.cards
+        local index = tonumber(opts.index or opts.cardIndex)
+        local explicitCard = opts.card
+
+        if not index and explicitCard then
+            for i, card in ipairs(cards) do
+                if card == explicitCard then
+                    index = i
+                    break
+                end
+            end
+            if not index then
+                return nil, nil, "card_not_in_hand"
+            end
+        end
+
+        if not index then
+            index = 1
+        end
+        if index < 1 or index > #cards then
+            return nil, nil, "invalid_card_index"
+        end
+
+        local card = table.remove(cards, index)
+        if self.playerDeck and self.playerDeck.discard then
+            self.playerDeck:discard(card)
+        end
+
+        if self.selectedPC and self.selectedPC.id == pc.id then
+            if self.selectedCard == card or self.selectedCardIndex == index then
+                self:clearSelection()
+            elseif self.selectedCardIndex and self.selectedCardIndex > index then
+                self.selectedCardIndex = self.selectedCardIndex - 1
+            end
+        end
+
+        self.eventBus:emit(events.EVENTS.CHALLENGE_CARD_DISCARDED, {
+            pc = pc,
+            card = card,
+            cardIndex = index,
+            reason = opts.reason or "discard",
+        })
+
+        return card, index, nil
     end
 
     ----------------------------------------------------------------------------

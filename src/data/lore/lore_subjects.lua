@@ -62,6 +62,16 @@ M.SUBJECTS = {
                 implication = "Clear one clean route before splitting zones.",
                 sourceRefs = { "room:hall_of_solemnity", "room:trapped_hallway" },
             },
+            alchemy_effect = {
+                summary = "Brain spider reagents brew into web alchemy.",
+                details = {
+                    "A spider sac bomb bursts into silver webbing and Roots one target.",
+                    "Spinneret oil forms a powerful glue that binds two things together for a watch.",
+                    "The bomb works on incorporeal creatures as well as flesh-and-blood targets.",
+                },
+                implication = "Use the bomb as a Cups-based Use Item attack, then exploit the Rooted target.",
+                sourceRefs = { "appendix_b:brain_spider_alchemy", "item:brain_spider_bomb" },
+            },
         },
     },
     {
@@ -160,7 +170,7 @@ M.SUBJECTS = {
         name = "Guardian Shrine",
         shortDescription = "Chamber where tomb memory, offerings, and guardian intent overlap.",
         tags = { "history", "location", "spirit", "ritual", "social", "astronomy" },
-        roomIds = { "117_guardian_shrine" },
+        roomIds = { "118_chamber_of_vigilant" },
         answers = {
             identity_or_origin = {
                 summary = "The shrine honors astronomer dead who watched for the Comet of Woe.",
@@ -170,7 +180,7 @@ M.SUBJECTS = {
                     "Names spoken correctly calm the guardian stance.",
                 },
                 implication = "Use respectful address and historical references before banter.",
-                sourceRefs = { "room:guardian_shrine", "feature:inscribed_tablets" },
+                sourceRefs = { "room:chamber_of_vigilant", "feature:inscribed_tablets" },
             },
             social_preference = {
                 summary = "Respectful ritual language and offerings improve reception.",
@@ -180,7 +190,7 @@ M.SUBJECTS = {
                     "Desecration cues trigger immediate confrontation.",
                 },
                 implication = "Lead with deference, then negotiate from trust.",
-                sourceRefs = { "socialEncounter:guardian_shrine", "feature:ancient_altar" },
+                sourceRefs = { "socialEncounter:chamber_of_vigilant", "feature:ancient_altar" },
             },
             taboo_or_trigger = {
                 summary = "The guardian reacts hardest to grave-robbing behavior.",

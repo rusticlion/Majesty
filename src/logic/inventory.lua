@@ -73,8 +73,19 @@ function M.createItem(config)
         stackSize = config.stackSize or 1,  -- Max per slot
         quantity  = config.quantity or 1,
 
+        -- Weapon/action metadata
+        weaponType = config.weaponType,
+        isWeapon   = config.isWeapon or config.weaponType ~= nil,
+        isRanged   = config.isRanged or config.weaponType == "bow" or config.weaponType == "crossbow",
+        uses_ammo  = config.uses_ammo or config.weaponType == "bow" or config.weaponType == "crossbow",
+        isLoaded   = config.isLoaded,
+
         -- Armor flag (worn armor uses belt slots)
         isArmor = config.isArmor or false,
+
+        -- Common item type helpers
+        type = config.type,
+        isRation = config.isRation or false,
 
         -- S11.3: Key properties for locks
         keyId = config.keyId or nil,  -- What locks this key opens
@@ -85,6 +96,14 @@ function M.createItem(config)
         -- Custom properties
         properties = config.properties or {},
     }
+
+    if config.isMelee ~= nil then
+        item.isMelee = config.isMelee
+    elseif item.isWeapon and not item.isRanged then
+        item.isMelee = true
+    else
+        item.isMelee = false
+    end
 
     return item
 end
@@ -157,11 +176,12 @@ end
 
 --- Repair an item (remove one notch)
 function M.repairNotch(item)
+    if item.destroyed then
+        return false
+    end
+
     if item.notches > 0 then
         item.notches = item.notches - 1
-        if item.destroyed and item.notches < item.durability then
-            item.destroyed = false
-        end
         return true
     end
     return false
@@ -474,8 +494,8 @@ function M.createInventory(config)
     function inventory:getAllItems()
         local all = {}
         for _, location in ipairs({ "hands", "belt", "pack" }) do
-            for _, item in ipairs(self[location]) do
-                all[#all + 1] = { item = item, location = location }
+            for index, item in ipairs(self[location]) do
+                all[#all + 1] = { item = item, location = location, index = index }
             end
         end
         return all

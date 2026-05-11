@@ -149,9 +149,10 @@ function M.createTestOfFateModal(config)
         end
 
         -- Resolve initial test
-        local attribute = config.entity[config.attribute] or 2
-        local targetSuit = config.targetSuit or self.initialCard.suit
+        local attribute = (config.entity[config.attribute] or 2) + (config.attributeBonus or config.bonus or 0)
+        local targetSuit = config.targetSuit
         self.result = resolver.resolveTest(attribute, targetSuit, self.initialCard, config.favor)
+        self.result.attributeBonus = config.attributeBonus or config.bonus or 0
 
         -- Center on screen
         local sw, sh = 800, 600

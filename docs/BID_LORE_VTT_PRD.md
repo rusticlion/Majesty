@@ -1,13 +1,13 @@
 # Bid Lore VTT Subsystem PRD
 
-Status: Draft v1  
+Status: Implemented v1 / expansion backlog
 Owner: Gameplay Systems  
 Date: 2026-02-05  
-Scope: Challenge-phase `Bid Lore` action for solo/GM-less VTT play.
+Scope: Challenge-phase and crawl/investigation `Bid Lore` for solo/GM-less VTT play.
 
 ## 1. Problem Statement
 
-`Bid Lore` is currently a placeholder in challenge resolution (`src/logic/action_resolver.lua:1941`), so players can spend a card but do not get a rules-faithful lore adjudication loop.
+`Bid Lore` now has a v1 challenge loop: the resolver opens an async modal, the engine adjudicates structured motif/subject/question selections, accepted answers spend one lore bid, rejected or rephrase outcomes do not, and camp recovery refills lore bids to 4. Crawl/investigation play can open the same modal from lore-keyed POI focus menus, resolve through the non-challenge backend path without charging a Challenge card, and enforce room-available subjects for the Tomb Guardian social room. Loremaster can pay accepted lore answers with Resolve instead of lore bid uses when requested, Weird, Wise, Ancient can ask one accepted-answer follow-up for free, Uncanny Knowledge can substitute when no party member has an accepted-level motif for the subject, Con Artist can reveal an observed or conversed NPC's likes/dislikes, and Foretell has a structured yes/no hunch resolver that spends lore only when new prophetic information is given. Remaining work is content depth and broader non-challenge affordances beyond POI focus menus.
 
 Tabletop `Bid Lore` assumes a human GM can interpret motifs and answer open-ended questions. In this prototype, we need deterministic, fast, and transparent adjudication without a human referee.
 
@@ -182,31 +182,32 @@ Fallback behavior:
 
 ## 9. Architecture and Integration
 
-### 9.1 New Runtime Modules
+### 9.1 Runtime Modules
 
-1. `src/logic/bid_lore_engine.lua`
-2. `src/ui/bid_lore_modal.lua`
+1. `src/logic/bid_lore_engine.lua` - implemented.
+2. `src/ui/bid_lore_modal.lua` - implemented.
 
 ### 9.2 Event Additions
 
-Add to `src/logic/events.lua`:
+Added to `src/logic/events.lua`:
 
 1. `REQUEST_BID_LORE`
 2. `BID_LORE_COMPLETE`
-3. `BID_LORE_VERDICT` (optional analytics/debug stream)
+3. `BID_LORE_VERDICT`
 
 ### 9.3 Action Resolver Contract Changes
 
-In `src/logic/action_resolver.lua`:
+Implemented in `src/logic/action_resolver.lua`:
 
 1. Replace placeholder in `resolveGenericAction` for `BID_LORE` with async request path.
 2. Emit `REQUEST_BID_LORE` payload containing actor, action context, and available subjects.
 3. Return `pendingBidLore = true` in result to gate challenge continuation (same pattern as Test of Fate).
 4. Add `resolveBidLoreOutcome(action, bidLoreResult)` to finalize description/effects and lore spend.
+5. Enforce `requiresLoreBid` at resolver validation so zero-bid actions are blocked before the modal opens.
 
 ### 9.4 Bootstrap Wiring
 
-In `src/app/bootstrap.lua`:
+Implemented in `src/app/bootstrap.lua`:
 
 1. Instantiate/init `bidLoreModal` similar to `testOfFateModal`.
 2. Track `gameState.pendingLoreAction`.
@@ -218,7 +219,7 @@ In `src/app/bootstrap.lua`:
 
 ### 9.5 Input Routing Priority
 
-In `src/controllers/key_input_router.lua` and `src/controllers/mouse_input_router.lua`:
+Implemented in `src/controllers/key_input_router.lua` and `src/controllers/mouse_input_router.lua`:
 
 1. `bidLoreModal` gets modal-first priority equal to `testOfFateModal`.
 
@@ -236,6 +237,7 @@ In `src/controllers/key_input_router.lua` and `src/controllers/mouse_input_route
 
 1. `loreBids <= 0`:
    - `Bid Lore` disabled in command board with reason `No lore bids remaining`.
+   - Resolver also blocks direct action submissions with the same reason.
 2. Subject not in current context:
    - hide from selector or reject as `subject_unavailable`.
 3. No authored answer:
@@ -276,33 +278,33 @@ This enables rapid balancing of motif/tag mappings.
 4. `loreBids` decrements only on accepted outcomes.
 5. Input routers block underlying gameplay while modal open.
 
-## 14. Implementation Plan
+## 14. Implementation Status
 
-Phase A: Vertical Slice
+Phase A: Vertical Slice - Done
 
 1. Add engine module with static in-memory subject/question sample.
 2. Add modal with subject + question type + motif selection.
 3. Wire async action flow and lore spend logic.
 
-Phase B: Content Expansion
+Phase B: Content Expansion - Started
 
-1. Build initial lore subject catalog from current map and enemy blueprints.
-2. Add motif tag map for starter guild motifs in `main.lua`.
-3. Add richer answer details and implication text.
+1. Build initial lore subject catalog from current map and enemy blueprints. **Started.**
+2. Add motif tag map for starter guild motifs. **Started.**
+3. Add richer answer details and implication text. **Ongoing.**
 
-Phase C: Exceptions and Depth
+Phase C: Exceptions and Depth - Backlog
 
-1. Add talent-based overrides (free follow-up, no-motif fallback, resolve-substitute).
+1. Add talent-based overrides. **Started; Loremaster Resolve payment, Weird, Wise, Ancient free follow-up, Uncanny Knowledge no-motif fallback, Con Artist likes/dislikes, and Foretell yes/no hunches are implemented. Dedicated UI for special-talent prompts remains.**
 2. Add context-aware subject filtering (room/faction/encounter).
 3. Add QA pass for answer quality and parity.
 
 ## 15. Acceptance Criteria (Definition of Done)
 
-1. `Bid Lore` is no longer generic placeholder text.
-2. Challenge-turn `Bid Lore` opens modal, adjudicates deterministically, and resumes flow.
-3. Rules parity for action cost vs lore-spend semantics is enforced.
-4. Players receive actionable, authored answers on accepted bids.
-5. System includes logging to tune motif-tag and subject-tag matching.
+1. `Bid Lore` is no longer generic placeholder text. **Done.**
+2. Challenge-turn `Bid Lore` opens modal, adjudicates deterministically, and resumes flow. **Done.**
+3. Rules parity for action cost vs lore-spend semantics is enforced. **Done for v1 Challenge flow and crawl/investigation POI flow; covered by `scripts/smoke_bid_lore.lua`.**
+4. Players receive actionable, authored answers on accepted bids. **Started; includes the Tomb Guardian social-room subject; content catalog still needs expansion.**
+5. System includes logging to tune motif-tag and subject-tag matching. **Done via `BID_LORE_VERDICT`.**
 
 ## 16. Open Decisions
 
@@ -313,5 +315,6 @@ Phase C: Exceptions and Depth
 
 ## 17. Immediate Follow-Through Back to Action Plumbing
 
-1. Implement Phase A vertical slice first.
-2. Then return to action-plumbing backlog items in `docs/CHALLENGE_PARITY_PLAN.md` Phase 2 (`Command`, `Use/Pull Item`, `Roughhouse` alignment), using this Bid Lore flow as the async-action template.
+1. Expand authored lore subjects and answer coverage for more map social encounters, hazards, and Appendix B creatures/items.
+2. Add dedicated UI affordances for lore-relevant talent exceptions.
+3. Decide whether `rephrase_needed` should support retrying inside the same Challenge action.

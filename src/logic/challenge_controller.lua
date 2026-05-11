@@ -11,6 +11,9 @@
 -- The controller PAUSES after each action until UI_SEQUENCE_COMPLETE fires.
 
 local events = require('logic.events')
+local vigilance_triggers = require('data.vigilance_triggers')
+local constants = require('constants')
+local fate_resolver = require('logic.resolver')
 
 local M = {}
 
@@ -45,6 +48,69 @@ M.OUTCOMES = {
 --------------------------------------------------------------------------------
 local MAX_TURNS = 14
 
+local function normalizeTalentKey(value)
+    return tostring(value or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+end
+
+local function getEntityTalentEntry(entity, talentId)
+    local talents = entity and entity.talents
+    if type(talents) ~= "table" then
+        return nil
+    end
+
+    local requested = normalizeTalentKey(talentId)
+    for key, value in pairs(talents) do
+        if normalizeTalentKey(key) == requested then
+            return value
+        end
+        if type(value) == "table" and normalizeTalentKey(value.id or value.name or value.talentId) == requested then
+            return value
+        end
+    end
+
+    return nil
+end
+
+local function entityHasUsableTalent(entity, talentId)
+    local entry = getEntityTalentEntry(entity, talentId)
+    if not entry or entry == false then
+        return false
+    end
+    if type(entry) == "table" then
+        return entry.wounded ~= true
+    end
+    return entry == true
+end
+
+local function spendEntityResolve(entity, amount)
+    amount = amount or 1
+    if not entity then
+        return false, "missing_actor"
+    end
+    if entity.spendResolve then
+        local ok, reason = entity:spendResolve(amount)
+        if ok then
+            return true, nil
+        end
+        return false, reason or "not_enough_resolve"
+    end
+    if type(entity.resolve) == "table" then
+        if (entity.resolve.current or 0) < amount then
+            return false, "not_enough_resolve"
+        end
+        entity.resolve.current = entity.resolve.current - amount
+        return true, nil
+    end
+    if type(entity.resolve) == "number" then
+        if entity.resolve < amount then
+            return false, "not_enough_resolve"
+        end
+        entity.resolve = entity.resolve - amount
+        return true, nil
+    end
+    return false, "resolve_unavailable"
+end
+
 --------------------------------------------------------------------------------
 -- CHALLENGE CONTROLLER FACTORY
 --------------------------------------------------------------------------------
@@ -59,6 +125,7 @@ function M.createChallengeController(config)
         eventBus   = config.eventBus or events.globalBus,
         playerDeck = config.playerDeck,
         gmDeck     = config.gmDeck,
+        actionResolver = config.actionResolver,
         gameClock  = config.gameClock,
         guild      = config.guild or {},  -- PC entities
         zoneSystem = config.zoneSystem,   -- S12.1: Zone registry for engagement tracking
@@ -100,6 +167,11 @@ function M.createChallengeController(config)
         zoneId          = nil,
         zones           = nil,        -- Array of zone definitions { id, name, description }
         challengeType   = nil,        -- "combat", "trap", "hazard", "social"
+        surprised       = false,      -- True when GM characters ambush the guild
+        surpriseResults = {},         -- Pre-challenge automatic GM actions
+        ambushResistance = nil,       -- Ambusher talent resistance result, if elected
+        sceneAdvantages = {},         -- Ambush-created scene advantages/special rules
+        chickenDoomResults = {},      -- Malediction King stress-test results
 
         -- Fool interrupt tracking (S4.9)
         pendingFoolRestore = nil,     -- { state, activeEntity } to restore after Fool
@@ -120,6 +192,238 @@ function M.createChallengeController(config)
         self.eventBus:on(events.EVENTS.MINOR_ACTION_USED, function(data)
             self:onMinorActionUsed(data)
         end)
+    end
+
+    function controller:hasMaledictionFlag(entity, flag)
+        if not entity or not flag then
+            return false
+        end
+        if entity[flag] == true then
+            return true
+        end
+
+        local malediction = entity.malediction
+        local curse = malediction and malediction.curse
+        local flags = curse and curse.flags
+        return malediction and malediction.active ~= false and flags and flags[flag] == true
+    end
+
+    function controller:getEntityOption(options, entity)
+        if type(options) ~= "table" or not entity then
+            return options
+        end
+        return options[entity] or (entity.id and options[entity.id]) or (entity.name and options[entity.name])
+    end
+
+    function controller:getChickenDoomTestResult(entity, challengeConfig)
+        challengeConfig = challengeConfig or {}
+        local tests = challengeConfig.chickenDoomTests or challengeConfig.stressChickenTests
+        local testSpec = self:getEntityOption(tests, entity)
+        if type(testSpec) == "table" and testSpec.success ~= nil then
+            return testSpec
+        end
+
+        local cardSpec = testSpec
+        if type(testSpec) == "table" then
+            cardSpec = testSpec.card or testSpec.testCard
+        end
+        if not cardSpec then
+            local cards = challengeConfig.chickenDoomCards or challengeConfig.stressChickenCards
+            cardSpec = self:getEntityOption(cards, entity)
+        end
+        if not cardSpec and challengeConfig.chickenDoomCard then
+            cardSpec = challengeConfig.chickenDoomCard
+        end
+        if not cardSpec and challengeConfig.stressChickenCard then
+            cardSpec = challengeConfig.stressChickenCard
+        end
+
+        local deck = challengeConfig.chickenDoomDeck or challengeConfig.stressChickenDeck or self.playerDeck
+        if not cardSpec and deck and deck.draw then
+            cardSpec = deck:draw()
+        end
+
+        if not cardSpec then
+            return nil
+        end
+
+        local wands = tonumber(entity.wands or (entity.attributes and entity.attributes[constants.SUITS.WANDS])) or 0
+        local favor = type(testSpec) == "table" and testSpec.favor or nil
+        return fate_resolver.resolveTest(wands, constants.SUITS.WANDS, cardSpec, favor)
+    end
+
+    function controller:applyChickenDoomFailure(entity, testResult)
+        entity.conditions = entity.conditions or {}
+        entity.conditions.chicken = true
+        entity.conditions.chickenDoom = true
+        entity.chickenDoom = {
+            active = true,
+            startedRound = (self.currentRound or 0) + 1,
+            expiresAfterRound = (self.currentRound or 0) + 1,
+            testResult = testResult,
+        }
+        return entity.chickenDoom
+    end
+
+    function controller:resolveStressChickenDooms(challengeConfig)
+        local results = {}
+        for _, entity in ipairs(self.allCombatants or {}) do
+            if not self:isDefeated(entity) and self:hasMaledictionFlag(entity, "stressChickenTest") then
+                local testResult = self:getChickenDoomTestResult(entity, challengeConfig)
+                local detail = {
+                    entity = entity,
+                    testResult = testResult,
+                    success = testResult and testResult.success == true,
+                    result = "resisted",
+                }
+
+                if testResult and not testResult.success then
+                    detail.result = "chicken"
+                    detail.chickenDoom = self:applyChickenDoomFailure(entity, testResult)
+                elseif not testResult then
+                    detail.result = "test_unavailable"
+                end
+
+                results[#results + 1] = detail
+                self.eventBus:emit(events.EVENTS.MALEDICTION_CHICKEN_DOOM, detail)
+            end
+        end
+
+        self.chickenDoomResults = results
+        return results
+    end
+
+    function controller:clearExpiredChickenDoom(completedRound)
+        local cleared = {}
+        completedRound = completedRound or self.currentRound or 0
+
+        for _, entity in ipairs(self.allCombatants or {}) do
+            local doom = entity.chickenDoom
+            if doom and doom.active ~= false and (doom.expiresAfterRound or 0) <= completedRound then
+                entity.conditions = entity.conditions or {}
+                entity.conditions.chicken = nil
+                entity.conditions.chickenDoom = nil
+                doom.active = false
+                doom.clearedRound = completedRound
+                entity.lastChickenDoom = doom
+                entity.chickenDoom = nil
+
+                local detail = {
+                    entity = entity,
+                    round = completedRound,
+                    result = "chicken_cleared",
+                }
+                cleared[#cleared + 1] = detail
+                self.eventBus:emit(events.EVENTS.MALEDICTION_CHICKEN_CLEARED, detail)
+            end
+        end
+
+        return cleared
+    end
+
+    function controller:getKnownEntities()
+        local entities = {}
+        local seen = {}
+
+        local function add(entity)
+            if entity and not seen[entity] then
+                seen[entity] = true
+                entities[#entities + 1] = entity
+            end
+        end
+
+        for _, collection in ipairs({ self.allCombatants, self.pcs, self.npcs, self.guild }) do
+            for _, entity in ipairs(collection or {}) do
+                add(entity)
+            end
+        end
+
+        return entities
+    end
+
+    function controller:clearFoolReshuffleConditions(round)
+        local expired = {}
+
+        for _, entity in ipairs(self:getKnownEntities()) do
+            local durations = entity.conditionDurations
+            if durations then
+                entity.conditions = entity.conditions or {}
+                for condition, duration in pairs(durations) do
+                    if duration and duration["until"] == "fool_reshuffle" then
+                        entity.conditions[condition] = false
+                        if entity[condition] == true then
+                            entity[condition] = false
+                        end
+                        durations[condition] = nil
+
+                        local detail = {
+                            entity = entity,
+                            condition = condition,
+                            timing = "fool_reshuffle",
+                            round = round or self.currentRound,
+                        }
+                        expired[#expired + 1] = detail
+                        self.eventBus:emit(events.EVENTS.CONDITION_EXPIRED, detail)
+                    end
+                end
+
+                if next(durations) == nil then
+                    entity.conditionDurations = nil
+                end
+            end
+
+            local blocks = entity.healingBlocks
+            if blocks then
+                for i = #blocks, 1, -1 do
+                    local block = blocks[i]
+                    if block and block["until"] == "fool_reshuffle" then
+                        block.active = false
+                        table.remove(blocks, i)
+                        if entity.healingBlock == block then
+                            entity.healingBlock = nil
+                        end
+
+                        local detail = {
+                            entity = entity,
+                            condition = "healing_block",
+                            timing = "fool_reshuffle",
+                            round = round or self.currentRound,
+                            block = block,
+                            woundTypes = block.woundTypes,
+                        }
+                        expired[#expired + 1] = detail
+                        self.eventBus:emit(events.EVENTS.CONDITION_EXPIRED, detail)
+                    end
+                end
+
+                if #blocks == 0 then
+                    entity.healingBlocks = nil
+                end
+            elseif entity.healingBlock and entity.healingBlock["until"] == "fool_reshuffle" then
+                local block = entity.healingBlock
+                block.active = false
+                entity.healingBlock = nil
+
+                local detail = {
+                    entity = entity,
+                    condition = "healing_block",
+                    timing = "fool_reshuffle",
+                    round = round or self.currentRound,
+                    block = block,
+                    woundTypes = block.woundTypes,
+                }
+                expired[#expired + 1] = detail
+                self.eventBus:emit(events.EVENTS.CONDITION_EXPIRED, detail)
+            end
+        end
+
+        return expired
+    end
+
+    function controller:isChickenDoomed(entity)
+        local conditions = entity and entity.conditions or {}
+        return conditions.chicken == true or conditions.chickenDoom == true or
+            (entity and entity.chickenDoom and entity.chickenDoom.active ~= false)
     end
 
     ----------------------------------------------------------------------------
@@ -194,6 +498,11 @@ function M.createChallengeController(config)
         -- Initialize state
         self.state = M.STATES.STARTING
         self.currentRound = 0
+        self.surprised = challengeConfig.surprised == true
+        self.surpriseResults = {}
+        self.ambushResistance = nil
+        self.sceneAdvantages = {}
+        self.chickenDoomResults = self:resolveStressChickenDooms(challengeConfig)
 
         -- Emit start event
         self.eventBus:emit(events.EVENTS.CHALLENGE_START, {
@@ -202,7 +511,20 @@ function M.createChallengeController(config)
             roomId = self.roomId,
             zones = self.zones,  -- Pass zones to arena view
             challengeType = self.challengeType,
+            surprised = self.surprised,
+            chickenDoomResults = self.chickenDoomResults,
         })
+
+        if self.surprised then
+            local resistance = self:resolveAmbusherResistance(challengeConfig)
+            if resistance and resistance.success then
+                self.surprised = false
+            end
+        end
+
+        if self.surprised then
+            self:resolveSurpriseActions(challengeConfig)
+        end
 
         -- Begin first round (initiative submission)
         self:startNewRound()
@@ -270,6 +592,10 @@ function M.createChallengeController(config)
         -- Visual sync
         self.awaitingVisualSync = false
         self.pendingAction = nil
+        self.surprised = false
+        self.surpriseResults = {}
+        self.ambushResistance = nil
+        self.sceneAdvantages = {}
     end
 
     ----------------------------------------------------------------------------
@@ -296,6 +622,227 @@ function M.createChallengeController(config)
     end
 
     ----------------------------------------------------------------------------
+    -- AMBUSH / SURPRISE SETUP (Chapter 7, p. 110)
+    ----------------------------------------------------------------------------
+
+    local function normalizeAmbushTactic(value)
+        if type(value) ~= "string" then
+            return "shank"
+        end
+
+        value = value:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        value = value:gsub("%s+", "_")
+
+        if value == "advantage" or value == "create_advantage" or value == "tactic_1" then
+            return "create_advantage"
+        end
+        if value == "deprive" or value == "deprive_resources" or value == "resource" or value == "tactic_2" then
+            return "deprive_resources"
+        end
+        if value == "shank" or value == "wound" or value == "attack" or value == "tactic_3" then
+            return "shank"
+        end
+
+        return value
+    end
+
+    local function surpriseActionForNPC(actions, npc, index)
+        if type(actions) ~= "table" then
+            return {}
+        end
+
+        return actions[npc and npc.id] or actions[index] or actions.default or {}
+    end
+
+    function controller:wantsAmbusherResistance(options)
+        return options and (
+            options.resistAmbushWithAmbusher == true or
+            options.ambusherResist == true or
+            options.ambusherResistActor ~= nil or
+            options.ambusherResistActorId ~= nil
+        )
+    end
+
+    function controller:findAmbusherResistanceActor(options)
+        options = options or {}
+        local requestedActor = options.ambusherResistActor
+        local requestedId = options.ambusherResistActorId or options.ambusherActorId
+
+        if requestedActor then
+            if entityHasUsableTalent(requestedActor, "ambusher") then
+                return requestedActor, nil
+            end
+            return nil, "requires_ambusher"
+        end
+
+        for _, pc in ipairs(self.pcs or {}) do
+            if requestedId and pc.id ~= requestedId then
+                -- Keep looking for the requested actor.
+            elseif entityHasUsableTalent(pc, "ambusher") then
+                return pc, nil
+            elseif requestedId and pc.id == requestedId then
+                return nil, "requires_ambusher"
+            end
+        end
+
+        return nil, requestedId and "ambusher_not_found" or "requires_ambusher"
+    end
+
+    function controller:resolveAmbusherResistance(options)
+        if not self:wantsAmbusherResistance(options) then
+            return nil
+        end
+
+        local actor, reason = self:findAmbusherResistanceActor(options)
+        local result = {
+            success = false,
+            actor = actor,
+            reason = reason,
+            effects = { "ambusher_ambush_resistance" },
+        }
+
+        if not actor then
+            result.effects[#result.effects + 1] = "ambusher_resistance_blocked"
+            self.ambushResistance = result
+            self.eventBus:emit("ambush_resistance_failed", result)
+            return result
+        end
+
+        local ok, spendReason = spendEntityResolve(actor, 1)
+        if not ok then
+            result.reason = spendReason
+            result.effects[#result.effects + 1] = "resolve_missing"
+            result.effects[#result.effects + 1] = "ambusher_resistance_blocked"
+            self.ambushResistance = result
+            self.eventBus:emit("ambush_resistance_failed", result)
+            return result
+        end
+
+        result.success = true
+        result.reason = nil
+        result.description = "Ambusher raises a hue and cry before the ambush lands."
+        result.effects[#result.effects + 1] = "resolve_spent_for_ambusher"
+        result.effects[#result.effects + 1] = "ambush_resisted"
+        self.ambushResistance = result
+        self.eventBus:emit("ambush_resisted", result)
+        return result
+    end
+
+    function controller:selectSurpriseTarget(actionSpec, shankedTargets)
+        if actionSpec and actionSpec.target then
+            return actionSpec.target
+        end
+
+        local targetId = actionSpec and (actionSpec.targetId or actionSpec.pcId)
+        for _, pc in ipairs(self.pcs or {}) do
+            if not self:isDefeated(pc) and (not targetId or pc.id == targetId) and
+                not (shankedTargets and shankedTargets[pc.id]) then
+                return pc
+            end
+        end
+
+        return nil
+    end
+
+    function controller:resolveSurpriseAction(npc, actionSpec, shankedTargets)
+        actionSpec = actionSpec or {}
+        local tactic = normalizeAmbushTactic(actionSpec.tactic or actionSpec.type or actionSpec.action)
+        local result = {
+            actor = npc,
+            tactic = tactic,
+            success = true,
+            automatic = true,
+            effects = {},
+            description = actionSpec.description,
+        }
+
+        if tactic == "create_advantage" then
+            local advantage = {
+                actor = npc,
+                description = actionSpec.description or actionSpec.advantage or "Ambushers create an advantage.",
+                effect = actionSpec.effect,
+                zone = actionSpec.zone or (npc and npc.zone),
+            }
+            self.sceneAdvantages[#self.sceneAdvantages + 1] = advantage
+            result.advantage = advantage
+            result.effects[#result.effects + 1] = "ambush_advantage"
+            result.description = advantage.description
+            return result
+        end
+
+        local target = self:selectSurpriseTarget(actionSpec, tactic == "shank" and shankedTargets or nil)
+        result.target = target
+
+        if not target then
+            result.success = false
+            result.effects[#result.effects + 1] = "ambush_no_target"
+            result.description = "No valid ambush target."
+            return result
+        end
+
+        target.conditions = target.conditions or {}
+
+        if tactic == "deprive_resources" then
+            local resource = actionSpec.resource or actionSpec.deprive or "advantage"
+            local condition = actionSpec.condition
+            if not condition then
+                if resource == "disarm" or resource == "weapon" then
+                    condition = "disarmed"
+                elseif resource == "extinguish_light" or resource == "light" or resource == "torch" then
+                    condition = "light_extinguished"
+                elseif resource == "web" or resource == "root" then
+                    condition = "rooted"
+                end
+            end
+
+            if condition then
+                target.conditions[condition] = true
+                result.condition = condition
+            end
+            result.resource = resource
+            result.effects[#result.effects + 1] = "ambush_deprive_resources"
+            result.description = actionSpec.description or "Ambushers deprive the guild of a resource."
+            return result
+        end
+
+        -- Tactic 3: each attacker deals 1 Wound, but each adventurer can only
+        -- be attacked once before the Challenge begins.
+        local woundResult = target.takeWound and target:takeWound(actionSpec.damageType or "normal", actionSpec.woundOptions)
+        if shankedTargets and target.id then
+            shankedTargets[target.id] = true
+        end
+        result.woundResult = woundResult
+        result.effects[#result.effects + 1] = "ambush_shank"
+        result.effects[#result.effects + 1] = "surprise_wound"
+        result.description = actionSpec.description or "Ambusher sucker-punches the guild."
+        return result
+    end
+
+    function controller:resolveSurpriseActions(options)
+        options = options or {}
+        local results = {}
+        local shankedTargets = {}
+        local actions = options.surpriseActions or options.ambushActions
+
+        for index, npc in ipairs(options.npcs or self.npcs or {}) do
+            if not self:isDefeated(npc) then
+                local actionSpec = surpriseActionForNPC(actions, npc, index)
+                results[#results + 1] = self:resolveSurpriseAction(npc, actionSpec, shankedTargets)
+            end
+        end
+
+        self.surpriseResults = results
+        self.eventBus:emit("challenge_surprise_resolved", {
+            pcs = self.pcs,
+            npcs = self.npcs,
+            results = results,
+            sceneAdvantages = self.sceneAdvantages,
+        })
+
+        return results
+    end
+
+    ----------------------------------------------------------------------------
     -- ROUND MANAGEMENT (S4.6)
     ----------------------------------------------------------------------------
 
@@ -312,6 +859,21 @@ function M.createChallengeController(config)
 
         -- Rebuild combatant list (in case someone died)
         self:buildCombatantList()
+
+        if self.actionResolver and self.actionResolver.applyStinkingCloudRoundStart then
+            local roundEffects = self.actionResolver:applyStinkingCloudRoundStart({
+                round = self.currentRound,
+                combatants = self.allCombatants,
+            })
+            if roundEffects and #roundEffects > 0 then
+                self:buildCombatantList()
+                outcome = self:checkEndConditions()
+                if outcome then
+                    self:endChallenge(outcome)
+                    return
+                end
+            end
+        end
 
         -- Reset round tracking
         self.initiativeSlots = {}
@@ -434,9 +996,11 @@ function M.createChallengeController(config)
             self.eventBus:emit(events.EVENTS.CHALLENGE_ROUND_END, {
                 round = self.currentRound,
             })
+            self:clearExpiredChickenDoom(self.currentRound)
             if self.gameClock and self.gameClock.endRound then
                 local reshuffled = self.gameClock:endRound()
                 if reshuffled then
+                    self:clearFoolReshuffleConditions(self.currentRound)
                     print("[Challenge] The Fool reshuffled both decks at round end.")
                 end
             end
@@ -506,6 +1070,11 @@ function M.createChallengeController(config)
 
         print("[Turn] Count " .. self.currentCount .. ": " .. (entity.name or entity.id) .. "'s turn")
 
+        if self:isChickenDoomed(self.activeEntity) then
+            self:skipTurn(self.activeEntity, "chicken_doom")
+            return
+        end
+
         -- If NPC, trigger AI decision
         if not self.activeEntity.isPC then
             self:triggerNPCAction()
@@ -570,8 +1139,10 @@ function M.createChallengeController(config)
             return true
         end
         if entity.conditions and entity.conditions.deaths_door then
-            -- Could be defeated but not dead
-            return false
+            return true
+        end
+        if entity.conditions and (entity.conditions.knocked_out or entity.conditions.knockout) then
+            return true
         end
         return false
     end
@@ -594,6 +1165,11 @@ function M.createChallengeController(config)
     --- Normalize trigger definition for pending vigilance
     function controller:normalizeVigilanceTrigger(trigger)
         if type(trigger) == "string" then
+            local templated = vigilance_triggers.getTemplate(trigger)
+            if templated then
+                return templated
+            end
+
             return {
                 mode = "action_type",
                 actionType = trigger,
@@ -602,16 +1178,16 @@ function M.createChallengeController(config)
         end
 
         if type(trigger) == "table" then
+            local templated = vigilance_triggers.getTemplate(trigger.template or trigger.preset, trigger)
+            if templated then
+                return templated
+            end
+
             return trigger
         end
 
         -- Default practical trigger: when a hostile action targets the vigilant actor.
-        return {
-            mode = "targeted_by_hostile_action",
-            target = "self",
-            hostileOnly = true,
-            excludeSelf = true,
-        }
+        return vigilance_triggers.getDefaultTrigger()
     end
 
     --- Determine whether a pending vigilance triggers from a resolved action
@@ -655,6 +1231,14 @@ function M.createChallengeController(config)
                 if triggerTarget ~= actor then
                     return false
                 end
+            elseif trigger.target == "ally" then
+                if not triggerTarget or triggerTarget == actor or self:areHostile(actor, triggerTarget) then
+                    return false
+                end
+            elseif trigger.target == "enemy" then
+                if not triggerTarget or not self:areHostile(actor, triggerTarget) then
+                    return false
+                end
             elseif trigger.target ~= "any" then
                 if type(trigger.target) == "string" then
                     if not triggerTarget or triggerTarget.id ~= trigger.target then
@@ -683,6 +1267,18 @@ function M.createChallengeController(config)
             return false
         end
         if trigger.target == "self" and triggerTarget ~= actor then
+            return false
+        end
+        if trigger.target == "ally" and (not triggerTarget or triggerTarget == actor or self:areHostile(actor, triggerTarget)) then
+            return false
+        end
+        if trigger.target == "enemy" and (not triggerTarget or not self:areHostile(actor, triggerTarget)) then
+            return false
+        end
+        if trigger.actorZoneId and (not triggerActor or triggerActor.zone ~= trigger.actorZoneId) then
+            return false
+        end
+        if trigger.targetZoneId and (not triggerTarget or triggerTarget.zone ~= trigger.targetZoneId) then
             return false
         end
 
@@ -931,6 +1527,35 @@ function M.createChallengeController(config)
         return true
     end
 
+    --- Skip the active entity's turn without opening a minor-action window.
+    -- Rulebook p.114: if a turn is skipped or no card can be played, nobody
+    -- takes minor actions and the count-up continues.
+    function controller:skipTurn(entity, reason)
+        if self.state ~= M.STATES.AWAITING_ACTION then
+            return false, "not_awaiting_action"
+        end
+
+        if not self.activeEntity then
+            return false, "no_active_entity"
+        end
+
+        if entity and entity ~= self.activeEntity then
+            return false, "not_active_entity"
+        end
+
+        local skipped = self.activeEntity
+        self.eventBus:emit(events.EVENTS.CHALLENGE_TURN_END, {
+            count = self.currentCount,
+            round = self.currentRound,
+            entity = skipped,
+            skipped = true,
+            reason = reason or "skipped",
+        })
+
+        self:completeTurn()
+        return true
+    end
+
     --- Resolve an action (called by action resolver)
     function controller:resolveAction(action)
         -- Store the result
@@ -1020,13 +1645,18 @@ function M.createChallengeController(config)
             return false, "invalid_minor_declaration"
         end
 
+        if self.activeEntity and entity == self.activeEntity then
+            return false, "acting_entity_cannot_minor"
+        end
+
         -- Verify card suit matches action suit (S6.2/S6.4 requirement)
         local actionRegistry = require('data.action_registry')
         local cardSuit = actionRegistry.cardSuitToActionSuit(card.suit)
         local actionDef = actionRegistry.getAction(action.type)
 
         if actionDef then
-            if actionDef.suit ~= cardSuit and actionDef.suit ~= actionRegistry.SUITS.MISC then
+            local talentMinor = actionRegistry.canUseMinorActionWithCard(actionDef, cardSuit, entity)
+            if actionDef.suit ~= cardSuit and actionDef.suit ~= actionRegistry.SUITS.MISC and not talentMinor then
                 return false, "suit_mismatch"
             end
             if actionDef.suit == actionRegistry.SUITS.MISC then

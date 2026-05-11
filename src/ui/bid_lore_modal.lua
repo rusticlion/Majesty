@@ -386,6 +386,7 @@ function M.createBidLoreModal(config)
 
         local result = self.engine:adjudicate({
             actor = self.actor,
+            party = self.pendingAction and (self.pendingAction.party or self.pendingAction.guild) or nil,
             action = self.pendingAction,
             challengeController = self.challengeController,
             roomId = self.roomId,

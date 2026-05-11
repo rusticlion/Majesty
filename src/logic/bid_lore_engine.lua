@@ -21,6 +21,124 @@ local function normalizeText(value)
     return lowered
 end
 
+local function normalizeTalentKey(value)
+    return tostring(value or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+end
+
+local function getEntityTalentEntry(actor, talentId)
+    local talents = actor and actor.talents
+    if type(talents) ~= "table" then
+        return nil
+    end
+
+    local requested = normalizeTalentKey(talentId)
+    for key, value in pairs(talents) do
+        if normalizeTalentKey(key) == requested then
+            return value
+        end
+        if type(value) == "table" and normalizeTalentKey(value.id or value.name or value.talentId) == requested then
+            return value
+        end
+    end
+
+    return nil
+end
+
+local function getUsableTalentEntry(actor, talentId)
+    local entry = getEntityTalentEntry(actor, talentId)
+    if not entry or entry == false then
+        return nil
+    end
+    if type(entry) == "table" and entry.wounded == true then
+        return nil
+    end
+    return entry
+end
+
+local function entityHasUsableTalent(actor, talentId)
+    local entry = getUsableTalentEntry(actor, talentId)
+    if not entry then
+        return false
+    end
+    if type(entry) == "table" then
+        return entry.wounded ~= true
+    end
+    return entry == true
+end
+
+local HUNTER_TALENT_IDS = {
+    "monster_hunter",
+    "beast_hunter",
+    "elemental_hunter",
+    "man_hunter",
+    "spirit_hunter",
+    "undead_hunter",
+    "witch_hunter",
+}
+
+local HUNTER_DEFAULT_FOES = {
+    beast_hunter = "Beast",
+    elemental_hunter = "Elemental",
+    man_hunter = "Man",
+    spirit_hunter = "Spirit",
+    undead_hunter = "Undead",
+    witch_hunter = "Witch",
+}
+
+local function titleCaseKey(value)
+    local text = tostring(value or ""):lower():gsub("[_%-%s]+", " ")
+    text = text:gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then
+        return nil
+    end
+    return (text:gsub("(%a)([%w']*)", function(first, rest)
+        return first:upper() .. rest
+    end))
+end
+
+local function getHunterFoeLabel(talentId, entry)
+    if type(entry) == "table" then
+        local value = entry.foe or entry.hatedFoe or entry.hunterFoe or entry.category or
+            entry.enemyCategory or entry.specializationCategory
+        if value then
+            return titleCaseKey(value)
+        end
+    end
+
+    return HUNTER_DEFAULT_FOES[normalizeTalentKey(talentId)]
+end
+
+local function collectHunterMotifs(actor)
+    local motifs = {}
+    for _, talentId in ipairs(HUNTER_TALENT_IDS) do
+        local entry = getUsableTalentEntry(actor, talentId)
+        if entry then
+            local foe = getHunterFoeLabel(talentId, entry)
+            if foe then
+                motifs[#motifs + 1] = foe .. " Hunter"
+            end
+        end
+    end
+    return motifs
+end
+
+local function collectActors(value, out)
+    out = out or {}
+    if type(value) ~= "table" then
+        return out
+    end
+
+    if value.motifs or value.talents or value.id or value.name then
+        out[#out + 1] = value
+        return out
+    end
+
+    for _, item in pairs(value) do
+        collectActors(item, out)
+    end
+    return out
+end
+
 local function cloneArray(items)
     local out = {}
     for i = 1, #items do
@@ -169,12 +287,26 @@ function M.createBidLoreEngine(config)
             return {}
         end
 
+        local motifs
         if actor.getMotifs then
-            local motifs = actor:getMotifs() or {}
-            return cloneArray(motifs)
+            motifs = cloneArray(actor:getMotifs() or {})
+        else
+            motifs = cloneArray(actor.motifs or {})
         end
 
-        return cloneArray(actor.motifs or {})
+        local seen = {}
+        for _, motif in ipairs(motifs) do
+            seen[normalizeText(motif)] = true
+        end
+        for _, motif in ipairs(collectHunterMotifs(actor)) do
+            local key = normalizeText(motif)
+            if key ~= "" and not seen[key] then
+                seen[key] = true
+                motifs[#motifs + 1] = motif
+            end
+        end
+
+        return motifs
     end
 
     function engine:extractMotifTags(motif)
@@ -202,6 +334,60 @@ function M.createBidLoreEngine(config)
         end
 
         return uniqueSortedTags(tags)
+    end
+
+    function engine:getMotifScoreForSubject(motif, subject, question)
+        local motifTags = self:extractMotifTags(motif)
+        local subjectTags = subject and subject.tags or {}
+        local questionTags = question and question.tags or {}
+        local overlapSubject = overlapCount(motifTags, subjectTags)
+        local overlapQuestion = overlapCount(motifTags, questionTags)
+        local contextBonus = 0
+
+        if subject and subject.kind == "monster" and
+           hasAny(motifTags, { "monster_lore", "combat", "tactics", "hunting", "beast_lore" }) then
+            contextBonus = contextBonus + 1
+        end
+        if subject and subject.kind == "hazard" and
+           hasAny(motifTags, { "hazard", "survival", "scouting", "security", "traps" }) then
+            contextBonus = contextBonus + 1
+        end
+        if subject and subject.kind == "location" and
+           hasAny(motifTags, { "history", "scholarly", "classification", "occult" }) then
+            contextBonus = contextBonus + 1
+        end
+
+        return overlapSubject + overlapQuestion + contextBonus
+    end
+
+    function engine:actorHasAppropriateMotif(actor, subject, question)
+        for _, motif in ipairs(self:getActorMotifs(actor)) do
+            if self:getMotifScoreForSubject(motif, subject, question) >= 2 then
+                return true, motif
+            end
+        end
+        return false, nil
+    end
+
+    function engine:canApplyUncannyKnowledge(request, subject, question)
+        local actor = request and (request.actor or request.entity)
+        if not entityHasUsableTalent(actor, "uncanny_knowledge") then
+            return false, "requires_uncanny_knowledge"
+        end
+
+        local party = collectActors(request and (request.party or request.guild or request.tableActors or request.actors))
+        if #party == 0 and actor then
+            party = { actor }
+        end
+
+        for _, candidate in ipairs(party) do
+            local hasAppropriate = self:actorHasAppropriateMotif(candidate, subject, question)
+            if hasAppropriate then
+                return false, "appropriate_motif_exists"
+            end
+        end
+
+        return true, nil
     end
 
     function engine:getAvailableSubjects(context)
@@ -301,18 +487,23 @@ function M.createBidLoreEngine(config)
         local motif = request.motif
         local motifTags = self:extractMotifTags(motif)
         if normalizeText(motif) == "" or #motifTags == 0 then
-            return buildResult(REJECT_MOTIF, "Selected motif does not map to usable lore tags.", {
-                suggestedQuestionTypes = shortQuestionList(collectAnswerQuestionIds(subject)),
-                scoreBreakdown = {
-                    motifTags = motifTags,
-                    subjectTags = cloneArray(subject.tags or {}),
-                    questionTags = cloneArray(question.tags or {}),
-                    overlapSubject = 0,
-                    overlapQuestion = 0,
-                    contextBonus = 0,
-                    total = 0,
-                },
-            })
+            local uncannyOk = self:canApplyUncannyKnowledge(request, subject, question)
+            if uncannyOk then
+                motifTags = { "uncanny_knowledge" }
+            else
+                return buildResult(REJECT_MOTIF, "Selected motif does not map to usable lore tags.", {
+                    suggestedQuestionTypes = shortQuestionList(collectAnswerQuestionIds(subject)),
+                    scoreBreakdown = {
+                        motifTags = motifTags,
+                        subjectTags = cloneArray(subject.tags or {}),
+                        questionTags = cloneArray(question.tags or {}),
+                        overlapSubject = 0,
+                        overlapQuestion = 0,
+                        contextBonus = 0,
+                        total = 0,
+                    },
+                })
+            end
         end
 
         local answer = subject.answers and subject.answers[question.id] or nil
@@ -365,6 +556,27 @@ function M.createBidLoreEngine(config)
             contextBonus = contextBonus,
             total = score,
         }
+
+        local uncannyOk = false
+        if score < 2 then
+            uncannyOk = self:canApplyUncannyKnowledge(request, subject, question)
+        end
+        if uncannyOk then
+            scoreBreakdown.uncannyKnowledge = true
+            scoreBreakdown.uncannyKnowledgeReason = "no_party_motif"
+            local details = cloneArray(answer.details or {})
+            return buildResult(ACCEPT, "Uncanny Knowledge supplies a lore angle nobody else has.", {
+                response = {
+                    summary = answer.summary or "",
+                    details = details,
+                    implication = answer.implication or "",
+                    sourceRefs = cloneArray(answer.sourceRefs or {}),
+                },
+                scoreBreakdown = scoreBreakdown,
+                suggestedQuestionTypes = {},
+                uncannyKnowledge = true,
+            })
+        end
 
         if score >= 2 then
             local details = cloneArray(answer.details or {})

@@ -43,6 +43,7 @@ function M.createFocusMenu(config)
         inputManager = config.inputManager,
         roomManager  = config.roomManager,
         interactionSystem = config.interactionSystem,
+        bidLoreProvider = config.bidLoreProvider,
         eventBus     = config.eventBus or events.globalBus,
 
         -- Font
@@ -107,7 +108,7 @@ function M.createFocusMenu(config)
                     actionSet[actionData.action] = true
                     local watchCost = (actionData.level_required == "investigate")
                     local label = "Act: " .. (actionData.description or actionData.action)
-                    if watchCost then
+                    if watchCost or actionData.action == "harvest_reagent" then
                         label = label .. " (Watch)"
                     end
                     local option = {
@@ -165,6 +166,22 @@ function M.createFocusMenu(config)
                 end
 
                 actionOptions[#actionOptions + 1] = option
+            end
+        end
+
+        if self.bidLoreProvider then
+            local bidLoreOption = self.bidLoreProvider({
+                poiId = poiId,
+                poiData = poiData,
+                roomId = roomId,
+            })
+            if bidLoreOption then
+                bidLoreOption.kind = bidLoreOption.kind or "action"
+                bidLoreOption.action = bidLoreOption.action or "bid_lore"
+                bidLoreOption.level = bidLoreOption.level or "scrutinize"
+                bidLoreOption.watchCost = bidLoreOption.watchCost or false
+                bidLoreOption.description = bidLoreOption.description or "Act: Bid Lore"
+                actionOptions[#actionOptions + 1] = bidLoreOption
             end
         end
 
@@ -298,6 +315,7 @@ function M.createFocusMenu(config)
                 action = option.action,
                 level = option.level,
                 watchCost = option.watchCost or false,
+                spendResolveForLore = option.spendResolveForLore or false,
             })
         else
             -- Get POI info at scrutiny level

@@ -12,6 +12,7 @@
 
 local events = require('logic.events')
 local inventory = require('logic.inventory')
+local constants = require('constants')
 
 local M = {}
 
@@ -25,13 +26,15 @@ M.LIGHT_SOURCES = {
         consumable = true,
         requires_hands = true,       -- Must be in hands to provide light
         provides_belt_light = false, -- Does NOT work from belt
+        provides_dim_light = true,    -- Provides dim light to nearby guildmates
         fragile_on_belt = false,
     },
     ["Lantern"]     = {
-        flicker_max = 6,
+        flicker_max = 4,
         consumable = false,          -- Uses oil
         requires_hands = false,      -- Works from hands OR belt
         provides_belt_light = true,  -- Works from belt
+        provides_dim_light = true,    -- Provides dim light to nearby guildmates
         fragile_on_belt = true,      -- Breaks when taking wound while on belt
     },
     ["Candle"]      = {
@@ -39,6 +42,7 @@ M.LIGHT_SOURCES = {
         consumable = true,
         requires_hands = true,
         provides_belt_light = false,
+        provides_dim_light = false,   -- Candles do not illuminate nearby guildmates
         fragile_on_belt = false,
     },
     ["Glowstone"]   = {
@@ -46,6 +50,7 @@ M.LIGHT_SOURCES = {
         consumable = false,
         requires_hands = false,      -- Works from anywhere
         provides_belt_light = true,
+        provides_dim_light = true,
         fragile_on_belt = false,     -- Magical, doesn't break
     },
 }
@@ -58,6 +63,42 @@ M.LIGHT_LEVELS = {
     DIM    = "dim",          -- Someone else has light, or environmental light
     DARK   = "dark",         -- No light source anywhere
 }
+
+M.DARKNESS_DOOMS = {
+    GRUE = "eaten_by_grue",
+    CAPTURED_BY_MONSTERS = "captured_by_monsters",
+    OLU_GANG_RANSOM = "olu_gang_ransom",
+    LOST_IN_UNDERWORLD = "lost_in_underworld",
+    RETIRED = "retired",
+    LOST_ALL_EQUIPMENT = "lost_all_equipment",
+    RISK_EQUIPMENT_LOSS = "risk_equipment_loss",
+    RAVING_DARKNESS = "raving_darkness",
+}
+
+local function entityKey(entity)
+    if not entity then
+        return nil
+    end
+    return entity.id or entity.name or tostring(entity)
+end
+
+local function listContainsEntityKey(list, key)
+    if type(list) ~= "table" or not key then
+        return false
+    end
+    if list[key] == true then
+        return true
+    end
+    for _, value in ipairs(list) do
+        if value == key then
+            return true
+        end
+        if type(value) == "table" and entityKey(value) == key then
+            return true
+        end
+    end
+    return false
+end
 
 --------------------------------------------------------------------------------
 -- LIGHT SYSTEM FACTORY
@@ -82,6 +123,7 @@ function M.createLightSystem(config)
 
         -- UI callback for darkness effect
         onDarknessChanged = config.onDarknessChanged,
+        playerDeck = config.playerDeck,
     }
 
     ----------------------------------------------------------------------------
@@ -108,6 +150,10 @@ function M.createLightSystem(config)
         -- Legacy/auxiliary UI source: explicit light toggles
         self.eventBus:on(events.EVENTS.LIGHT_SOURCE_TOGGLED, function(data)
             self:handleLightSourceToggled(data)
+        end)
+
+        self.eventBus:on(events.EVENTS.LIGHT_SOURCE_DROPPED, function(data)
+            self:handleLightSourceDropped(data)
         end)
 
         -- Initial light check
@@ -151,6 +197,7 @@ function M.createLightSystem(config)
             consumable = props.consumable ~= false,
             requires_hands = props.requires_hands ~= false,
             provides_belt_light = props.provides_belt_light == true,
+            provides_dim_light = props.provides_dim_light ~= false,
             fragile_on_belt = props.fragile_on_belt == true,
         }
 
@@ -159,6 +206,7 @@ function M.createLightSystem(config)
             if source.consumable ~= nil then config.consumable = source.consumable end
             if source.requires_hands ~= nil then config.requires_hands = source.requires_hands end
             if source.provides_belt_light ~= nil then config.provides_belt_light = source.provides_belt_light end
+            if source.provides_dim_light ~= nil then config.provides_dim_light = source.provides_dim_light end
             if source.fragile_on_belt ~= nil then config.fragile_on_belt = source.fragile_on_belt end
         end
 
@@ -212,6 +260,38 @@ function M.createLightSystem(config)
         end
 
         return true
+    end
+
+    function system:lightIgnoresTorchesGutter(item)
+        local props = item and item.properties or {}
+        return props.darklight == true or props.ignoreTorchesGutter == true or props.darklightIgnoreTorchesGutter == true
+    end
+
+    function system:canEntitySeeLight(holder, item, viewer)
+        local props = item and item.properties or {}
+        if props.darklight ~= true then
+            return true
+        end
+        if not viewer or viewer == holder then
+            return true
+        end
+
+        local key = entityKey(viewer)
+        if key and props.darklightHolderId == key then
+            return true
+        end
+
+        return listContainsEntityKey(props.darklightVisibleTo, key)
+    end
+
+    function system:providesDimLightToOthers(item, lightConfig, holder, viewer)
+        if item and item.properties and item.properties.darklight == true then
+            return self:canEntitySeeLight(holder, item, viewer)
+        end
+        if not lightConfig then
+            return true
+        end
+        return lightConfig.provides_dim_light ~= false
     end
 
     --- Light a light source (set isLit = true)
@@ -279,6 +359,283 @@ function M.createLightSystem(config)
         end
     end
 
+    function system:shouldTorchStayLitWhenDropped(data)
+        if data and data.torchStaysLit ~= nil then
+            return data.torchStaysLit == true
+        end
+        if data and data.torchExtinguished ~= nil then
+            return data.torchExtinguished ~= true
+        end
+        return math.random(2) == 1
+    end
+
+    function system:handleLightSourceDropped(data)
+        data = data or {}
+        local item = data.item
+        if not item then
+            return
+        end
+
+        local isLight = self:isLightSource(item)
+        if not isLight then
+            return
+        end
+
+        item.properties = item.properties or {}
+        local name = string.lower(item.name or "")
+
+        if name == "lantern" then
+            self:breakLantern(data.entity, item, "dropped")
+        elseif name == "candle" or name == "candles" then
+            self:setItemLitState(item, false)
+            item.properties.extinguished = true
+            self.eventBus:emit(events.EVENTS.LIGHT_EXTINGUISHED, {
+                entity = data.entity,
+                item = item,
+                reason = "dropped",
+            })
+            self:recalculateLightLevels()
+        elseif name == "torch" then
+            if self:shouldTorchStayLitWhenDropped(data) then
+                self:recalculateLightLevels()
+            else
+                item.destroyed = true
+                item.properties.extinguished = true
+                self:setItemLitState(item, false)
+                self.eventBus:emit(events.EVENTS.LIGHT_DESTROYED, {
+                    entity = data.entity,
+                    item = item,
+                    reason = "dropped",
+                })
+                self:recalculateLightLevels()
+            end
+        end
+    end
+
+    function system:cardValue(card)
+        if type(card) == "number" then
+            return card
+        end
+        return card and card.value
+    end
+
+    function system:getDarknessDoomType(card)
+        local value = self:cardValue(card)
+        if not value then
+            return nil
+        end
+
+        if value >= 1 and value <= 7 then
+            return M.DARKNESS_DOOMS.GRUE
+        elseif value == 8 then
+            return M.DARKNESS_DOOMS.CAPTURED_BY_MONSTERS
+        elseif value == 9 then
+            return M.DARKNESS_DOOMS.OLU_GANG_RANSOM
+        elseif value == 10 then
+            return M.DARKNESS_DOOMS.LOST_IN_UNDERWORLD
+        elseif value == constants.FACE_VALUES.PAGE then
+            return M.DARKNESS_DOOMS.RETIRED
+        elseif value == constants.FACE_VALUES.KNIGHT then
+            return M.DARKNESS_DOOMS.LOST_ALL_EQUIPMENT
+        elseif value == constants.FACE_VALUES.QUEEN then
+            return M.DARKNESS_DOOMS.RISK_EQUIPMENT_LOSS
+        elseif value == constants.FACE_VALUES.KING then
+            return M.DARKNESS_DOOMS.RAVING_DARKNESS
+        end
+
+        return nil
+    end
+
+    function system:removeAllEquipment(entity)
+        local removed = {}
+        if not entity or not entity.inventory or not entity.inventory.getAllItems or not entity.inventory.removeItem then
+            return removed
+        end
+
+        local allItems = entity.inventory:getAllItems()
+        for _, entry in ipairs(allItems) do
+            local item = entry.item
+            if item and item.id then
+                local removedItem = entity.inventory:removeItem(item.id)
+                if removedItem then
+                    removed[#removed + 1] = removedItem
+                end
+            end
+        end
+
+        return removed
+    end
+
+    function system:removeSelectedEquipment(entity, shouldLoseItem)
+        local removed = {}
+        if not entity or not entity.inventory or not entity.inventory.getAllItems or not entity.inventory.removeItem then
+            return removed
+        end
+
+        local allItems = entity.inventory:getAllItems()
+        for index, entry in ipairs(allItems) do
+            local item = entry.item
+            local lose = false
+            if type(shouldLoseItem) == "function" then
+                lose = shouldLoseItem(item, entry.location, index) == true
+            elseif type(shouldLoseItem) == "table" then
+                lose = shouldLoseItem[item and item.id] == true or shouldLoseItem[index] == true
+            else
+                lose = math.random(2) == 1
+            end
+
+            if lose and item and item.id then
+                local removedItem = entity.inventory:removeItem(item.id)
+                if removedItem then
+                    removed[#removed + 1] = removedItem
+                end
+            end
+        end
+
+        return removed
+    end
+
+    function system:resolveDarknessDoom(entity, card, opts)
+        opts = opts or {}
+        local doomType = self:getDarknessDoomType(card)
+        local result = {
+            entity = entity,
+            card = card,
+            value = self:cardValue(card),
+            doom = doomType,
+            lostItems = {},
+        }
+
+        if not entity or not doomType then
+            return result
+        end
+
+        entity.conditions = entity.conditions or {}
+
+        if doomType == M.DARKNESS_DOOMS.GRUE then
+            entity.conditions.dead = true
+            entity.dead = true
+            entity.defeated = true
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.CAPTURED_BY_MONSTERS then
+            entity.conditions.captured = true
+            entity.capturedByMonsters = true
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.OLU_GANG_RANSOM then
+            entity.conditions.captured = true
+            entity.heldForRansom = {
+                captor = "Olu Gang",
+                costPerFame = 1000,
+            }
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.LOST_IN_UNDERWORLD then
+            entity.conditions.lost = true
+            entity.lostInUnderworld = true
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.RETIRED then
+            entity.retired = true
+            entity.controlledByGM = true
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.LOST_ALL_EQUIPMENT then
+            result.lostItems = self:removeAllEquipment(entity)
+            entity.lostDarknessEquipment = result.lostItems
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.RISK_EQUIPMENT_LOSS then
+            result.lostItems = self:removeSelectedEquipment(entity, opts.loseItem)
+            entity.lostDarknessEquipment = result.lostItems
+            entity.darknessDoom = doomType
+        elseif doomType == M.DARKNESS_DOOMS.RAVING_DARKNESS then
+            entity.conditions.stressed = true
+            entity.ravingAboutDarkness = true
+            entity.darknessDoom = doomType
+        end
+
+        return result
+    end
+
+    function system:itemIsFuel(item)
+        local props = item and item.properties or {}
+        return not item.destroyed and (props.fuel == true or props.oil == true)
+    end
+
+    function system:guildHasLanternFuel()
+        for _, entity in ipairs(self.guild) do
+            if entity.inventory and entity.inventory.getAllItems then
+                for _, entry in ipairs(entity.inventory:getAllItems()) do
+                    if self:itemIsFuel(entry.item) then
+                        return true
+                    end
+                end
+            end
+        end
+
+        return false
+    end
+
+    function system:isRecoverableLightSource(item)
+        local isLight, lightConfig = self:isLightSource(item)
+        if not isLight or not item or item.destroyed then
+            return false
+        end
+
+        if self:isLightActive(item, lightConfig) then
+            return true
+        end
+
+        local props = item.properties or {}
+        local name = string.lower(item.name or "")
+        local flickers = props.flicker_count
+        if flickers ~= nil and flickers <= 0 then
+            return false
+        end
+
+        if name == "candle" or name == "candles" then
+            return true
+        elseif name == "lantern" then
+            return self:guildHasLanternFuel()
+        elseif name == "torch" then
+            return props.extinguished ~= true
+        end
+
+        return lightConfig and (lightConfig.flicker_max or 0) <= 0
+    end
+
+    function system:guildHasRecoverableLightSource()
+        for _, entity in ipairs(self.guild) do
+            if entity.inventory and entity.inventory.getAllItems then
+                for _, entry in ipairs(entity.inventory:getAllItems()) do
+                    if self:isRecoverableLightSource(entry.item) then
+                        return true
+                    end
+                end
+            end
+        end
+
+        return false
+    end
+
+    function system:resolveOutOfLightDoom(drawsByEntity)
+        local results = {}
+        for index, entity in ipairs(self.guild) do
+            local card = nil
+            if type(drawsByEntity) == "table" then
+                card = drawsByEntity[entity] or drawsByEntity[entity.id] or drawsByEntity[index]
+            end
+            if not card and self.playerDeck and self.playerDeck.draw then
+                card = self.playerDeck:draw()
+            end
+
+            results[#results + 1] = self:resolveDarknessDoom(entity, card)
+        end
+
+        self.eventBus:emit(events.EVENTS.DARKNESS_DOOMED, {
+            results = results,
+            needsDraw = not self.playerDeck and drawsByEntity == nil,
+        })
+
+        return results
+    end
+
     --- Check if an entity has a light source in their hands
     -- @param entity table: The entity to check
     -- @return boolean, table: hasLight, lightItem
@@ -326,13 +683,17 @@ function M.createLightSystem(config)
         for _, entity in ipairs(self.guild) do
             if entity ~= excludeEntity then
                 -- Check hands
-                local hasHandsLight = self:hasHandsLight(entity)
-                if hasHandsLight then
+                local hasHandsLight, handsLight = self:hasHandsLight(entity)
+                local _, handsConfig = self:isLightSource(handsLight)
+                if hasHandsLight and self:providesDimLightToOthers(handsLight, handsConfig, entity, excludeEntity) and
+                   self:canEntitySeeLight(entity, handsLight, excludeEntity) then
                     return true
                 end
                 -- Check belt (lanterns)
-                local hasBeltLight = self:hasBeltLight(entity)
-                if hasBeltLight then
+                local hasBeltLight, beltLight = self:hasBeltLight(entity)
+                local _, beltConfig = self:isLightSource(beltLight)
+                if hasBeltLight and self:providesDimLightToOthers(beltLight, beltConfig, entity, excludeEntity) and
+                   self:canEntitySeeLight(entity, beltLight, excludeEntity) then
                     return true
                 end
             end
@@ -391,9 +752,26 @@ function M.createLightSystem(config)
     -- @param data table: { card, category, value }
     function system:handleTorchesGutter(data)
         local sources = self:findActiveLightSources()
+        local forcedExtinguished = {}
+        for _, source in ipairs(sources) do
+            local props = source.item and source.item.properties or {}
+            if props.extinguishOnMeatgrinder == "torches_gutter" then
+                self:setItemLitState(source.item, false)
+                props.extinguished = true
+                forcedExtinguished[source.item] = true
+                self.eventBus:emit(events.EVENTS.LIGHT_EXTINGUISHED, {
+                    entity = source.entity,
+                    item = source.item,
+                    reason = "torches_gutter",
+                    cardValue = data and data.value,
+                })
+            end
+        end
+
         local degradableSources = {}
         for _, source in ipairs(sources) do
-            if source.lightConfig and (source.lightConfig.flicker_max or 0) > 0 then
+            if source.lightConfig and (source.lightConfig.flicker_max or 0) > 0 and
+               not forcedExtinguished[source.item] and not self:lightIgnoresTorchesGutter(source.item) then
                 degradableSources[#degradableSources + 1] = source
             end
         end
@@ -515,7 +893,7 @@ function M.createLightSystem(config)
     --- Break a lantern (called when wound taken with fragile item on belt)
     -- @param entity table: The entity whose lantern broke
     -- @param item table: The lantern item
-    function system:breakLantern(entity, item)
+    function system:breakLantern(entity, item, reason)
         -- Mark as destroyed
         item.destroyed = true
         if not item.properties then
@@ -529,6 +907,7 @@ function M.createLightSystem(config)
         self.eventBus:emit(events.EVENTS.LANTERN_BROKEN, {
             entity = entity,
             item   = item,
+            reason = reason,
         })
 
         -- Recalculate light levels
@@ -669,6 +1048,9 @@ function M.createLightSystem(config)
             self.eventBus:emit(events.EVENTS.DARKNESS_FELL, {
                 affectedCount = darkCount,
             })
+            if not self:guildHasRecoverableLightSource() then
+                self:resolveOutOfLightDoom()
+            end
         end
     end
 

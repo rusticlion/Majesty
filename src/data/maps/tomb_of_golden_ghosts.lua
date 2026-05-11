@@ -411,7 +411,8 @@ M.data = {
                     offeringEffect = {
                         type = "disposition_shift",
                         target = "tomb_guardian",
-                        direction = 1,  -- Toward Trust/Joy
+                        disposition = "trust",
+                        severity = 2,
                         amount = 2,
                     },
                     loot = { "golden_medallion" },

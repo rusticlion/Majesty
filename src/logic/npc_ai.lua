@@ -60,6 +60,7 @@ function M.createNPCAI(config)
         hand = {},
         baseHandSize = 3,
         lastPreparedRound = nil,
+        roundInitiativeCards = {},
     }
 
     ----------------------------------------------------------------------------
@@ -81,6 +82,7 @@ function M.createNPCAI(config)
         self.eventBus:on(events.EVENTS.CHALLENGE_START, function(data)
             self.hand = {}
             self.lastPreparedRound = nil
+            self.roundInitiativeCards = {}
         end)
 
         -- Draw a fresh hand at the start of each round.
@@ -88,10 +90,18 @@ function M.createNPCAI(config)
             self:refreshRoundHand(data and data.round)
         end)
 
+        -- Rulebook step 5: discard unused GM Challenge cards before any
+        -- Fool-triggered end-round reshuffle happens.
+        self.eventBus:on(events.EVENTS.CHALLENGE_ROUND_END, function(data)
+            self:discardHand()
+            self.roundInitiativeCards = {}
+        end)
+
         -- Listen for challenge end to discard hand
         self.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
             self:discardHand()
             self.lastPreparedRound = nil
+            self.roundInitiativeCards = {}
         end)
     end
 
@@ -104,6 +114,16 @@ function M.createNPCAI(config)
     function ai:handleNPCInitiative(data)
         local npc = data.npc
         if not npc then return end
+
+        local groupKey = self:getInitiativeGroupKey(npc)
+        local groupedCard = self.roundInitiativeCards[groupKey]
+        if groupedCard then
+            print("[NPC AI] " .. (npc.name or "NPC") .. " shares initiative: " .. (groupedCard.name or "?") .. " (value " .. (groupedCard.value or 0) .. ")")
+            if self.challengeController then
+                self.challengeController:submitInitiative(npc, groupedCard)
+            end
+            return
+        end
 
         -- Ensure we have cards.
         -- If the round hand was exhausted, draw a single emergency card
@@ -125,6 +145,7 @@ function M.createNPCAI(config)
         local card = self:useCard(cardIndex)
 
         if card then
+            self.roundInitiativeCards[groupKey] = card
             print("[NPC AI] " .. (npc.name or "NPC") .. " chose initiative: " .. (card.name or "?") .. " (value " .. (card.value or 0) .. ")")
 
             -- Submit to challenge controller
@@ -132,6 +153,19 @@ function M.createNPCAI(config)
                 self.challengeController:submitInitiative(npc, card)
             end
         end
+    end
+
+    function ai:getInitiativeGroupKey(npc)
+        if not npc then
+            return "unknown"
+        end
+
+        local rank = (npc.rank or ""):lower()
+        if npc.significant or rank == M.RANKS.ELITE or rank == M.RANKS.LORD or rank == "dungeon_lord" then
+            return npc.id or npc.name or "significant"
+        end
+
+        return npc.blueprintId or npc.enemyType or npc.species or npc.name or npc.id or "unknown"
     end
 
     --- Choose which card to use for initiative based on NPC behavior
@@ -160,6 +194,14 @@ function M.createNPCAI(config)
             return a.value < b.value
         end)
 
+        local conditions = npc.conditions or {}
+        if npc.mustPlayLowestInitiative or npc.brainfever or conditions.brainfever then
+            return sorted[1].index
+        end
+        if npc.mustFleeFrom or conditions.inspiredFear or conditions.fearful then
+            return sorted[#sorted].index
+        end
+
         -- Aggressive: pick lowest value (act first)
         if behavior == "aggressive" or rank == M.RANKS.LORD then
             return sorted[1].index
@@ -183,7 +225,8 @@ function M.createNPCAI(config)
         if not entity then
             return true
         end
-        return entity.conditions and entity.conditions.dead
+        return entity.conditions and (entity.conditions.dead or entity.conditions.deaths_door or
+            entity.conditions.knocked_out or entity.conditions.knockout)
     end
 
     function ai:isLesserDoom(card)
@@ -212,6 +255,101 @@ function M.createNPCAI(config)
         return false
     end
 
+    function ai:hasTag(entity, tag)
+        if not entity or not tag then
+            return false
+        end
+        tag = tostring(tag):lower()
+        for _, candidate in ipairs(entity.tags or {}) do
+            if tostring(candidate):lower() == tag then
+                return true
+            end
+        end
+        return false
+    end
+
+    function ai:isDogLike(npc)
+        if not npc then
+            return false
+        end
+        if npc.dog or npc.hound or self:hasTag(npc, "dog") or self:hasTag(npc, "hound") then
+            return true
+        end
+
+        local candidates = {
+            npc.species,
+            npc.type,
+            npc.enemyType,
+            npc.blueprintId,
+            npc.name,
+        }
+        for _, candidate in ipairs(candidates) do
+            local value = tostring(candidate or ""):lower()
+            if value:find("dog", 1, true) or value:find("hound", 1, true) then
+                return true
+            end
+        end
+        return false
+    end
+
+    function ai:targetHasDogCurse(target)
+        if not target then
+            return false
+        end
+        if target.dogsHateYou or target.dogAttackPriority or target.cityPhaseDogCurse then
+            return true
+        end
+
+        local malediction = target.malediction
+        local curse = malediction and malediction.curse
+        local flags = curse and curse.flags
+        return malediction and malediction.active ~= false and flags and flags.dogsHateYou == true
+    end
+
+    function ai:isUndead(npc)
+        if not npc then
+            return false
+        end
+        return npc.undead == true or npc.isUndead == true or self:hasTag(npc, "undead")
+    end
+
+    function ai:isSpirit(npc)
+        if not npc then
+            return false
+        end
+        return npc.spirit == true or npc.isSpirit == true or self:hasTag(npc, "spirit")
+    end
+
+    function ai:targetIsIgnoredByUndead(target)
+        if not target then
+            return false
+        end
+        if target.undeadUsuallyIgnore or target.appearsAsDesiccatedCorpse then
+            return true
+        end
+
+        local malediction = target.malediction
+        local curse = malediction and malediction.curse
+        local flags = curse and curse.flags
+        return malediction and malediction.active ~= false and flags and flags.undeadUsuallyIgnore == true
+    end
+
+    function ai:targetHasUndeadMark(target)
+        if not target then
+            return false
+        end
+        local conditions = target.conditions or {}
+        return conditions.undead_mark == true or target.undeadMark == true
+    end
+
+    function ai:targetHasHalo(target)
+        if not target then
+            return false
+        end
+        local conditions = target.conditions or {}
+        return conditions.halo == true or target.halo == true
+    end
+
     function ai:hasAnyLesserDoom()
         for _, card in ipairs(self.hand) do
             if self:isLesserDoom(card) then
@@ -219,6 +357,25 @@ function M.createNPCAI(config)
             end
         end
         return false
+    end
+
+    function ai:getAttackGreaterDoom(npc)
+        if not npc then
+            return nil
+        end
+
+        for _, doom in pairs(npc.greaterDooms or {}) do
+            if doom.activation == "attack_rider" or doom.trigger == "on_attack" then
+                return doom
+            end
+        end
+
+        local doom = npc.greaterDoom
+        if doom and (doom.activation == "attack_rider" or doom.trigger == "on_attack") then
+            return doom
+        end
+
+        return nil
     end
 
     function ai:calculateRoundDrawCount()
@@ -292,9 +449,11 @@ function M.createNPCAI(config)
             drawCount = drawCount + 3
         end
 
-        -- Challenge controller currently asks each NPC to submit initiative
-        -- individually. Keep a minimum so every living NPC can contribute one card.
-        drawCount = math.max(drawCount, #livingNPCs)
+        local drawPenalty = 0
+        for _, npc in ipairs(livingNPCs) do
+            drawPenalty = drawPenalty + math.max(0, npc.stinkingCloudDrawPenalty or npc.challengeDrawPenalty or 0)
+        end
+        drawCount = drawCount - drawPenalty
 
         return math.max(1, drawCount)
     end
@@ -325,6 +484,7 @@ function M.createNPCAI(config)
         end
 
         self:discardHand()
+        self.roundInitiativeCards = {}
         local drawCount = self:calculateRoundDrawCount()
         self:drawHand(drawCount)
 
@@ -373,6 +533,25 @@ function M.createNPCAI(config)
         return nil
     end
 
+    function ai:useDoomPair(lesserIndex, greaterIndex)
+        if not lesserIndex or not greaterIndex or lesserIndex == greaterIndex then
+            return nil, nil
+        end
+
+        local lesserCard = nil
+        local greaterCard = nil
+
+        if lesserIndex > greaterIndex then
+            lesserCard = self:useCard(lesserIndex)
+            greaterCard = self:useCard(greaterIndex)
+        else
+            greaterCard = self:useCard(greaterIndex)
+            lesserCard = self:useCard(lesserIndex)
+        end
+
+        return lesserCard, greaterCard
+    end
+
     ----------------------------------------------------------------------------
     -- MAIN DECISION ENTRY POINT
     ----------------------------------------------------------------------------
@@ -401,7 +580,11 @@ function M.createNPCAI(config)
         else
             -- No valid action, pass turn
             print("[NPC AI] " .. (npc.name or "NPC") .. " has no valid action")
-            self.eventBus:emit(events.EVENTS.UI_SEQUENCE_COMPLETE, {})
+            if self.challengeController and self.challengeController.skipTurn then
+                self.challengeController:skipTurn(npc, "no_valid_action")
+            else
+                self.eventBus:emit(events.EVENTS.UI_SEQUENCE_COMPLETE, {})
+            end
         end
     end
 
@@ -421,17 +604,18 @@ function M.createNPCAI(config)
             return nil  -- No cards available
         end
 
-        local rank = npc.rank or M.RANKS.SOLDIER
-
-        -- Step 1: Elite/Lord attempt a greater doom play first.
-        if rank == M.RANKS.ELITE or rank == M.RANKS.LORD then
+        -- Step 1: targeted greater dooms ride alongside a lesser-doom Attack.
+        local attackDoom = self:getAttackGreaterDoom(npc)
+        if attackDoom then
             local greaterDoomIndex = self:findGreaterDoom()
-            if greaterDoomIndex then
+            local lesserDoomIndex = self:selectBestLesserActionCard()
+            if attackDoom and greaterDoomIndex and lesserDoomIndex then
                 local target = self:selectTarget(npc, pcs, true)  -- melee only
                 if target then
-                    local card = self:useCard(greaterDoomIndex)
-                    local action = self:createAttackAction(npc, target, card)
-                    action.isGreaterDoom = true
+                    local lesserCard, greaterCard = self:useDoomPair(lesserDoomIndex, greaterDoomIndex)
+                    local action = self:createAttackAction(npc, target, lesserCard)
+                    action.greaterDoom = attackDoom
+                    action.greaterDoomCard = greaterCard
                     return action
                 end
             end
@@ -440,8 +624,8 @@ function M.createNPCAI(config)
         -- Step 2: Try melee attack (same zone only)
         local meleeTarget = self:selectTarget(npc, pcs, true)  -- melee only
         if meleeTarget then
-            -- Select best challenge-action card (prefer lesser doom).
-            local cardIndex = self:selectBestActionCard()
+            -- Standard Challenge Actions use lesser dooms.
+            local cardIndex = self:selectBestLesserActionCard()
             local card = self:useCard(cardIndex)
 
             if card then
@@ -501,8 +685,8 @@ function M.createNPCAI(config)
         return nil
     end
 
-    --- Select the best card for normal challenge actions.
-    -- Prefers highest lesser doom; falls back to highest card if needed.
+    --- Select the best card for miscellaneous actions.
+    -- Miscellaneous actions can use lesser or greater doom cards.
     -- @return number|nil: Index of best card
     function ai:selectBestActionCard()
         local bestLesserIndex = nil
@@ -524,6 +708,24 @@ function M.createNPCAI(config)
         end
 
         return bestLesserIndex or bestAnyIndex
+    end
+
+    --- Select the best card for standard Challenge Actions.
+    -- Standard enemy Challenge Actions require lesser doom cards.
+    -- @return number|nil: Index of best lesser doom card
+    function ai:selectBestLesserActionCard()
+        local bestLesserIndex = nil
+        local bestLesserValue = -1
+
+        for i, card in ipairs(self.hand) do
+            local value = card.value or 0
+            if self:isLesserDoom(card) and value > bestLesserValue then
+                bestLesserValue = value
+                bestLesserIndex = i
+            end
+        end
+
+        return bestLesserIndex
     end
 
     --- Select a card matching a specific suit
@@ -623,7 +825,7 @@ function M.createNPCAI(config)
 
         for _, pc in ipairs(pcs) do
             -- Skip defeated PCs
-            if pc.conditions and pc.conditions.dead then
+            if self:isDefeated(pc) then
                 goto continue
             end
 
@@ -646,6 +848,72 @@ function M.createNPCAI(config)
 
         if #validTargets == 0 then
             return nil
+        end
+
+        if self:isDogLike(npc) then
+            local cursedTargets = {}
+            for _, target in ipairs(validTargets) do
+                if self:targetHasDogCurse(target.pc) then
+                    cursedTargets[#cursedTargets + 1] = target
+                end
+            end
+            if #cursedTargets > 0 then
+                table.sort(cursedTargets, function(a, b)
+                    if a.inRange ~= b.inRange then
+                        return a.inRange
+                    end
+                    return a.defense < b.defense
+                end)
+                return cursedTargets[1].pc
+            end
+        end
+
+        local priorityTargets = nil
+        if self:isUndead(npc) then
+            priorityTargets = {}
+            for _, target in ipairs(validTargets) do
+                if self:targetHasUndeadMark(target.pc) then
+                    priorityTargets[#priorityTargets + 1] = target
+                end
+            end
+        elseif self:isSpirit(npc) then
+            priorityTargets = {}
+            for _, target in ipairs(validTargets) do
+                if self:targetHasHalo(target.pc) then
+                    priorityTargets[#priorityTargets + 1] = target
+                end
+            end
+        end
+
+        if priorityTargets and #priorityTargets > 0 then
+            table.sort(priorityTargets, function(a, b)
+                if a.inRange ~= b.inRange then
+                    return a.inRange
+                end
+                return a.defense < b.defense
+            end)
+            return priorityTargets[1].pc
+        end
+
+        if npc.recklessAttackTarget then
+            local targetKey = npc.recklessAttackTarget.id or npc.recklessAttackTarget.name
+            for _, target in ipairs(validTargets) do
+                if target.pc == npc.recklessAttackTarget or target.pc.id == targetKey or target.pc.name == targetKey then
+                    return target.pc
+                end
+            end
+        end
+
+        if self:isUndead(npc) then
+            local undeadVisibleTargets = {}
+            for _, target in ipairs(validTargets) do
+                if not self:targetIsIgnoredByUndead(target.pc) then
+                    undeadVisibleTargets[#undeadVisibleTargets + 1] = target
+                end
+            end
+            if #undeadVisibleTargets > 0 then
+                validTargets = undeadVisibleTargets
+            end
         end
 
         -- Sort by defense (lowest first)

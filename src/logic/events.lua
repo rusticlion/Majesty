@@ -32,6 +32,9 @@ M.EVENTS = {
     CHALLENGE_TURN_END    = "challenge_turn_end",
     CHALLENGE_ACTION      = "challenge_action",
     CHALLENGE_RESOLUTION  = "challenge_resolution",
+    CHALLENGE_CARD_DISCARDED = "challenge_card_discarded",
+    MALEDICTION_CHICKEN_DOOM = "malediction_chicken_doom",
+    MALEDICTION_CHICKEN_CLEARED = "malediction_chicken_cleared",
     INITIATIVE_REVEALED   = "initiative_revealed",
     MINOR_ACTION_WINDOW   = "minor_action_window",
     MINOR_ACTION_USED     = "minor_action_used",
@@ -41,11 +44,24 @@ M.EVENTS = {
     WOUND_TAKEN           = "wound_taken",
     WOUND_HEALED          = "wound_healed",
     ENTITY_DEFEATED       = "entity_defeated",
+    UNDEAD_RAISED         = "undead_raised",
     ARMOR_NOTCHED         = "armor_notched",
     TALENT_WOUNDED        = "talent_wounded",
+    CONDITION_EXPIRED     = "condition_expired",
 
     -- Phase Changes
     PHASE_CHANGED     = "phase_changed",
+    CITY_DEATH_AND_TAXES_RESOLVED = "city_death_and_taxes_resolved",
+    CITY_NOTEWORTHY_DEEDS_RESOLVED = "city_noteworthy_deeds_resolved",
+    CITY_EVENT_RESOLVED = "city_event_resolved",
+    CITY_CONTRACTS_TURNED_IN = "city_contracts_turned_in",
+    CITY_TREASURE_SOLD = "city_treasure_sold",
+    CITY_UPKEEP_RESOLVED = "city_upkeep_resolved",
+    CITY_UPKEEP_RECOVERY_BOND_SPENT = "city_upkeep_recovery_bond_spent",
+    CITY_ACTION_RESOLVED = "city_action_resolved",
+    CITY_NEXT_CRAWL_PLANNED = "city_next_crawl_planned",
+    CITY_UNDERWORLD_RESTOCKED = "city_underworld_restocked",
+    CITY_PHASE_ENDED = "city_phase_ended",
 
     -- Zones (T2_3)
     ZONE_CHANGED        = "zone_changed",
@@ -57,6 +73,8 @@ M.EVENTS = {
     -- Room Features (T2_5)
     FEATURE_STATE_CHANGED = "feature_state_changed",
     FEATURE_UPDATED       = "feature_updated",  -- S11.3: arbitrary feature updates
+    ROOM_SOCIAL_ENCOUNTER_RESOLVED = "room_social_encounter_resolved",
+    ROOM_SOCIAL_FEATURE_RESOLVED = "room_social_feature_resolved",
 
     -- Interaction (T2_6)
     INTERACTION = "interaction",
@@ -86,6 +104,8 @@ M.EVENTS = {
     DARKNESS_FELL         = "darkness_fell",
     DARKNESS_LIFTED       = "darkness_lifted",
     LIGHT_SOURCE_TOGGLED  = "light_source_toggled",
+    LIGHT_SOURCE_DROPPED  = "light_source_dropped",
+    DARKNESS_DOOMED       = "darkness_doomed",
 
     -- Inventory
     INVENTORY_CHANGED     = "inventory_changed",
@@ -118,6 +138,22 @@ M.EVENTS = {
     BID_LORE_COMPLETE     = "bid_lore_complete",
     BID_LORE_VERDICT      = "bid_lore_verdict",
 
+    -- Sorcery
+    SPELL_CAST                    = "spell_cast",
+    SPELL_ENDED                   = "spell_ended",
+    CONCENTRATION_TEST_REQUIRED   = "concentration_test_required",
+    CONCENTRATION_TEST_RESOLVED   = "concentration_test_resolved",
+    MALEFICENCE_TRIGGERED         = "maleficence_triggered",
+    MALEFICENCE_RESOLVED          = "maleficence_resolved",
+    SEALED_PACT_CREATED           = "sealed_pact_created",
+    SEALED_PACT_VIOLATED          = "sealed_pact_violated",
+    SEALED_PACT_DISPELLED         = "sealed_pact_dispelled",
+
+    -- Alchemy
+    ALCHEMY_REAGENT_HARVESTED = "alchemy_reagent_harvested",
+    ALCHEMY_REAGENT_PURCHASED = "alchemy_reagent_purchased",
+    ALCHEMY_REAGENT_SOLD      = "alchemy_reagent_sold",
+
     -- Bound by Fate (Crawl UI)
     BOUND_BY_FATE_BLOCKED = "bound_by_fate_blocked",
 }
@@ -147,13 +183,27 @@ function M.createEventBus()
             self.listeners[eventType] = {}
         end
 
-        local listeners = self.listeners[eventType]
-        listeners[#listeners + 1] = callback
+        local entry = {
+            callback = callback,
+            active = true,
+        }
+
+        self.listeners[eventType][#self.listeners[eventType] + 1] = entry
 
         -- Return unsubscribe function
         return function()
+            if not entry.active then
+                return
+            end
+
+            entry.active = false
+            local listeners = self.listeners[eventType]
+            if not listeners then
+                return
+            end
+
             for i, cb in ipairs(listeners) do
-                if cb == callback then
+                if cb == entry then
                     table.remove(listeners, i)
                     break
                 end
@@ -189,11 +239,19 @@ function M.createEventBus()
             table.remove(self.history, 1)
         end
 
-        -- Notify listeners
+        -- Notify listeners. Iterate over a snapshot so unsubscribe/clear during
+        -- an emit cannot shift the live array and skip later subscribers.
         local listeners = self.listeners[eventType]
         if listeners then
-            for _, callback in ipairs(listeners) do
-                callback(data)
+            local snapshot = {}
+            for i, entry in ipairs(listeners) do
+                snapshot[i] = entry
+            end
+
+            for _, entry in ipairs(snapshot) do
+                if entry.active then
+                    entry.callback(data)
+                end
             end
         end
     end
@@ -205,14 +263,32 @@ function M.createEventBus()
     --- Get listener count for an event
     function bus:listenerCount(eventType)
         local listeners = self.listeners[eventType]
-        return listeners and #listeners or 0
+        if not listeners then
+            return 0
+        end
+
+        local count = 0
+        for _, entry in ipairs(listeners) do
+            if entry.active then
+                count = count + 1
+            end
+        end
+        return count
     end
 
     --- Clear all listeners for an event (useful for testing)
     function bus:clear(eventType)
         if eventType then
+            for _, entry in ipairs(self.listeners[eventType] or {}) do
+                entry.active = false
+            end
             self.listeners[eventType] = {}
         else
+            for _, listeners in pairs(self.listeners) do
+                for _, entry in ipairs(listeners) do
+                    entry.active = false
+                end
+            end
             self.listeners = {}
         end
     end

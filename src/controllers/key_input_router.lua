@@ -20,6 +20,12 @@ function M.createKeyInputRouter(config)
     }
 
     function router:keypressed(key)
+        if gameState.maleficenceModal and gameState.maleficenceModal.isVisible then
+            if gameState.maleficenceModal:keypressed(key) then
+                return true
+            end
+        end
+
         if gameState.bidLoreModal and gameState.bidLoreModal.isVisible then
             if gameState.bidLoreModal:keypressed(key) then
                 return true

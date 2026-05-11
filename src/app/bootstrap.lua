@@ -34,6 +34,7 @@ local floating_text = require('ui.floating_text')
 local sound_manager = require('ui.sound_manager')
 local test_of_fate_modal = require('ui.test_of_fate_modal')
 local bid_lore_modal = require('ui.bid_lore_modal')
+local maleficence_modal = require('ui.maleficence_modal')
 local character_sheet = require('ui.screens.character_sheet')
 local loot_modal = require('ui.loot_modal')
 local crawl_screen = require('ui.screens.crawl_screen')
@@ -136,6 +137,11 @@ function M.initialize(config)
         eventBus   = gameState.eventBus,
         zoneSystem = gameState.zoneRegistry,
         bidLoreEngine = gameState.bidLoreEngine,
+        playerDeck = gameState.playerDeck,
+        watchManager = gameState.watchManager,
+        roomManager = gameState.roomManager,
+        environmentManager = gameState.environmentManager,
+        worldState = gameState,
     })
 
     gameState.challengeController = challenge_controller.createChallengeController({
@@ -148,6 +154,7 @@ function M.initialize(config)
     })
     gameState.challengeController:init()
     gameState.actionResolver.challengeController = gameState.challengeController
+    gameState.challengeController.actionResolver = gameState.actionResolver
 
     gameState.actionSequencer = action_sequencer.createActionSequencer({
         eventBus = gameState.eventBus,
@@ -174,6 +181,7 @@ function M.initialize(config)
         guild = gameState.guild,
     })
     gameState.playerHand:init()
+    gameState.actionResolver.playerHand = gameState.playerHand
 
     gameState.combatDisplay = combat_display.createCombatDisplay({
         eventBus = gameState.eventBus,
@@ -275,6 +283,11 @@ function M.initialize(config)
     })
     gameState.bidLoreModal:init()
 
+    gameState.maleficenceModal = maleficence_modal.createMaleficenceModal({
+        eventBus = gameState.eventBus,
+    })
+    gameState.maleficenceModal:init()
+
     gameState.eventBus:on(events.EVENTS.CHALLENGE_ACTION, function(data)
         local result = gameState.actionResolver:resolve(data)
         if result and result.pendingTestOfFate then
@@ -310,6 +323,18 @@ function M.initialize(config)
 
         gameState.actionResolver:resolveBidLoreOutcome(action, data.result)
         gameState.challengeController:resolveAction(action)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.MALEFICENCE_TRIGGERED, function(data)
+        if not data or data.resolved then
+            return
+        end
+
+        gameState.actionResolver:resolvePendingMaleficence(data.actor, {
+            record = data,
+            deck = gameState.playerDeck,
+            allEntities = gameState.challengeController and gameState.challengeController.allCombatants,
+        })
     end)
 
     gameState.challengeInputController = challenge_input_controller.createChallengeInputController({
@@ -418,6 +443,9 @@ function M.initialize(config)
         end
         if gameState.bidLoreModal then
             gameState.bidLoreModal:hide()
+        end
+        if gameState.maleficenceModal then
+            gameState.maleficenceModal:hide()
         end
         sound_manager.stopMusic()
         if data.victory then

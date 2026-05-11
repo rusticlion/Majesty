@@ -26,6 +26,29 @@ M.DISPOSITIONS = {
     FEAR      = "fear",
 }
 
+M.SEVERITY = {
+    MILD = 1,
+    BASIC = 2,
+    INTENSE = 3,
+}
+
+M.SEVERITY_NAMES = {
+    [M.SEVERITY.MILD] = "mild",
+    [M.SEVERITY.BASIC] = "basic",
+    [M.SEVERITY.INTENSE] = "intense",
+}
+
+-- Rulebook disposition states: mild | basic | intense.
+M.STATES = {
+    trust = { "Acceptance", "Trust", "Admiration" },
+    sadness = { "Pensiveness", "Sadness", "Grief" },
+    anger = { "Annoyance", "Anger", "Rage" },
+    distaste = { "Boredom", "Distaste", "Loathing" },
+    fear = { "Anxiety", "Fear", "Terror" },
+    surprise = { "Distraction", "Surprise", "Awe" },
+    joy = { "Contentment", "Joy", "Ecstasy" },
+}
+
 -- Ordered wheel (for transitions)
 M.WHEEL = {
     "anger",
@@ -41,6 +64,14 @@ M.WHEEL = {
 M.WHEEL_INDEX = {}
 for i, disp in ipairs(M.WHEEL) do
     M.WHEEL_INDEX[disp] = i
+end
+
+M.STATE_INDEX = {}
+for disposition, states in pairs(M.STATES) do
+    M.STATE_INDEX[disposition] = { disposition = disposition, severity = M.SEVERITY.BASIC }
+    for severity, label in ipairs(states) do
+        M.STATE_INDEX[label:lower()] = { disposition = disposition, severity = severity }
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -136,6 +167,90 @@ M.TRIGGERS = {
 -- UTILITY FUNCTIONS
 --------------------------------------------------------------------------------
 
+local function normalizeText(value)
+    if type(value) ~= "string" then
+        return ""
+    end
+    return value:lower():gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function M.normalizeSeverity(severity, fallback)
+    fallback = fallback or M.SEVERITY.BASIC
+
+    if type(severity) == "string" then
+        local normalized = normalizeText(severity)
+        if normalized == "mild" or normalized == "weak" or normalized == "low" then
+            return M.SEVERITY.MILD
+        end
+        if normalized == "basic" or normalized == "core" or normalized == "normal" then
+            return M.SEVERITY.BASIC
+        end
+        if normalized == "intense" or normalized == "strong" or normalized == "high" then
+            return M.SEVERITY.INTENSE
+        end
+    end
+
+    local numeric = tonumber(severity)
+    if numeric then
+        return math.max(M.SEVERITY.MILD, math.min(M.SEVERITY.INTENSE, math.floor(numeric)))
+    end
+
+    return fallback
+end
+
+function M.parseDisposition(disposition, severity)
+    local normalized = normalizeText(disposition)
+    local indexed = M.STATE_INDEX[normalized]
+    if indexed then
+        return indexed.disposition, M.normalizeSeverity(severity, indexed.severity)
+    end
+
+    return M.DISPOSITIONS.DISTASTE, M.normalizeSeverity(severity)
+end
+
+function M.getDispositionLabel(disposition, severity)
+    local parsedDisposition, parsedSeverity = M.parseDisposition(disposition, severity)
+    local states = M.STATES[parsedDisposition]
+    return states and states[parsedSeverity] or parsedDisposition
+end
+
+function M.getSeverityName(severity)
+    return M.SEVERITY_NAMES[M.normalizeSeverity(severity)] or "basic"
+end
+
+--- Determine a random starting Disposition from the top minor discard.
+-- Rulebook table: I-II Anger, III-IV Distaste, V-VI Sadness,
+-- VII-VIII Joy, IX-X Surprise, Page-Knight Trust, Queen-King Fear.
+function M.dispositionFromMinorDiscard(card)
+    if not card or card.is_major then
+        return nil, "minor_discard_required"
+    end
+
+    local value = tonumber(card.value)
+    if not value or value < 1 or value > 14 then
+        return nil, "minor_discard_required"
+    end
+
+    local disposition
+    if value <= 2 then
+        disposition = M.DISPOSITIONS.ANGER
+    elseif value <= 4 then
+        disposition = M.DISPOSITIONS.DISTASTE
+    elseif value <= 6 then
+        disposition = M.DISPOSITIONS.SADNESS
+    elseif value <= 8 then
+        disposition = M.DISPOSITIONS.JOY
+    elseif value <= 10 then
+        disposition = M.DISPOSITIONS.SURPRISE
+    elseif value <= 12 then
+        disposition = M.DISPOSITIONS.TRUST
+    else
+        disposition = M.DISPOSITIONS.FEAR
+    end
+
+    return disposition, M.SEVERITY.BASIC, M.getDispositionLabel(disposition, M.SEVERITY.BASIC)
+end
+
 --- Get the next disposition in the wheel
 -- @param current string: Current disposition
 -- @param direction number: SHIFT.CLOCKWISE or SHIFT.COUNTER_CLOCKWISE
@@ -170,6 +285,9 @@ end
 -- @param amount number: Maximum steps to move
 -- @return string: New disposition (may not reach target)
 function M.moveToward(current, target, amount)
+    current = M.parseDisposition(current)
+    target = M.parseDisposition(target)
+
     if current == target then return current end
 
     local currentIndex = M.WHEEL_INDEX[current]
@@ -188,6 +306,74 @@ function M.moveToward(current, target, amount)
     end
 
     return M.shiftDisposition(current, direction, math.min(amount, math.min(clockwiseDist, counterClockwiseDist)))
+end
+
+--- Move a full disposition state toward a target emotion.
+-- Shifting to a new emotion begins at mild severity; repeated pressure on the
+-- current emotion increases severity, matching the rulebook's three-ring model.
+function M.moveTowardState(current, severity, target, amount)
+    local currentDisposition, currentSeverity = M.parseDisposition(current, severity)
+    local targetDisposition = M.parseDisposition(target)
+    amount = math.max(1, tonumber(amount) or 1)
+
+    if currentDisposition == targetDisposition then
+        return currentDisposition, M.normalizeSeverity(currentSeverity + amount, M.SEVERITY.INTENSE), "intensified"
+    end
+
+    local shifted = M.moveToward(currentDisposition, targetDisposition, amount)
+    if shifted == currentDisposition then
+        return currentDisposition, currentSeverity, "held"
+    end
+
+    return shifted, M.SEVERITY.MILD, "shifted"
+end
+
+function M.getSocialOutcome(disposition, severity)
+    local parsedDisposition, parsedSeverity = M.parseDisposition(disposition, severity)
+    local label = M.getDispositionLabel(parsedDisposition, parsedSeverity)
+    local outcome = {
+        disposition = parsedDisposition,
+        severity = parsedSeverity,
+        severityName = M.getSeverityName(parsedSeverity),
+        label = label,
+        negotiates = false,
+        fairExchange = false,
+        extraAid = false,
+        concession = false,
+        shouldFlee = false,
+        likelyChallenge = false,
+        needsAlleviation = false,
+        uncertain = false,
+        kind = "end_conversation",
+    }
+
+    if parsedDisposition == M.DISPOSITIONS.TRUST or parsedDisposition == M.DISPOSITIONS.JOY then
+        outcome.negotiates = true
+        outcome.fairExchange = true
+        outcome.extraAid = parsedSeverity >= M.SEVERITY.INTENSE
+        outcome.kind = outcome.extraAid and "extra_aid" or "good_faith_exchange"
+    elseif parsedDisposition == M.DISPOSITIONS.FEAR then
+        outcome.negotiates = true
+        outcome.concession = true
+        outcome.shouldFlee = parsedSeverity >= M.SEVERITY.BASIC
+        outcome.kind = outcome.shouldFlee and "concession_or_flee" or "end_encounter"
+    elseif parsedDisposition == M.DISPOSITIONS.SADNESS then
+        outcome.negotiates = true
+        outcome.needsAlleviation = true
+        outcome.kind = "needs_alleviation"
+    elseif parsedDisposition == M.DISPOSITIONS.SURPRISE then
+        outcome.negotiates = true
+        outcome.uncertain = true
+        outcome.kind = "uncertain"
+    elseif parsedDisposition == M.DISPOSITIONS.ANGER then
+        outcome.likelyChallenge = true
+        outcome.kind = "combat_risk"
+    elseif parsedDisposition == M.DISPOSITIONS.DISTASTE then
+        outcome.likelyChallenge = parsedSeverity >= M.SEVERITY.BASIC
+        outcome.kind = outcome.likelyChallenge and "end_or_combat" or "end_conversation"
+    end
+
+    return outcome
 end
 
 --- Apply a trigger to shift disposition
@@ -213,6 +399,7 @@ end
 -- @param disposition string: The disposition
 -- @return table: Properties table
 function M.getProperties(disposition)
+    disposition = M.parseDisposition(disposition)
     return M.PROPERTIES[disposition] or M.PROPERTIES.distaste
 end
 

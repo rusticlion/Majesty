@@ -15,12 +15,12 @@ local events = require('logic.events')
 local inventory = require('logic.inventory')
 local camp_controller = require('logic.camp_controller')
 local app_bootstrap = require('app.bootstrap')
+local starting_guild = require('data.starting_guild')
 
 -- UI systems
 local floating_text = require('ui.floating_text')
 
 -- Entity systems
-local adventurer = require('entities.adventurer')
 local factory = require('entities.factory')
 
 -- Map data
@@ -82,6 +82,9 @@ gameState = {
 
     -- Bid Lore modal
     bidLoreModal        = nil,
+
+    -- Sorcery maleficence presentation modal
+    maleficenceModal    = nil,
 
     -- S13.2: Layout manager for stage-based UI
     layoutManager       = nil,
@@ -179,123 +182,24 @@ end
 
 --- Create the starting guild of 4 adventurers
 function createGuild()
-    -- Adventurer 1: The Fighter
-    local fighter = adventurer.createAdventurer({
-        name = "Grim",
-        swords = 3,
-        pentacles = 2,
-        cups = 1,
-        wands = 1,
-        motifs = { "Veteran Soldier", "Scarred" },
-        armorSlots = 2,  -- Fighter has armor
-    })
-    fighter:addTalent("aegis", true)
-    giveStartingItems(fighter, { "Sword", "Torch", "Torch" })
+    local guild = {}
+    local byId = {}
 
-    -- Adventurer 2: The Thief
-    local thief = adventurer.createAdventurer({
-        name = "Whisper",
-        swords = 1,
-        pentacles = 3,
-        cups = 2,
-        wands = 1,
-        motifs = { "Former Burglar", "Quick Fingers" },
-    })
-    thief:addTalent("finesse", true)
-    giveStartingItems(thief, { "Dagger", "Lockpicks", "Rope" })
+    for _, pcData in ipairs(starting_guild.adventurers) do
+        local pc = factory.createAdventurer(pcData)
+        guild[#guild + 1] = pc
+        byId[pc.id] = pc
+    end
 
-    -- Adventurer 3: The Sage
-    local sage = adventurer.createAdventurer({
-        name = "Ember",
-        swords = 1,
-        pentacles = 1,
-        cups = 3,
-        wands = 2,
-        motifs = { "Hedge Witch", "Bookish" },
-    })
-    sage:addTalent("ritualist", false)  -- In training
-    giveStartingItems(sage, { "Staff", "Lantern", "Chalk" })
-
-    -- Adventurer 4: The Scout
-    local scout = adventurer.createAdventurer({
-        name = "Fern",
-        swords = 2,
-        pentacles = 2,
-        cups = 1,
-        wands = 2,
-        motifs = { "Wilderness Guide", "Sharp Eyes" },
-    })
-    scout:addTalent("pathfinder", true)
-    scout.ammo = 10  -- Starting arrows
-    giveStartingItems(scout, { "Bow", "Torch", "Rations" })
-
-    -- Add to guild
-    gameState.guild = { fighter, thief, sage, scout }
-
-    -- Set up bonds between party members
-    fighter:setBond(thief.id, "rivalry")
-    thief:setBond(fighter.id, "rivalry")
-    sage:setBond(scout.id, "friendship")
-    scout:setBond(sage.id, "friendship")
-end
-
--- Weapon definitions for proper inventory items
-local WEAPON_DATA = {
-    Sword   = { weaponType = "sword",   isWeapon = true, isMelee = true },
-    Dagger  = { weaponType = "dagger",  isWeapon = true, isMelee = true },
-    Staff   = { weaponType = "staff",   isWeapon = true, isMelee = true },
-    Bow     = { weaponType = "bow",     isWeapon = true, isRanged = true, uses_ammo = true },
-    Crossbow = { weaponType = "crossbow", isWeapon = true, isRanged = true, uses_ammo = true },
-    Axe     = { weaponType = "axe",     isWeapon = true, isMelee = true },
-    Mace    = { weaponType = "mace",    isWeapon = true, isMelee = true },
-    Spear   = { weaponType = "spear",   isWeapon = true, isMelee = true },
-}
-
---- Give starting items to an adventurer
-function giveStartingItems(entity, itemNames)
-    entity.inventory = inventory.createInventory()
-
-    for _, itemName in ipairs(itemNames) do
-        local item = inventory.createItem({
-            name = itemName,
-            size = inventory.SIZE.NORMAL,
-        })
-
-        -- Check if this is a weapon and add proper flags
-        local weaponData = WEAPON_DATA[itemName]
-        if weaponData then
-            item.isWeapon = weaponData.isWeapon
-            item.isMelee = weaponData.isMelee
-            item.isRanged = weaponData.isRanged
-            item.weaponType = weaponData.weaponType
-            item.uses_ammo = weaponData.uses_ammo
-            -- Weapons go in hands
-            entity.inventory:addItem(item, inventory.LOCATIONS.HANDS)
-        else
-            -- Special handling for light sources
-            if itemName == "Torch" then
-                item.properties = {
-                    flicker_count = 3,
-                    light_source = true,
-                    isLit = true,                -- Starts lit
-                    requires_hands = true,       -- Must be in hands to provide light
-                    provides_belt_light = false, -- Does NOT work from belt
-                    fragile_on_belt = false,
-                }
-            elseif itemName == "Lantern" then
-                item.properties = {
-                    flicker_count = 6,
-                    light_source = true,
-                    isLit = true,                -- Starts lit
-                    requires_hands = false,      -- Works from hands OR belt
-                    provides_belt_light = true,  -- Works from belt
-                    fragile_on_belt = true,      -- Breaks when taking wound while on belt
-                }
-            end
-            -- Non-weapons go to belt for quick access
-            entity.inventory:addItem(item, inventory.LOCATIONS.BELT)
+    for _, bond in ipairs(starting_guild.bonds) do
+        local source = byId[bond.from]
+        local target = byId[bond.to]
+        if source and target then
+            source:setBond(target.id, bond.status)
         end
     end
+
+    gameState.guild = guild
 end
 
 --- Check for victory condition (Vellum Map retrieved)
@@ -830,6 +734,10 @@ function love.draw()
 
     if gameState.bidLoreModal then
         gameState.bidLoreModal:draw()
+    end
+
+    if gameState.maleficenceModal then
+        gameState.maleficenceModal:draw()
     end
 
     -- Draw debug info

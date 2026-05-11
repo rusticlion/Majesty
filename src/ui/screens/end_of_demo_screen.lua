@@ -231,10 +231,10 @@ function M.createEndOfDemoScreen(config)
         love.graphics.print("RETURNING TO THE CITY WILL:", x, y)
 
         local effects = {
-            "* Heal all wounds and conditions",
-            "* Deduct 50% of gold (upkeep)",
-            "* Refill torches, rations, and arrows",
-            "* Reset the dungeon for another run",
+            "* Pay 50% liquid-gold tax to the All-Watch",
+            "* Choose an upkeep tier for lodging and pack refill",
+            "* Resolve City Actions before the next contract",
+            "* Restock the Underworld for another crawl",
         }
 
         local lineY = y + 25

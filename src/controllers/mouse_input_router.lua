@@ -48,6 +48,12 @@ function M.createMouseInputRouter(config)
     end
 
     function router:mousepressed(x, y, button)
+        if gameState.maleficenceModal and gameState.maleficenceModal.isVisible then
+            if gameState.maleficenceModal:mousepressed(x, y, button) then
+                return true
+            end
+        end
+
         if gameState.bidLoreModal and gameState.bidLoreModal.isVisible then
             if gameState.bidLoreModal:mousepressed(x, y, button) then
                 return true
@@ -130,6 +136,11 @@ function M.createMouseInputRouter(config)
     end
 
     function router:mousemoved(x, y, dx, dy)
+        if gameState.maleficenceModal and gameState.maleficenceModal.isVisible then
+            gameState.maleficenceModal:mousemoved(x, y)
+            return true
+        end
+
         if gameState.bidLoreModal and gameState.bidLoreModal.isVisible then
             gameState.bidLoreModal:mousemoved(x, y)
             return true

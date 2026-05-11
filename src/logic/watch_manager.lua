@@ -6,6 +6,7 @@
 -- other systems (Light, Inventory) subscribe and respond.
 
 local events = require('logic.events')
+local entity_factory = require('entities.factory')
 
 local M = {}
 
@@ -39,6 +40,42 @@ local function categorizeMeatgrinderDraw(cardValue)
     return nil
 end
 
+local function isLoudNoiseEncounterValue(cardValue)
+    return cardValue >= 15 and cardValue <= 20
+end
+
+local function createForcedEncounterResult(encounter)
+    encounter = encounter or {}
+    local value = encounter.value or 16
+    local filter = encounter.filter
+
+    return {
+        card = encounter.card or {
+            name = encounter.name or "Forced Encounter",
+            value = value,
+            forced = true,
+        },
+        category = M.MEATGRINDER.RANDOM_ENCOUNTER,
+        value = value,
+        forced = true,
+        source = encounter.source or "forced",
+        filter = filter,
+        description = encounter.description or
+            (filter == "animals" and "Every animal in the area converges on the guild." or
+                "The next watch brings an unavoidable encounter."),
+        spawns = encounter.spawns or {},
+        effects = encounter.effects or {
+            { type = "encounter_start", filter = filter },
+        },
+        actorId = encounter.actorId,
+        actorName = encounter.actorName,
+        branch = encounter.branch,
+        rank = encounter.rank,
+        entryTitle = encounter.entryTitle,
+        raw = encounter,
+    }
+end
+
 --------------------------------------------------------------------------------
 -- WATCH MANAGER FACTORY
 --------------------------------------------------------------------------------
@@ -57,7 +94,16 @@ function M.createWatchManager(config)
         eventBus    = config.eventBus or events.globalBus,
         watchCount  = 0,
         currentRoom = config.startingRoom or nil,
+        mappedRooms = config.mappedRooms or {},
+        mappedRoomTravelPerWatch = config.mappedRoomTravelPerWatch or 1,
+        mappedRoomTravelProgress = 0,
+        roomsTraveledSinceLastMap = {},
+        forcedEncounters = config.forcedEncounters or {},
     }
+
+    if manager.currentRoom then
+        manager.roomsTraveledSinceLastMap[#manager.roomsTraveledSinceLastMap + 1] = manager.currentRoom
+    end
 
     ----------------------------------------------------------------------------
     -- MEATGRINDER DRAW
@@ -112,6 +158,158 @@ function M.createWatchManager(config)
     end
 
     ----------------------------------------------------------------------------
+    -- FORCED ENCOUNTERS
+    ----------------------------------------------------------------------------
+
+    function manager:scheduleForcedEncounter(encounter)
+        encounter = encounter or {}
+        local scheduled = {}
+        for key, value in pairs(encounter) do
+            scheduled[key] = value
+        end
+
+        scheduled.category = scheduled.category or M.MEATGRINDER.RANDOM_ENCOUNTER
+        scheduled.source = scheduled.source or "forced"
+        scheduled.scheduledAtWatch = self.watchCount
+        scheduled.nextWatch = (self.watchCount or 0) + 1
+
+        self.forcedEncounters = self.forcedEncounters or {}
+        self.forcedEncounters[#self.forcedEncounters + 1] = scheduled
+        return scheduled
+    end
+
+    function manager:consumeForcedEncounters()
+        local queue = self.forcedEncounters or {}
+        if #queue == 0 then
+            return {}
+        end
+
+        self.forcedEncounters = {}
+        local forcedResults = {}
+
+        for _, encounter in ipairs(queue) do
+            local result = createForcedEncounterResult(encounter)
+            forcedResults[#forcedResults + 1] = result
+            self.eventBus:emit(events.EVENTS.MEATGRINDER_ROLL, result)
+            self.eventBus:emit(events.EVENTS.RANDOM_ENCOUNTER, result)
+        end
+
+        return forcedResults
+    end
+
+    ----------------------------------------------------------------------------
+    -- DEATH'S DOOR EXPIRY
+    ----------------------------------------------------------------------------
+
+    function manager:expireDeathsDoorMembers()
+        local expired = {}
+
+        for _, member in ipairs(self.guild or {}) do
+            if member and member.isPC ~= false and member.conditions and
+               member.conditions.deaths_door and not member.conditions.dead then
+                local didExpire = false
+
+                if member.expireDeathsDoor then
+                    didExpire = member:expireDeathsDoor(self.watchCount)
+                elseif self.watchCount > 0 then
+                    member.conditions.dead = true
+                    didExpire = true
+                end
+
+                if didExpire then
+                    if member.scheduleUndeadRise then
+                        member:scheduleUndeadRise("zombie", self.watchCount, {
+                            reason = "death_door_expired",
+                        })
+                    end
+
+                    expired[#expired + 1] = member
+                    self.eventBus:emit(events.EVENTS.ENTITY_DEFEATED, {
+                        entity = member,
+                        reason = "death_door_expired",
+                        watchNumber = self.watchCount,
+                    })
+                end
+            end
+        end
+
+        return expired
+    end
+
+    function manager:raiseScheduledUndead()
+        local raised = {}
+
+        for _, member in ipairs(self.guild or {}) do
+            local schedule = member and member.undeadRise
+            if schedule and not schedule.raised then
+                local riseAtWatch = tonumber(schedule.riseAtWatch)
+                if not riseAtWatch or self.watchCount >= riseAtWatch then
+                    local undead = nil
+                    if schedule.type == "zombie" then
+                        undead = entity_factory.createUndeadFromAdventurer(member, "zombie", {
+                            location = member.location,
+                            zone = member.zone,
+                        })
+                    end
+
+                    if undead then
+                        if member.markUndeadRaised then
+                            member:markUndeadRaised(undead, self.watchCount)
+                        else
+                            schedule.raised = true
+                        end
+                        raised[#raised + 1] = undead
+                        self.eventBus:emit(events.EVENTS.UNDEAD_RAISED, {
+                            source = member,
+                            undead = undead,
+                            undeadType = schedule.type or "zombie",
+                            reason = schedule.reason,
+                            watchNumber = self.watchCount,
+                        })
+                    end
+                end
+            end
+        end
+
+        return raised
+    end
+
+    function manager:clearWatchDurationConditions()
+        local expired = {}
+
+        for _, member in ipairs(self.guild or {}) do
+            local durations = member and member.conditionDurations
+            if durations then
+                member.conditions = member.conditions or {}
+                for condition, duration in pairs(durations) do
+                    if duration and duration.duration == "watch" then
+                        member.conditions[condition] = false
+                        if member[condition] == true then
+                            member[condition] = false
+                        end
+                        durations[condition] = nil
+
+                        local detail = {
+                            entity = member,
+                            condition = condition,
+                            timing = "watch",
+                            watchNumber = self.watchCount,
+                        }
+                        expired[#expired + 1] = detail
+                        self.eventBus:emit(events.EVENTS.CONDITION_EXPIRED, detail)
+                    end
+                end
+
+                if next(durations) == nil then
+                    member.conditionDurations = nil
+                end
+            end
+        end
+
+        return expired
+    end
+
+    ----------------------------------------------------------------------------
     -- INCREMENT WATCH
     -- Called when time passes (movement, long tasks, phase changes)
     ----------------------------------------------------------------------------
@@ -127,32 +325,50 @@ function M.createWatchManager(config)
         local results = {
             watchNumber        = self.watchCount,
             meatgrinderResults = {},
+            deathDoorExpired   = {},
+            undeadRaised       = {},
+            conditionsExpired  = {},
         }
 
-        -- Draw from Meatgrinder
-        local firstDraw = self:drawMeatgrinder()
-        if firstDraw then
-            results.meatgrinderResults[#results.meatgrinderResults + 1] = firstDraw
-        end
+        local forcedDraws = self:consumeForcedEncounters()
+        if #forcedDraws > 0 then
+            results.forcedEncounters = forcedDraws
+            for _, forcedDraw in ipairs(forcedDraws) do
+                results.meatgrinderResults[#results.meatgrinderResults + 1] = forcedDraw
+            end
+        else
+            -- Draw from Meatgrinder
+            local firstDraw = self:drawMeatgrinder()
+            if firstDraw then
+                results.meatgrinderResults[#results.meatgrinderResults + 1] = firstDraw
+            end
 
-        -- "Moving Carefully" (p. 91): Draw again, keep if torches gutter
-        if options.careful and firstDraw then
-            local secondDraw = self:drawMeatgrinder()
-            if secondDraw then
-                if secondDraw.category == M.MEATGRINDER.TORCHES_GUTTER then
-                    -- Keep the torches gutter result
-                    results.meatgrinderResults[#results.meatgrinderResults + 1] = secondDraw
-                    results.carefulTorchesGutter = true
+            -- "Moving Carefully" (p. 91): Draw again, keep if torches gutter
+            if options.careful and firstDraw then
+                local secondDraw = self:drawMeatgrinder()
+                if secondDraw then
+                    if secondDraw.category == M.MEATGRINDER.TORCHES_GUTTER then
+                        -- Keep the torches gutter result
+                        results.meatgrinderResults[#results.meatgrinderResults + 1] = secondDraw
+                        results.carefulTorchesGutter = true
+                    end
+                    -- Otherwise second draw is ignored (but card was still drawn/discarded)
                 end
-                -- Otherwise second draw is ignored (but card was still drawn/discarded)
             end
         end
 
+        results.undeadRaised = self:raiseScheduledUndead()
+        results.deathDoorExpired = self:expireDeathsDoorMembers()
+        results.conditionsExpired = self:clearWatchDurationConditions()
+
         -- Emit watch passed event
         self.eventBus:emit(events.EVENTS.WATCH_PASSED, {
-            watchNumber = self.watchCount,
-            careful     = options.careful or false,
-            results     = results.meatgrinderResults,
+            watchNumber      = self.watchCount,
+            careful          = options.careful or false,
+            results          = results.meatgrinderResults,
+            deathDoorExpired = results.deathDoorExpired,
+            undeadRaised     = results.undeadRaised,
+            conditionsExpired = results.conditionsExpired,
         })
 
         return results
@@ -168,7 +384,13 @@ function M.createWatchManager(config)
     function manager:checkLoudNoise()
         local draw = self:drawMeatgrinder()
 
-        if draw and draw.category == M.MEATGRINDER.RANDOM_ENCOUNTER then
+        if draw and isLoudNoiseEncounterValue(draw.value) then
+            draw.loudNoiseEncounter = true
+            if draw.category ~= M.MEATGRINDER.RANDOM_ENCOUNTER then
+                draw.normalCategory = draw.category
+                draw.category = M.MEATGRINDER.RANDOM_ENCOUNTER
+                self.eventBus:emit(events.EVENTS.RANDOM_ENCOUNTER, draw)
+            end
             return { triggered = true, result = draw }
         end
 
@@ -179,6 +401,75 @@ function M.createWatchManager(config)
     -- PARTY MOVEMENT
     -- Updates location of all guild members and advances watch
     ----------------------------------------------------------------------------
+
+    function manager:markMappedRooms(roomIds)
+        self.mappedRooms = self.mappedRooms or {}
+        for _, roomId in ipairs(roomIds or {}) do
+            if roomId then
+                self.mappedRooms[roomId] = true
+            end
+        end
+        return self
+    end
+
+    function manager:isMappedRoom(roomId)
+        return self.mappedRooms and self.mappedRooms[roomId] == true
+    end
+
+    function manager:setMappedRoomTravelPerWatch(value)
+        self.mappedRoomTravelPerWatch = math.max(1, tonumber(value) or 1)
+        return self
+    end
+
+    function manager:getRoomsTraveledSinceLastMap()
+        local out = {}
+        for i, roomId in ipairs(self.roomsTraveledSinceLastMap or {}) do
+            out[i] = roomId
+        end
+        return out
+    end
+
+    function manager:clearRoomsTraveledSinceLastMap()
+        self.roomsTraveledSinceLastMap = {}
+        return self
+    end
+
+    function manager:recordRoomForMapping(roomId)
+        if not roomId then
+            return
+        end
+
+        local rooms = self.roomsTraveledSinceLastMap or {}
+        for _, existing in ipairs(rooms) do
+            if existing == roomId then
+                return
+            end
+        end
+        rooms[#rooms + 1] = roomId
+        self.roomsTraveledSinceLastMap = rooms
+    end
+
+    function manager:shouldSpendWatchForRoomMove(previousRoom, targetRoomId, options)
+        options = options or {}
+        local mappedTravel = previousRoom and targetRoomId and
+            self.mappedRoomTravelPerWatch > 1 and
+            self:isMappedRoom(previousRoom) and
+            self:isMappedRoom(targetRoomId) and
+            not options.forceWatch
+
+        if not mappedTravel then
+            self.mappedRoomTravelProgress = 0
+            return true
+        end
+
+        self.mappedRoomTravelProgress = (self.mappedRoomTravelProgress or 0) + 1
+        if self.mappedRoomTravelProgress >= self.mappedRoomTravelPerWatch then
+            self.mappedRoomTravelProgress = 0
+            return true
+        end
+
+        return false
+    end
 
     --- Move the entire party to a new room
     -- @param targetRoomId string: The room to move to
@@ -211,9 +502,11 @@ function M.createWatchManager(config)
         end
 
         local previousRoom = self.currentRoom
+        self:recordRoomForMapping(previousRoom)
 
         -- Update party location
         self.currentRoom = targetRoomId
+        self:recordRoomForMapping(targetRoomId)
 
         -- Update each guild member's location
         for _, member in ipairs(self.guild) do
@@ -227,20 +520,31 @@ function M.createWatchManager(config)
             previous = previousRoom,
         })
 
-        -- Increment the watch (triggers Meatgrinder)
-        local watchResult = self:incrementWatch({ careful = options.careful })
+        -- Increment the watch (triggers Meatgrinder). Mapped routes can cover two
+        -- mapped room transitions per event after the Update Maps Camp Action.
+        local watchResult = nil
+        local watchSpent = self:shouldSpendWatchForRoomMove(previousRoom, targetRoomId, options)
+        if watchSpent then
+            watchResult = self:incrementWatch({ careful = options.careful })
+        end
 
         -- Emit party moved event
         self.eventBus:emit(events.EVENTS.PARTY_MOVED, {
-            from        = previousRoom,
-            to          = targetRoomId,
-            watchNumber = watchResult.watchNumber,
+            from                      = previousRoom,
+            to                        = targetRoomId,
+            watchNumber               = watchResult and watchResult.watchNumber or self.watchCount,
+            watchSpent                = watchSpent,
+            mappedRoomTravelProgress  = self.mappedRoomTravelProgress,
+            mappedRoomTravelPerWatch  = self.mappedRoomTravelPerWatch,
         })
 
         return true, {
-            watchResult  = watchResult,
-            previousRoom = previousRoom,
-            newRoom      = targetRoomId,
+            watchResult               = watchResult,
+            watchSpent                = watchSpent,
+            previousRoom              = previousRoom,
+            newRoom                   = targetRoomId,
+            mappedRoomTravelProgress  = self.mappedRoomTravelProgress,
+            mappedRoomTravelPerWatch  = self.mappedRoomTravelPerWatch,
         }
     end
 

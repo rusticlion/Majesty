@@ -7,9 +7,37 @@ package.path = "./?.lua;./src/?.lua;./src/?/init.lua;./src/?/?.lua;" .. package.
 local constants = require('constants')
 local deck = require('logic.deck')
 local events = require('logic.events')
+local meatgrinder = require('logic.meatgrinder')
 local zone_system = require('world.zone_system')
 local action_resolver = require('logic.action_resolver')
+local fate_resolver = require('logic.resolver')
 local npc_ai = require('logic.npc_ai')
+local inventory = require('logic.inventory')
+local light_system = require('logic.light_system')
+local base_entity = require('entities.base_entity')
+local watch_manager = require('logic.watch_manager')
+local action_registry = require('data.action_registry')
+local challenge_controller = require('logic.challenge_controller')
+local challenge_input_controller = require('controllers.challenge_input_controller')
+local command_board = require('ui.command_board')
+local crawl_screen = require('ui.screens.crawl_screen')
+local player_hand = require('ui.player_hand')
+local maleficence_modal = require('ui.maleficence_modal')
+local test_of_fate_modal = require('ui.test_of_fate_modal')
+local entity_factory = require('entities.factory')
+local starting_guild = require('data.starting_guild')
+local camp_actions = require('logic.camp_actions')
+local camp_controller = require('logic.camp_controller')
+local environment_manager = require('logic.environment_manager')
+local dungeon_graph = require('world.dungeon_graph')
+local alchemy = require('logic.alchemy')
+local currency = require('logic.currency')
+local interaction = require('logic.interaction')
+local room_manager = require('logic.room_manager')
+local city_phase = require('logic.city_phase')
+local item_templates = require('data.item_templates')
+local disposition = require('logic.disposition')
+local tomb_data = require('data.maps.tomb_of_golden_ghosts')
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then
@@ -21,6 +49,82 @@ local function assertTrue(value, label)
     if not value then
         error(label)
     end
+end
+
+local function hasValue(items, value)
+    for _, item in ipairs(items or {}) do
+        if item == value then
+            return true
+        end
+    end
+    return false
+end
+
+local function countEventListeners(bus)
+    local count = 0
+    for _, listeners in pairs(bus.listeners or {}) do
+        count = count + #listeners
+    end
+    return count
+end
+
+local function checkEventBusMutationSafeDispatch()
+    local bus = events.createEventBus()
+    local calls = {}
+    local unsubscribeFirst
+
+    unsubscribeFirst = bus:on("mutation_test", function()
+        calls[#calls + 1] = "first"
+        unsubscribeFirst()
+    end)
+    bus:on("mutation_test", function()
+        calls[#calls + 1] = "second"
+    end)
+
+    bus:emit("mutation_test", {})
+    assertEqual(table.concat(calls, ","), "first,second",
+        "self-unsubscribe during emit should not skip the following listener")
+
+    calls = {}
+    bus:emit("mutation_test", {})
+    assertEqual(table.concat(calls, ","), "second",
+        "unsubscribed listeners should stay removed after mutation-safe emit")
+
+    local onceCalls = 0
+    local persistentCalls = 0
+    bus:once("once_test", function()
+        onceCalls = onceCalls + 1
+    end)
+    bus:on("once_test", function()
+        persistentCalls = persistentCalls + 1
+    end)
+
+    bus:emit("once_test", {})
+    bus:emit("once_test", {})
+    assertEqual(onceCalls, 1, "once listener should fire only once")
+    assertEqual(persistentCalls, 2, "once unsubscribe should not skip persistent listeners")
+
+    local clearCalls = {}
+    bus:on("clear_test", function()
+        clearCalls[#clearCalls + 1] = "clearer"
+        bus:clear("clear_test")
+    end)
+    bus:on("clear_test", function()
+        clearCalls[#clearCalls + 1] = "stale"
+    end)
+
+    bus:emit("clear_test", {})
+    assertEqual(table.concat(clearCalls, ","), "clearer",
+        "clearing during emit should deactivate remaining listeners")
+    assertEqual(bus:listenerCount("clear_test"), 0, "clear should remove active listeners")
+end
+
+local function major(value)
+    return {
+        name = "Major " .. tostring(value),
+        value = value,
+        is_major = true,
+    }
 end
 
 local function checkDoomClassification()
@@ -48,11 +152,50 @@ local function checkDoomClassification()
     assertEqual(deck.getDoomType(fool), nil, "The Fool should not be classified as doom")
 end
 
+local function checkGroupTestResolution()
+    local great = fate_resolver.resolveTest(4, constants.SUITS.SWORDS, {
+        name = "X of Swords",
+        value = 10,
+        suit = constants.SUITS.SWORDS,
+    })
+    local success = fate_resolver.resolveTest(4, constants.SUITS.SWORDS, {
+        name = "X of Cups",
+        value = 10,
+        suit = constants.SUITS.CUPS,
+    })
+    local failure = fate_resolver.resolveTest(2, constants.SUITS.SWORDS, {
+        name = "V of Cups",
+        value = 5,
+        suit = constants.SUITS.CUPS,
+    })
+    local greatFailure = fate_resolver.resolvePush(failure.total, failure.cards, {
+        name = "III of Wands",
+        value = 3,
+        suit = constants.SUITS.WANDS,
+    })
+
+    assertEqual(fate_resolver.getGroupTestHits(great), 2, "group tests should score great success as 2 hits")
+    assertEqual(fate_resolver.getGroupTestHits(success), 1, "group tests should score success as 1 hit")
+    assertEqual(fate_resolver.getGroupTestHits(failure), 0, "group tests should score failure as 0 hits")
+    assertEqual(fate_resolver.getGroupTestHits(greatFailure), -1,
+        "group tests should score great failure as -1 hit")
+
+    assertEqual(fate_resolver.resolveGroupTest({ success, success }).result,
+        fate_resolver.GROUP_RESULTS.SUCCESS, "2 group-test hits should succeed for the group")
+    assertEqual(fate_resolver.resolveGroupTest({ success, failure }).result,
+        fate_resolver.GROUP_RESULTS.TIGHT_SPOT, "1 group-test hit should put the group in a tight spot")
+    assertEqual(fate_resolver.resolveGroupTest({ failure, failure }).result,
+        fate_resolver.GROUP_RESULTS.FAILURE, "0 group-test hits should fail for the group")
+    assertEqual(fate_resolver.resolveGroupTest({ greatFailure, failure }).result,
+        fate_resolver.GROUP_RESULTS.DISASTER, "negative group-test hits should be a disaster")
+end
+
 local function buildLinearZones()
     return {
         { id = "A", name = "A", adjacent_to = { "B" } },
         { id = "B", name = "B", adjacent_to = { "A", "C" } },
-        { id = "C", name = "C", adjacent_to = { "B" } },
+        { id = "C", name = "C", adjacent_to = { "B", "D" } },
+        { id = "D", name = "D", adjacent_to = { "C" } },
     }
 end
 
@@ -77,13 +220,17379 @@ local function checkMovementAdjacency()
     assertTrue(ok and err == nil, "A->B should be adjacent")
 
     ok, err = resolver:canMoveBetweenZones(action, "A", "C")
-    assertTrue(not ok and err == "zones_not_adjacent", "A->C should be rejected as non-adjacent")
+    assertTrue(not ok and (err == "zones_too_far" or err == "zones_not_adjacent"), "A->C should be rejected for single-step Move")
+
+    ok, err = resolver:canMoveBetweenZones(action, "A", "C", { maxDistance = 2 })
+    assertTrue(ok and err == nil, "A->C should be legal for two-step Dash")
+
+    ok, err = resolver:canMoveBetweenZones(action, "A", "D", { maxDistance = 2 })
+    assertTrue(not ok and err == "zones_too_far", "A->D should be too far for Dash")
 
     ok, err = resolver:canMoveBetweenZones(action, "A", "Z")
     assertTrue(not ok and err == "zone_not_found", "A->Z should reject unknown zone")
 end
 
-local function checkNPCDrawFloor()
+local function checkMovementActionDistances()
+    local bus = events.createEventBus()
+    local zoneRegistry = zone_system.createZoneRegistry({ eventBus = bus })
+    local zones = buildLinearZones()
+    zoneRegistry:setRoomZones(zones)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        zoneSystem = zoneRegistry,
+    })
+
+    local actor = {
+        id = "pc_1",
+        name = "Runner",
+        isPC = true,
+        zone = "A",
+        conditions = {},
+    }
+    zoneRegistry:placeEntity(actor.id, actor.zone)
+
+    local dashResult = resolver:resolve({
+        actor = actor,
+        card = { name = "Pentacles", value = 5, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DASH,
+        destinationZone = "C",
+        challengeController = { zones = zones },
+    })
+    assertTrue(dashResult.success, "Dash should move two zones away")
+    assertEqual(actor.zone, "C", "Dash should update actor zone")
+
+    actor.zone = "A"
+    zoneRegistry:placeEntity(actor.id, actor.zone)
+    local moveResult = resolver:resolve({
+        actor = actor,
+        card = { name = "Move", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MOVE,
+        destinationZone = "C",
+        challengeController = { zones = zones },
+    })
+    assertTrue(not moveResult.success, "Move should not skip an intermediate zone")
+    assertEqual(actor.zone, "A", "Failed Move should not update actor zone")
+
+    local avoidResult = resolver:resolve({
+        actor = actor,
+        card = { name = "Avoid", value = 5, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.AVOID,
+        destinationZone = "C",
+        challengeController = { zones = zones },
+        allEntities = {},
+    })
+    assertTrue(not avoidResult.success, "Avoid should only move to an adjacent zone")
+    assertEqual(actor.zone, "A", "Failed Avoid should not update actor zone")
+end
+
+local function checkKeyedTalentWoundSlots()
+    local pc = base_entity.createEntity({
+        id = "pc_keyed_talents",
+        name = "Keyed Talent PC",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 2,
+        talents = {
+            aegis = { mastered = true, wounded = false },
+            path_lore = { mastered = true, wounded = false },
+        },
+    })
+
+    assertEqual(pc:getTalentCount(), 2, "keyed talent maps should count as wound slots")
+    assertEqual(pc:takeWound("piercing"), "talent_wounded", "first keyed talent should absorb a wound")
+    assertEqual(pc.woundedTalents, 1, "first talent wound should increment wound count")
+    assertEqual(pc:takeWound("piercing"), "talent_wounded", "second keyed talent should absorb a wound")
+    assertEqual(pc.woundedTalents, 2, "second talent wound should increment wound count")
+    assertEqual(pc:takeWound("piercing"), "staggered", "wounds should cascade after keyed talents are exhausted")
+end
+
+local function checkChosenPCWoundOptions()
+    local choicePC = base_entity.createEntity({
+        id = "pc_wound_choice",
+        name = "Wound Choice PC",
+        isPC = true,
+        armorSlots = 1,
+        talentWoundSlots = 2,
+        talents = {
+            aegis = { mastered = true, wounded = false },
+            path_lore = { mastered = true, wounded = false },
+        },
+    })
+
+    local choices = choicePC:getAvailableWoundChoices("normal")
+    assertTrue(hasValue(choices, "armor"), "normal Wound choices should include armor")
+    assertTrue(hasValue(choices, "talent"), "normal Wound choices should include talents")
+    assertTrue(hasValue(choices, "injured"), "normal Wound choices should include Injured")
+    assertTrue(hasValue(choicePC:getAvailableWoundChoices("critical"), "injured"),
+        "Critical Wound choices should expose the forced Injured result first")
+
+    assertEqual(choicePC:takeWound("normal", { choice = "talent", talentId = "path_lore" }), "talent_wounded",
+        "explicit Wound choice should allow talent before armor")
+    assertEqual(choicePC.armorNotches, 0, "choosing talent should not notch armor first")
+    assertTrue(choicePC.talents.path_lore.wounded, "explicit talent wound should wound the requested talent")
+
+    local injuredFirst = base_entity.createEntity({
+        id = "pc_injured_first",
+        name = "Injured First PC",
+        isPC = true,
+        armorSlots = 1,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true, wounded = false },
+        },
+    })
+    assertEqual(injuredFirst:takeWound("normal", { choice = "injured" }), "injured",
+        "PCs should be able to mark Injured before armor or talents")
+    assertEqual(injuredFirst.armorNotches, 0, "marking Injured should leave armor available")
+    assertEqual(injuredFirst:takeWound("normal", { choice = "armor" }), "deaths_door",
+        "an already Injured PC must mark Death's Door on the next Wound")
+    assertEqual(injuredFirst.armorNotches, 0, "Injured gate should prevent later armor selection")
+
+    local piercingPC = base_entity.createEntity({
+        id = "pc_piercing_choice",
+        name = "Piercing Choice PC",
+        isPC = true,
+        armorSlots = 1,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true, wounded = false },
+        },
+    })
+    assertEqual(piercingPC:takeWound("piercing", { choice = "armor" }), "talent_wounded",
+        "piercing damage should not allow armor selection")
+    assertEqual(piercingPC.armorNotches, 0, "piercing damage should leave armor unnotched")
+
+    local deathsDoorFirst = base_entity.createEntity({
+        id = "pc_deaths_door_first",
+        name = "Death's Door First PC",
+        isPC = true,
+        armorSlots = 1,
+        talentWoundSlots = 0,
+    })
+    assertEqual(deathsDoorFirst:takeWound("normal", { choice = "deaths_door" }), "deaths_door",
+        "PCs should be able to choose Death's Door before other available options")
+    assertEqual(deathsDoorFirst:takeWound("critical"), "dead",
+        "Critical damage at Death's Door should kill")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local attacker = base_entity.createEntity({
+        id = "npc_wound_attacker",
+        name = "Wound Attacker",
+        isPC = false,
+        swords = 3,
+        health = 2,
+        defense = 0,
+    })
+    local target = base_entity.createEntity({
+        id = "pc_action_wound_choice",
+        name = "Action Wound Choice PC",
+        isPC = true,
+        armorSlots = 1,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true, wounded = false },
+        },
+    })
+    local attack = resolver:resolve({
+        actor = attacker,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 5,
+        targetWoundChoice = "injured",
+    })
+    assertTrue(attack.success, "setup melee should hit")
+    assertTrue(target.conditions.injured, "action-level wound choice should mark Injured")
+    assertEqual(target.armorNotches, 0, "action-level wound choice should bypass available armor when chosen")
+end
+
+local function checkDeathsDoorDefeatedInChallengeFlow()
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+
+    local pc = base_entity.createEntity({
+        id = "pc_deaths_door_flow",
+        name = "Death Door PC",
+        isPC = true,
+    })
+    local npc = base_entity.createEntity({
+        id = "npc_deaths_door_flow",
+        name = "Death Door NPC",
+        isPC = false,
+        health = 1,
+        defense = 0,
+    })
+
+    pc.conditions.deaths_door = true
+    controller.pcs = { pc }
+    controller.npcs = { npc }
+    controller:buildCombatantList()
+    assertTrue(controller:isDefeated(pc), "Death's Door PC should be defeated for Challenge flow")
+    assertEqual(#controller.allCombatants, 1, "Death's Door PC should be excluded from active combatants")
+    assertEqual(controller:checkEndConditions(), challenge_controller.OUTCOMES.DEFEAT,
+        "all PCs at Death's Door should end the Challenge in defeat")
+
+    pc.conditions.deaths_door = false
+    npc.conditions.deaths_door = true
+    controller:buildCombatantList()
+    assertTrue(controller:isDefeated(npc), "Death's Door NPC should be defeated for Challenge flow")
+    assertEqual(#controller.allCombatants, 1, "Death's Door NPC should be excluded from active combatants")
+    assertEqual(controller:checkEndConditions(), challenge_controller.OUTCOMES.VICTORY,
+        "all NPCs at Death's Door should count as victory")
+
+    local ai = npc_ai.createNPCAI({
+        eventBus = events.createEventBus(),
+        challengeController = {
+            npcs = { npc },
+            pcs = { pc },
+        },
+    })
+    assertTrue(ai:isDefeated(npc), "NPC AI should treat Death's Door as defeated")
+
+    local consciousPC = base_entity.createEntity({
+        id = "pc_conscious_target",
+        name = "Conscious Target",
+        isPC = true,
+    })
+    consciousPC.zone = "far"
+    pc.zone = "near"
+    pc.conditions.deaths_door = true
+    local selected = ai:selectTarget(npc, { pc, consciousPC }, false)
+    assertEqual(selected, consciousPC, "NPC AI should not target a PC at Death's Door")
+
+    local dog = {
+        id = "npc_hound",
+        name = "Hungry Hound",
+        zone = "near",
+        tags = { "hound" },
+        conditions = {},
+    }
+    local easyTarget = base_entity.createEntity({
+        id = "pc_easy_dog_target",
+        name = "Easy Dog Target",
+        isPC = true,
+    })
+    easyTarget.zone = "near"
+    easyTarget.conditions = {}
+    easyTarget.npcDefense = 0
+    local cursedTarget = base_entity.createEntity({
+        id = "pc_dogs_hate_me",
+        name = "Dogs Hate Me",
+        isPC = true,
+    })
+    cursedTarget.zone = "far"
+    cursedTarget.conditions = {}
+    cursedTarget.malediction = {
+        active = true,
+        curse = {
+            flags = { dogsHateYou = true },
+        },
+    }
+    selected = ai:selectTarget(dog, { easyTarget, cursedTarget }, false)
+    assertEqual(selected, cursedTarget, "dog-like NPCs should prioritize Dogs Hate You targets")
+
+    local zombie = {
+        id = "npc_targeting_zombie",
+        name = "Targeting Zombie",
+        zone = "near",
+        undead = true,
+        conditions = {},
+    }
+    local ordinaryTarget = base_entity.createEntity({
+        id = "pc_ordinary_undead_target",
+        name = "Ordinary Undead Target",
+        isPC = true,
+        pentacles = 4,
+    })
+    ordinaryTarget.zone = "near"
+    ordinaryTarget.conditions = {}
+    local corpseLikeTarget = base_entity.createEntity({
+        id = "pc_desiccated_undead_target",
+        name = "Desiccated Undead Target",
+        isPC = true,
+        pentacles = -4,
+    })
+    corpseLikeTarget.zone = "near"
+    corpseLikeTarget.conditions = {}
+    corpseLikeTarget.malediction = {
+        active = true,
+        curse = {
+            flags = { undeadUsuallyIgnore = true },
+        },
+    }
+    selected = ai:selectTarget(zombie, { corpseLikeTarget, ordinaryTarget }, false)
+    assertEqual(selected, ordinaryTarget, "undead NPCs should ignore desiccated-corpse Malediction targets when other targets exist")
+    selected = ai:selectTarget(zombie, { corpseLikeTarget }, false)
+    assertEqual(selected, corpseLikeTarget, "undead NPCs should still target a desiccated-corpse Malediction target if no other target exists")
+
+    local markedTarget = base_entity.createEntity({
+        id = "pc_undead_mark_target",
+        name = "Undead Mark Target",
+        isPC = true,
+        pentacles = 5,
+    })
+    markedTarget.zone = "far"
+    markedTarget.conditions = {}
+    local markResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local markRecord = markResolver:triggerMaleficence(markedTarget, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local markResult = markResolver:resolvePendingMaleficence(markedTarget, {
+        record = markRecord,
+        value = 8,
+        allEntities = { markedTarget },
+    })
+    assertTrue(markResult.success, "Wastes VIII Undead Mark should resolve from table data")
+    assertTrue(markedTarget.conditions.undead_mark, "Wastes VIII should mark Undead Mark")
+    assertEqual(markedTarget.conditionDurations.undead_mark["until"], "cleansed",
+        "Wastes VIII Undead Mark should last until cleansed")
+    selected = ai:selectTarget(zombie, { ordinaryTarget, markedTarget }, false)
+    assertEqual(selected, markedTarget, "undead NPCs should prioritize Undead Mark targets")
+    selected = ai:selectTarget(zombie, { ordinaryTarget, markedTarget }, true)
+    assertEqual(selected, ordinaryTarget, "undead melee targeting should still require a same-zone marked target")
+
+    local spirit = {
+        id = "npc_targeting_spirit",
+        name = "Targeting Spirit",
+        zone = "near",
+        tags = { "spirit" },
+        conditions = {},
+    }
+    local haloTarget = base_entity.createEntity({
+        id = "pc_halo_target",
+        name = "Halo Target",
+        isPC = true,
+        pentacles = 5,
+    })
+    haloTarget.zone = "far"
+    haloTarget.conditions = {}
+    local haloRecord = markResolver:triggerMaleficence(haloTarget, "welkin", "smoke_test", {
+        spell = { id = "heavenfire", branch = "welkin" },
+    })
+    local haloResult = markResolver:resolvePendingMaleficence(haloTarget, {
+        record = haloRecord,
+        value = 8,
+        allEntities = { haloTarget },
+    })
+    assertTrue(haloResult.success, "Welkin VIII Halo should resolve from table data")
+    assertTrue(haloTarget.conditions.halo, "Welkin VIII should mark Halo")
+    selected = ai:selectTarget(spirit, { ordinaryTarget, haloTarget }, false)
+    assertEqual(selected, haloTarget, "spirit NPCs should prioritize Halo targets")
+    selected = ai:selectTarget(zombie, { ordinaryTarget, haloTarget }, false)
+    assertEqual(selected, ordinaryTarget, "non-spirit undead should not prioritize Halo by itself")
+end
+
+local function checkChallengeSurpriseAmbushActions()
+    local bus = events.createEventBus()
+    local surpriseEvent = nil
+    bus:on("challenge_surprise_resolved", function(data)
+        surpriseEvent = data
+    end)
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = bus,
+    })
+
+    local first = base_entity.createEntity({
+        id = "pc_surprised_first",
+        name = "Surprised First",
+        isPC = true,
+    })
+    local second = base_entity.createEntity({
+        id = "pc_surprised_second",
+        name = "Surprised Second",
+        isPC = true,
+    })
+    local ambusherA = base_entity.createEntity({
+        id = "npc_ambusher_a",
+        name = "Ambusher A",
+        isPC = false,
+        health = 1,
+        defense = 0,
+    })
+    local ambusherB = base_entity.createEntity({
+        id = "npc_ambusher_b",
+        name = "Ambusher B",
+        isPC = false,
+        health = 1,
+        defense = 0,
+    })
+    local ambusherC = base_entity.createEntity({
+        id = "npc_ambusher_c",
+        name = "Ambusher C",
+        isPC = false,
+        health = 1,
+        defense = 0,
+    })
+
+    local ok, err = controller:startChallenge({
+        pcs = { first, second },
+        npcs = { ambusherA, ambusherB, ambusherC },
+        surprised = true,
+        surpriseActions = {
+            { tactic = "shank" },
+            { tactic = "shank" },
+            { tactic = "shank" },
+        },
+    })
+    assertTrue(ok, "surprised Challenge should start")
+    assertTrue(surpriseEvent ~= nil, "surprised Challenge should emit surprise resolution details")
+    assertEqual(#controller.surpriseResults, 3, "each GM character should receive one pre-Challenge surprise action")
+    assertTrue(first.conditions.staggered, "first adventurer should take one surprise Wound")
+    assertTrue(second.conditions.staggered, "second adventurer should take one surprise Wound")
+    assertEqual(first:getWoundsTaken(), 1, "an adventurer should only be shanked once before Challenge")
+    assertEqual(second:getWoundsTaken(), 1, "each available adventurer can be shanked once")
+    assertTrue(hasValue(controller.surpriseResults[3].effects, "ambush_no_target"),
+        "extra shank attackers should not wound an adventurer twice")
+    assertEqual(controller.state, challenge_controller.STATES.PRE_ROUND,
+        "Challenge should proceed to normal initiative after surprise actions")
+
+    local resourceController = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    local deprived = base_entity.createEntity({
+        id = "pc_deprived",
+        name = "Deprived PC",
+        isPC = true,
+    })
+    local schemer = base_entity.createEntity({
+        id = "npc_schemer",
+        name = "Schemer",
+        isPC = false,
+        health = 1,
+        defense = 0,
+    })
+    resourceController.pcs = { deprived }
+    resourceController.npcs = { schemer }
+    local resourceResults = resourceController:resolveSurpriseActions({
+        npcs = { schemer },
+        surpriseActions = {
+            { tactic = "deprive_resources", target = deprived, resource = "disarm" },
+        },
+    })
+    assertTrue(deprived.conditions.disarmed, "ambush tactic 2 should be able to deprive resources")
+    assertTrue(hasValue(resourceResults[1].effects, "ambush_deprive_resources"),
+        "resource deprivation should be reported as an ambush effect")
+
+    local advantageResults = resourceController:resolveSurpriseActions({
+        npcs = { schemer },
+        surpriseActions = {
+            { tactic = "create_advantage", advantage = "The bridge is collapsed." },
+        },
+    })
+    assertTrue(hasValue(advantageResults[1].effects, "ambush_advantage"),
+        "ambush tactic 1 should record created advantages")
+    assertEqual(resourceController.sceneAdvantages[#resourceController.sceneAdvantages].description,
+        "The bridge is collapsed.",
+        "created ambush advantages should be retained for scene special rules")
+end
+
+local function checkActingEntityCannotMinor()
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_active_minor",
+        name = "Active Minor",
+        isPC = true,
+    })
+    local ally = base_entity.createEntity({
+        id = "pc_ally_minor",
+        name = "Ally Minor",
+        isPC = true,
+    })
+    controller.state = challenge_controller.STATES.MINOR_WINDOW
+    controller.activeEntity = actor
+    controller.pendingMinors = {}
+
+    local ok, err = controller:declareMinorAction(actor,
+        { name = "Five of Pentacles", value = 5, suit = constants.SUITS.PENTACLES },
+        { type = action_resolver.ACTION_TYPES.DODGE })
+    assertTrue(not ok, "acting entity should not be able to declare a minor action after their turn action")
+    assertEqual(err, "acting_entity_cannot_minor", "active minor rejection should explain the rule")
+    assertEqual(#controller.pendingMinors, 0, "rejected active-entity minor should not be queued")
+
+    ok, err = controller:declareMinorAction(ally,
+        { name = "Six of Pentacles", value = 6, suit = constants.SUITS.PENTACLES },
+        { type = action_resolver.ACTION_TYPES.DODGE })
+    assertTrue(ok, "other combatants should still be able to declare minor actions")
+    assertEqual(err, nil, "accepted ally minor should not report an error")
+    assertEqual(#controller.pendingMinors, 1, "accepted ally minor should be queued")
+end
+
+local function checkSkippedTurnBypassesMinorWindow()
+    local bus = events.createEventBus()
+    local minorWindows = 0
+    local skippedTurn = nil
+    bus:on(events.EVENTS.MINOR_ACTION_WINDOW, function()
+        minorWindows = minorWindows + 1
+    end)
+    bus:on(events.EVENTS.CHALLENGE_TURN_END, function(data)
+        if data.skipped then
+            skippedTurn = data
+        end
+    end)
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = bus,
+    })
+    local skipper = base_entity.createEntity({
+        id = "pc_skip_turn",
+        name = "Skip Turn",
+        isPC = true,
+    })
+    local nextActor = base_entity.createEntity({
+        id = "pc_next_turn",
+        name = "Next Turn",
+        isPC = true,
+    })
+
+    controller.state = challenge_controller.STATES.AWAITING_ACTION
+    controller.currentRound = 1
+    controller.currentCount = 5
+    controller.activeEntity = skipper
+    controller.allCombatants = { skipper, nextActor }
+    controller.initiativeSlots = {
+        [skipper.id] = { card = { value = 5 }, value = 5, revealed = true },
+        [nextActor.id] = { card = { value = 5 }, value = 5, revealed = false },
+    }
+    controller.actedThisRound = {}
+
+    local ok, err = controller:skipTurn(skipper, "pass")
+    assertTrue(ok, "active entity should be able to skip their turn")
+    assertEqual(err, nil, "successful skip should not report an error")
+    assertTrue(skippedTurn ~= nil, "skip should emit a skipped turn-end event")
+    assertEqual(skippedTurn.reason, "pass", "skip event should preserve the reason")
+    assertEqual(minorWindows, 0, "skipping should not open a minor-action window")
+    assertTrue(controller.actedThisRound[skipper.id], "skipped entity should count as acted")
+    assertEqual(controller.activeEntity, nextActor, "count-up should continue to the next same-count actor")
+    assertEqual(controller.state, challenge_controller.STATES.AWAITING_ACTION,
+        "next same-count actor should receive their turn after a skip")
+end
+
+local function checkNPCNoActionSkipsTurn()
+    local bus = events.createEventBus()
+    local visualCompletes = 0
+    bus:on(events.EVENTS.UI_SEQUENCE_COMPLETE, function()
+        visualCompletes = visualCompletes + 1
+    end)
+
+    local skipped = nil
+    local ai = npc_ai.createNPCAI({
+        eventBus = bus,
+        challengeController = {
+            skipTurn = function(_, entity, reason)
+                skipped = { entity = entity, reason = reason }
+                return true
+            end,
+        },
+    })
+    local npc = {
+        id = "npc_no_action",
+        name = "No Action NPC",
+        isPC = false,
+        conditions = {},
+    }
+
+    ai:handleNPCTurn({ npc = npc, pcs = {} })
+    assertTrue(skipped ~= nil, "NPC with no valid action should use the controller skip path")
+    assertEqual(skipped.entity, npc, "NPC skip should identify the acting NPC")
+    assertEqual(skipped.reason, "no_valid_action", "NPC skip should explain the no-action reason")
+    assertEqual(visualCompletes, 0, "NPC no-action skip should not fake a visual-complete event")
+end
+
+local function checkDeathsDoorWatchExpiry()
+    local bus = events.createEventBus()
+    local defeatedEvents = {}
+    bus:on(events.EVENTS.ENTITY_DEFEATED, function(payload)
+        defeatedEvents[#defeatedEvents + 1] = payload
+    end)
+
+    local pc = base_entity.createEntity({
+        id = "pc_death_door_watch",
+        name = "Death Door Watch PC",
+        isPC = true,
+    })
+
+    assertEqual(pc:takeWound("normal", { choice = "deaths_door", currentWatch = 0 }), "deaths_door",
+        "Death's Door wound should accept the current watch marker")
+    assertEqual(pc.deathDoorExpiresAtWatch, 1, "Death's Door should expire after one watch")
+
+    local manager = watch_manager.createWatchManager({
+        eventBus = bus,
+        guild = { pc },
+    })
+    local watchResult = manager:incrementWatch()
+    assertTrue(pc.conditions.dead, "unhealed Death's Door PC should die when a watch passes")
+    assertTrue(not pc:isAlive(), "dead PCs should not report as alive")
+    assertTrue(pc.deathDoorExpired, "watch expiry should mark the Death's Door expiry reason")
+    assertEqual(#watchResult.deathDoorExpired, 1, "watch result should report expired Death's Door PCs")
+    assertEqual(watchResult.deathDoorExpired[1], pc, "watch result should include the expired PC")
+    assertEqual(#defeatedEvents, 1, "Death's Door expiry should emit an entity defeated event")
+    assertEqual(defeatedEvents[1].reason, "death_door_expired", "defeated event should explain Death's Door expiry")
+    assertEqual(pc.undeadRise.riseAtWatch, 2, "Death's Door expiry should schedule zombie rise for the next watch")
+    local zombieWatchResult = manager:incrementWatch()
+    assertEqual(#zombieWatchResult.undeadRaised, 1, "Death's Door corpse should rise on the following watch")
+    assertEqual(zombieWatchResult.undeadRaised[1].blueprintId, "zombie", "Death's Door expiry should raise a zombie")
+
+    local healed = base_entity.createEntity({
+        id = "pc_death_door_healed_before_watch",
+        name = "Death Door Healed PC",
+        isPC = true,
+    })
+    healed:markDeathsDoor(0)
+    local healResult = healed:healWound()
+    assertEqual(healResult, "deaths_door_healed", "Heal effects should save Death's Door PCs")
+    assertTrue(not healed.conditions.deaths_door, "healing should clear Death's Door")
+    assertTrue(healed.conditions.stressed, "healing from Death's Door should mark Stressed")
+    assertEqual(healed.deathDoorWatchStarted, nil, "healing should clear the Death's Door watch timer")
+    assertEqual(healed.deathDoorExpiresAtWatch, nil, "healing should clear the Death's Door expiry watch")
+
+    local healedManager = watch_manager.createWatchManager({
+        eventBus = events.createEventBus(),
+        guild = { healed },
+    })
+    healedManager:incrementWatch()
+    assertTrue(not healed.conditions.dead, "healed Death's Door PCs should not expire on the next watch")
+end
+
+local function checkWatchDurationConditionExpiry()
+    local bus = events.createEventBus()
+    local expired = {}
+    bus:on(events.EVENTS.CONDITION_EXPIRED, function(payload)
+        expired[#expired + 1] = payload
+    end)
+
+    local pc = base_entity.createEntity({
+        id = "pc_watch_condition",
+        name = "Watch Condition PC",
+        isPC = true,
+    })
+    pc.conditions.stunned = true
+    pc.stunned = true
+    pc.conditions.silenced = true
+    pc.conditionDurations = {
+        stunned = { duration = "watch" },
+        silenced = { ["until"] = "fool_reshuffle" },
+    }
+
+    local manager = watch_manager.createWatchManager({
+        eventBus = bus,
+        guild = { pc },
+    })
+    local watchResult = manager:incrementWatch()
+
+    assertTrue(not pc.conditions.stunned and not pc.stunned,
+        "watch-duration conditions should clear when one watch passes")
+    assertTrue(pc.conditions.silenced,
+        "non-watch duration conditions should remain when a watch passes")
+    assertTrue(pc.conditionDurations and pc.conditionDurations.silenced and not pc.conditionDurations.stunned,
+        "watch expiry should remove only watch-duration metadata")
+    assertEqual(#watchResult.conditionsExpired, 1,
+        "watch result should report expired watch-duration conditions")
+    assertEqual(watchResult.conditionsExpired[1].condition, "stunned",
+        "watch result should name the expired watch-duration condition")
+    assertEqual(#expired, 1, "watch-duration expiry should emit a condition-expired event")
+    assertEqual(expired[1].watchNumber, 1, "condition-expired event should carry the watch number")
+end
+
+local function checkStartingGuildData()
+    local guild = {}
+    local byId = {}
+
+    for _, pcData in ipairs(starting_guild.adventurers) do
+        local pc = entity_factory.createAdventurer(pcData)
+        guild[#guild + 1] = pc
+        byId[pc.id] = pc
+    end
+
+    for _, bond in ipairs(starting_guild.bonds) do
+        local source = byId[bond.from]
+        local target = byId[bond.to]
+        if source and target then
+            source:setBond(target.id, bond.status)
+        end
+    end
+
+    assertEqual(#guild, 4, "starter guild data should create four adventurers")
+    assertEqual(guild[1].id, "grim", "starter guild should use stable data-authored ids")
+    assertEqual(guild[1]:getTalentCount(), 1, "starter talents should be keyed data")
+    assertTrue(guild[1]:isTalentMastered("aegis"), "Grim should keep mastered Aegis")
+    assertTrue(not guild[3]:isTalentMastered("ritualist"), "Ember should keep Ritualist in training")
+    assertEqual(guild[4].ammo, 10, "Fern should keep starting ammo")
+
+    local grimWeapon = guild[1].inventory:getItems(inventory.LOCATIONS.HANDS)[1]
+    assertEqual(grimWeapon.weaponType, "sword", "starter sword should retain weapon type metadata")
+    assertTrue(grimWeapon.isMelee, "starter sword should be a melee weapon")
+    local grimShield = guild[1].inventory:getItems(inventory.LOCATIONS.HANDS)[2]
+    assertEqual(grimShield.name, "Light Shield", "Aegis starter should carry a shield")
+    assertEqual(grimShield.durability, 1, "starter light shield should use rulebook Notch capacity")
+
+    local fernWeapon = guild[4].inventory:getItems(inventory.LOCATIONS.HANDS)[1]
+    assertEqual(fernWeapon.weaponType, "bow", "starter bow should retain weapon type metadata")
+    assertTrue(fernWeapon.isRanged, "starter bow should be a ranged weapon")
+    assertTrue(fernWeapon.uses_ammo, "starter bow should retain ammo metadata")
+
+    assertEqual(guild[1]:getBond("whisper").status, "rivalry", "starter rivalry bond should be data-authored")
+    assertEqual(guild[3]:getBond("fern").status, "friendship", "starter friendship bond should be data-authored")
+end
+
+local function checkLightSourceVisibility()
+    local candleHolder = base_entity.createEntity({
+        id = "pc_candle_holder",
+        name = "Candle Holder",
+        isPC = true,
+    })
+    candleHolder.inventory = inventory.createInventory()
+    local candleBystander = base_entity.createEntity({
+        id = "pc_candle_bystander",
+        name = "Candle Bystander",
+        isPC = true,
+    })
+    candleBystander.inventory = inventory.createInventory()
+
+    local candle = inventory.createItemFromTemplate("candles")
+    candle.properties.isLit = true
+    candle.properties.is_lit = true
+    candle.properties.extinguished = false
+    candleHolder.inventory:addItem(candle, inventory.LOCATIONS.HANDS)
+
+    local candleLights = light_system.createLightSystem({
+        eventBus = events.createEventBus(),
+        guild = { candleHolder, candleBystander },
+    })
+    candleLights:init()
+
+    assertEqual(candleLights:getLightLevelForEntity(candleHolder), light_system.LIGHT_LEVELS.BRIGHT,
+        "candle carriers should get bright light")
+    assertEqual(candleLights:getLightLevelForEntity(candleBystander), light_system.LIGHT_LEVELS.DARK,
+        "candles should not provide dim light to nearby guildmates")
+
+    local torchHolder = base_entity.createEntity({
+        id = "pc_torch_holder",
+        name = "Torch Holder",
+        isPC = true,
+    })
+    torchHolder.inventory = inventory.createInventory()
+    local torchBystander = base_entity.createEntity({
+        id = "pc_torch_bystander",
+        name = "Torch Bystander",
+        isPC = true,
+    })
+    torchBystander.inventory = inventory.createInventory()
+
+    local torch = inventory.createItemFromTemplate("torch")
+    torchHolder.inventory:addItem(torch, inventory.LOCATIONS.HANDS)
+
+    local torchLights = light_system.createLightSystem({
+        eventBus = events.createEventBus(),
+        guild = { torchHolder, torchBystander },
+    })
+    torchLights:init()
+
+    assertEqual(torchLights:getLightLevelForEntity(torchHolder), light_system.LIGHT_LEVELS.BRIGHT,
+        "torch carriers should get bright light")
+    assertEqual(torchLights:getLightLevelForEntity(torchBystander), light_system.LIGHT_LEVELS.DIM,
+        "torches should provide dim light to nearby guildmates")
+end
+
+local function checkDroppedLightSourceRules()
+    local candleCarrier = base_entity.createEntity({
+        id = "pc_drop_candle",
+        name = "Candle Dropper",
+        isPC = true,
+        pentacles = 4,
+    })
+    candleCarrier.inventory = inventory.createInventory()
+    local candle = inventory.createItemFromTemplate("candles")
+    candle.properties.isLit = true
+    candle.properties.is_lit = true
+    candle.properties.extinguished = false
+    candleCarrier.inventory:addItem(candle, inventory.LOCATIONS.HANDS)
+
+    local candleBus = events.createEventBus()
+    local candleLights = light_system.createLightSystem({
+        eventBus = candleBus,
+        guild = { candleCarrier },
+    })
+    candleLights:init()
+    candleBus:emit(events.EVENTS.LIGHT_SOURCE_DROPPED, {
+        entity = candleCarrier,
+        item = candle,
+    })
+    assertTrue(not candle.properties.isLit, "dropped candles should go out")
+    assertTrue(candle.properties.extinguished, "dropped candles should be marked extinguished")
+    assertTrue(not candle.destroyed, "dropped candles should be relightable")
+    assertTrue(candleLights:lightItem(candle), "dropped candles should be relightable")
+    assertTrue(candle.properties.isLit, "relit candles should become active again")
+
+    local lanternCarrier = base_entity.createEntity({
+        id = "pc_drop_lantern",
+        name = "Lantern Dropper",
+        isPC = true,
+    })
+    lanternCarrier.inventory = inventory.createInventory()
+    local lantern = inventory.createItemFromTemplate("lantern")
+    lanternCarrier.inventory:addItem(lantern, inventory.LOCATIONS.HANDS)
+    local lanternBroken = nil
+    local lanternBus = events.createEventBus()
+    lanternBus:on(events.EVENTS.LANTERN_BROKEN, function(data)
+        lanternBroken = data
+    end)
+    local lanternLights = light_system.createLightSystem({
+        eventBus = lanternBus,
+        guild = { lanternCarrier },
+    })
+    lanternLights:init()
+    lanternBus:emit(events.EVENTS.LIGHT_SOURCE_DROPPED, {
+        entity = lanternCarrier,
+        item = lantern,
+    })
+    assertTrue(lantern.destroyed and lantern.properties.broken, "dropped lanterns should shatter")
+    assertTrue(lanternBroken and lanternBroken.reason == "dropped", "dropped lanterns should emit break reason")
+
+    local torchCarrier = base_entity.createEntity({
+        id = "pc_drop_torch",
+        name = "Torch Dropper",
+        isPC = true,
+    })
+    torchCarrier.inventory = inventory.createInventory()
+    local quenchedTorch = inventory.createItemFromTemplate("torch")
+    local stayingTorch = inventory.createItemFromTemplate("torch")
+    torchCarrier.inventory:addItem(quenchedTorch, inventory.LOCATIONS.HANDS)
+    torchCarrier.inventory:addItem(stayingTorch, inventory.LOCATIONS.HANDS)
+    local torchBus = events.createEventBus()
+    local torchLights = light_system.createLightSystem({
+        eventBus = torchBus,
+        guild = { torchCarrier },
+    })
+    torchLights:init()
+    torchBus:emit(events.EVENTS.LIGHT_SOURCE_DROPPED, {
+        entity = torchCarrier,
+        item = quenchedTorch,
+        torchStaysLit = false,
+    })
+    assertTrue(quenchedTorch.destroyed and quenchedTorch.properties.extinguished,
+        "dropped torches can be extinguished and cannot be relit")
+    torchBus:emit(events.EVENTS.LIGHT_SOURCE_DROPPED, {
+        entity = torchCarrier,
+        item = stayingTorch,
+        torchStaysLit = true,
+    })
+    assertTrue(not stayingTorch.destroyed and stayingTorch.properties.isLit,
+        "dropped torches can stay lit")
+
+    local disarmBus = events.createEventBus()
+    local disarmLights = light_system.createLightSystem({
+        eventBus = disarmBus,
+        guild = { candleCarrier },
+    })
+    disarmLights:init()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = disarmBus,
+    })
+
+    candle.properties.isLit = true
+    candle.properties.is_lit = true
+    candle.properties.extinguished = false
+    if not candleCarrier.inventory:findItem(candle.id) then
+        candleCarrier.inventory:addItem(candle, inventory.LOCATIONS.HANDS)
+    end
+
+    local failedDisarm = resolver:resolve({
+        actor = base_entity.createEntity({ id = "pc_bad_disarm", name = "Bad Disarmer", isPC = true, pentacles = 0 }),
+        card = { name = "Pentacles", value = 1, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DISARM,
+        target = candleCarrier,
+        targetInitiative = 20,
+    })
+    assertTrue(not failedDisarm.success, "failed disarm should fail the contest")
+    assertTrue(candleCarrier.inventory:findItem(candle.id), "failed disarm should not drop held light sources")
+    assertTrue(candle.properties.isLit, "failed disarm should not extinguish held light sources")
+
+    local successfulDisarm = resolver:resolve({
+        actor = base_entity.createEntity({ id = "pc_good_disarm", name = "Good Disarmer", isPC = true, pentacles = 4 }),
+        card = { name = "Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DISARM,
+        target = candleCarrier,
+        targetInitiative = 5,
+    })
+    assertTrue(successfulDisarm.success, "successful disarm should beat Initiative")
+    assertTrue(successfulDisarm.droppedItem == candle, "successful disarm should drop the held light source")
+    assertTrue(not candleCarrier.inventory:findItem(candle.id), "successful disarm should remove the dropped light source")
+    assertTrue(not candle.properties.isLit and candle.properties.extinguished,
+        "successfully disarmed candles should use dropped-light consequences")
+
+    local torchFighter = base_entity.createEntity({
+        id = "pc_torch_weapon",
+        name = "Torch Fighter",
+        isPC = true,
+        swords = 4,
+    })
+    torchFighter.inventory = inventory.createInventory()
+    local weaponTorch = inventory.createItemFromTemplate("torch")
+    torchFighter.inventory:addItem(weaponTorch, inventory.LOCATIONS.HANDS)
+    local torchTarget = base_entity.createEntity({
+        id = "npc_torch_target",
+        name = "Torch Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local weaponBus = events.createEventBus()
+    local weaponLights = light_system.createLightSystem({
+        eventBus = weaponBus,
+        guild = { torchFighter },
+    })
+    weaponLights:init()
+    local weaponResolver = action_resolver.createActionResolver({
+        eventBus = weaponBus,
+    })
+    local torchAttack = weaponResolver:resolve({
+        actor = torchFighter,
+        card = { name = "Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        weapon = weaponTorch,
+        target = torchTarget,
+        targetInitiative = 5,
+    })
+    assertTrue(torchAttack.success, "torch weapon attack should still resolve")
+    assertTrue(weaponTorch.destroyed and weaponTorch.properties.broken,
+        "light sources used as weapons should break")
+    assertTrue(not weaponTorch.properties.isLit and weaponTorch.properties.extinguished,
+        "light sources used as weapons should be extinguished")
+    assertTrue(hasValue(torchAttack.effects, "light_source_broken"),
+        "light-source weapon break should be reported")
+    assertEqual(weaponLights:getLightLevelForEntity(torchFighter), light_system.LIGHT_LEVELS.DARK,
+        "broken torch weapon should no longer provide light")
+end
+
+local function checkOutOfLightDoom()
+    local doomSystem = light_system.createLightSystem({
+        eventBus = events.createEventBus(),
+        guild = {},
+    })
+
+    local grueVictim = base_entity.createEntity({ id = "pc_grue", name = "Grue Victim", isPC = true })
+    local grue = doomSystem:resolveDarknessDoom(grueVictim, { value = 7 })
+    assertEqual(grue.doom, light_system.DARKNESS_DOOMS.GRUE, "I-VII darkness doom should be grue")
+    assertTrue(grueVictim.conditions.dead and grueVictim.defeated, "grue darkness doom should defeat the adventurer")
+
+    local monsterCaptive = base_entity.createEntity({ id = "pc_captured", name = "Captured", isPC = true })
+    local captured = doomSystem:resolveDarknessDoom(monsterCaptive, { value = 8 })
+    assertEqual(captured.doom, light_system.DARKNESS_DOOMS.CAPTURED_BY_MONSTERS,
+        "VIII darkness doom should capture the adventurer")
+    assertTrue(monsterCaptive.conditions.captured and monsterCaptive.capturedByMonsters,
+        "monster capture doom should mark captured")
+
+    local ransomCaptive = base_entity.createEntity({ id = "pc_ransom", name = "Ransom", isPC = true })
+    local ransom = doomSystem:resolveDarknessDoom(ransomCaptive, { value = 9 })
+    assertEqual(ransom.doom, light_system.DARKNESS_DOOMS.OLU_GANG_RANSOM,
+        "IX darkness doom should be Olu Gang ransom")
+    assertEqual(ransomCaptive.heldForRansom.costPerFame, 1000, "Olu Gang ransom should use 1000 gold per Fame")
+
+    local lostAdventurer = base_entity.createEntity({ id = "pc_lost", name = "Lost", isPC = true })
+    local lost = doomSystem:resolveDarknessDoom(lostAdventurer, { value = 10 })
+    assertEqual(lost.doom, light_system.DARKNESS_DOOMS.LOST_IN_UNDERWORLD,
+        "X darkness doom should lose the adventurer in the Underworld")
+    assertTrue(lostAdventurer.conditions.lost and lostAdventurer.lostInUnderworld,
+        "lost darkness doom should mark the adventurer lost")
+
+    local retiree = base_entity.createEntity({ id = "pc_retired", name = "Retired", isPC = true })
+    local retired = doomSystem:resolveDarknessDoom(retiree, { value = constants.FACE_VALUES.PAGE })
+    assertEqual(retired.doom, light_system.DARKNESS_DOOMS.RETIRED, "Page darkness doom should retire")
+    assertTrue(retiree.retired and retiree.controlledByGM, "retired darkness doom should remove PC control")
+
+    local stripped = base_entity.createEntity({ id = "pc_stripped", name = "Stripped", isPC = true })
+    stripped.inventory = inventory.createInventory()
+    local strippedTorch = inventory.createItemFromTemplate("torch")
+    local strippedRope = inventory.createItemFromTemplate("rope")
+    stripped.inventory:addItem(strippedTorch, inventory.LOCATIONS.BELT)
+    stripped.inventory:addItem(strippedRope, inventory.LOCATIONS.PACK)
+    local strippedDoom = doomSystem:resolveDarknessDoom(stripped, { value = constants.FACE_VALUES.KNIGHT })
+    assertEqual(strippedDoom.doom, light_system.DARKNESS_DOOMS.LOST_ALL_EQUIPMENT,
+        "Knight darkness doom should lose all equipment")
+    assertEqual(#strippedDoom.lostItems, 2, "Knight darkness doom should remove all carried equipment")
+    assertEqual(#stripped.inventory:getAllItems(), 0, "Knight darkness doom inventory should be empty")
+
+    local scattered = base_entity.createEntity({ id = "pc_scattered", name = "Scattered", isPC = true })
+    scattered.inventory = inventory.createInventory()
+    local keptItem = inventory.createItemFromTemplate("torch")
+    local lostItem = inventory.createItemFromTemplate("rope")
+    scattered.inventory:addItem(keptItem, inventory.LOCATIONS.BELT)
+    scattered.inventory:addItem(lostItem, inventory.LOCATIONS.PACK)
+    local queenDoom = doomSystem:resolveDarknessDoom(scattered, { value = constants.FACE_VALUES.QUEEN }, {
+        loseItem = {
+            [lostItem.id] = true,
+        },
+    })
+    assertEqual(queenDoom.doom, light_system.DARKNESS_DOOMS.RISK_EQUIPMENT_LOSS,
+        "Queen darkness doom should risk each item")
+    assertEqual(#queenDoom.lostItems, 1, "Queen darkness doom should remove selected lost equipment")
+    assertTrue(scattered.inventory:findItem(keptItem.id) ~= nil, "Queen darkness doom should keep unselected gear")
+    assertTrue(scattered.inventory:findItem(lostItem.id) == nil, "Queen darkness doom should remove selected gear")
+
+    local raving = base_entity.createEntity({ id = "pc_raving", name = "Raving", isPC = true })
+    local kingDoom = doomSystem:resolveDarknessDoom(raving, { value = constants.FACE_VALUES.KING })
+    assertEqual(kingDoom.doom, light_system.DARKNESS_DOOMS.RAVING_DARKNESS,
+        "King darkness doom should return raving")
+    assertTrue(raving.conditions.stressed and raving.ravingAboutDarkness,
+        "King darkness doom should mark stressed raving")
+
+    local candleCarrier = base_entity.createEntity({
+        id = "pc_extinguished_candle",
+        name = "Extinguished Candle",
+        isPC = true,
+    })
+    candleCarrier.inventory = inventory.createInventory()
+    local candle = inventory.createItemFromTemplate("candles")
+    candle.properties.isLit = false
+    candle.properties.is_lit = false
+    candle.properties.extinguished = true
+    candleCarrier.inventory:addItem(candle, inventory.LOCATIONS.HANDS)
+    local candleBus = events.createEventBus()
+    local candleDoom = nil
+    candleBus:on(events.EVENTS.DARKNESS_DOOMED, function(data)
+        candleDoom = data
+    end)
+    local candleSystem = light_system.createLightSystem({
+        eventBus = candleBus,
+        guild = { candleCarrier },
+    })
+    candleSystem:init()
+    assertTrue(candleDoom == nil, "relightable candles should prevent out-of-light doom")
+
+    local doomedCarrier = base_entity.createEntity({
+        id = "pc_no_light",
+        name = "No Light",
+        isPC = true,
+    })
+    doomedCarrier.inventory = inventory.createInventory()
+    local spentTorch = inventory.createItemFromTemplate("torch")
+    spentTorch.destroyed = true
+    spentTorch.properties.extinguished = true
+    doomedCarrier.inventory:addItem(spentTorch, inventory.LOCATIONS.PACK)
+    local doomBus = events.createEventBus()
+    local doomEvent = nil
+    doomBus:on(events.EVENTS.DARKNESS_DOOMED, function(data)
+        doomEvent = data
+    end)
+    local noLightSystem = light_system.createLightSystem({
+        eventBus = doomBus,
+        guild = { doomedCarrier },
+    })
+    noLightSystem:init()
+    assertTrue(doomEvent and doomEvent.needsDraw, "no remaining light sources should request darkness doom draws")
+end
+
+local function checkFallingProcedure()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local greatSuccessFaller = base_entity.createEntity({
+        id = "pc_fall_great_success",
+        name = "Great Success Faller",
+        isPC = true,
+        pentacles = 4,
+        armorSlots = 2,
+    })
+    local greatSuccess = resolver:resolveFall(greatSuccessFaller, 25, {
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+    })
+    assertEqual(greatSuccess.baseWounds, 2, "25-foot fall should start at two Wounds")
+    assertEqual(greatSuccess.heightReductionFeet, 20, "great success fall test should reduce height by 20 feet")
+    assertEqual(greatSuccess.wounds, 0, "great success should avoid 25-foot fall damage")
+    assertTrue(not greatSuccessFaller.conditions.staggered, "great success fall should not wound the faller")
+
+    local successFaller = base_entity.createEntity({
+        id = "pc_fall_success",
+        name = "Success Faller",
+        isPC = true,
+        pentacles = 4,
+        armorSlots = 2,
+    })
+    local success = resolver:resolveFall(successFaller, 25, {
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+    })
+    assertEqual(success.heightReductionFeet, 10, "successful fall test should reduce height by 10 feet")
+    assertEqual(success.wounds, 1, "successful 25-foot fall should deal one Wound")
+    assertEqual(successFaller.armorNotches, 0, "falling Wounds should be piercing and skip armor")
+    assertTrue(successFaller.conditions.staggered, "successful 25-foot fall should still wound the faller")
+
+    local greatFailureFaller = base_entity.createEntity({
+        id = "pc_fall_great_failure",
+        name = "Great Failure Faller",
+        isPC = true,
+        pentacles = 1,
+        armorSlots = 2,
+    })
+    greatFailureFaller.inventory = inventory.createInventory()
+    local beltBottle = inventory.createItemFromTemplate("hermetic_bottle")
+    local packGlass = inventory.createItem({ name = "Glass Vial", size = 1, durability = 1 })
+    local handBottle = inventory.createItemFromTemplate("hermetic_bottle")
+    local sturdyRope = inventory.createItem({ name = "Sturdy Rope", size = 1, durability = 2 })
+    greatFailureFaller.inventory:addItem(beltBottle, inventory.LOCATIONS.BELT)
+    greatFailureFaller.inventory:addItem(packGlass, inventory.LOCATIONS.PACK)
+    greatFailureFaller.inventory:addItem(handBottle, inventory.LOCATIONS.HANDS)
+    greatFailureFaller.inventory:addItem(sturdyRope, inventory.LOCATIONS.PACK)
+
+    local greatFailure = resolver:resolveFall(greatFailureFaller, 25, {
+        testResult = { success = false, isGreat = true },
+    })
+    assertEqual(greatFailure.heightReductionFeet, 0, "great failure should not reduce falling height")
+    assertEqual(greatFailure.wounds, 2, "great failure should take normal falling damage")
+    assertEqual(greatFailureFaller.armorNotches, 0, "great failure falling damage should still be piercing")
+    assertTrue(greatFailureFaller.conditions.staggered and greatFailureFaller.conditions.injured,
+        "two piercing fall Wounds should advance the wound track")
+    assertEqual(#greatFailure.fragileItemsDestroyed, 2,
+        "great failure should destroy fragile belt and pack items")
+    assertTrue(beltBottle.destroyed and packGlass.destroyed, "great failure should break fragile carried gear")
+    assertTrue(not handBottle.destroyed, "great failure should not break fragile items held in hands")
+    assertTrue(not sturdyRope.destroyed, "great failure should not break durable pack gear")
+
+    local preparedAcrobat = base_entity.createEntity({
+        id = "pc_prepared_acrobat",
+        name = "Prepared Acrobat",
+        isPC = true,
+        talents = {
+            acrobat = { mastered = true },
+        },
+    })
+    local acrobatPrepared = resolver:resolveFall(preparedAcrobat, 25, {
+        acrobatPrepared = true,
+    })
+    assertEqual(acrobatPrepared.heightReductionFeet, 20,
+        "prepared Acrobat should treat the fall as 20 feet shorter")
+    assertEqual(acrobatPrepared.wounds, 0, "prepared Acrobat should avoid 25-foot fall damage")
+    assertTrue(hasValue(acrobatPrepared.effects, "acrobat_fall_reduction"),
+        "prepared Acrobat fall reduction should be reported")
+
+    local unpreparedAcrobat = base_entity.createEntity({
+        id = "pc_unprepared_acrobat",
+        name = "Unprepared Acrobat",
+        isPC = true,
+        talents = {
+            acrobat = { mastered = true },
+        },
+    })
+    unpreparedAcrobat.resolve = 1
+    local acrobatResolve = resolver:resolveFall(unpreparedAcrobat, 25, {
+        spendResolveForAcrobat = true,
+    })
+    assertEqual(acrobatResolve.heightReductionFeet, 20,
+        "unprepared Acrobat should spend Resolve to treat the fall as 20 feet shorter")
+    assertEqual(unpreparedAcrobat.resolve, 0, "unprepared Acrobat fall reduction should spend one Resolve")
+    assertTrue(hasValue(acrobatResolve.effects, "resolve_spent_for_acrobat"),
+        "unprepared Acrobat should report Resolve spending")
+
+    local brokeAcrobat = base_entity.createEntity({
+        id = "pc_broke_acrobat",
+        name = "Broke Acrobat",
+        isPC = true,
+        talents = {
+            acrobat = { mastered = true },
+        },
+    })
+    brokeAcrobat.resolve = 0
+    local noResolve = resolver:resolveFall(brokeAcrobat, 25, {
+        spendResolveForAcrobat = true,
+    })
+    assertEqual(noResolve.heightReductionFeet, 0,
+        "unprepared Acrobat without Resolve should not reduce fall height")
+    assertTrue(hasValue(noResolve.effects, "acrobat_resolve_missing"),
+        "missing Acrobat Resolve should be reported")
+
+    local slimeFaller = base_entity.createEntity({
+        id = "pc_no_fall_damage",
+        name = "No Fall Damage",
+        isPC = true,
+        armorSlots = 2,
+    })
+    slimeFaller.conditions.no_fall_damage = true
+    local prevented = resolver:resolveFall(slimeFaller, 50, {})
+    assertTrue(prevented.prevented, "no-fall-damage conditions should prevent falling damage")
+    assertEqual(prevented.wounds, 0, "prevented falls should deal no Wounds")
+end
+
+local function checkCrawlScreenListenerLifecycle()
+    local bus = events.createEventBus()
+    local screen = crawl_screen.createCrawlScreen({
+        eventBus = bus,
+        roomManager = {
+            getFeature = function()
+                return nil
+            end,
+        },
+        watchManager = {},
+        gameState = {},
+    })
+
+    screen:subscribeEvents()
+    local firstCount = countEventListeners(bus)
+    assertTrue(firstCount > 0, "crawl screen should register event listeners")
+
+    screen:subscribeEvents()
+    assertEqual(countEventListeners(bus), firstCount, "crawl screen resubscribe should not duplicate listeners")
+
+    screen:destroy()
+    assertEqual(countEventListeners(bus), 0, "crawl screen destroy should unsubscribe listeners")
+end
+
+local function checkStunDiscardsChallengeCard()
+    local bus = events.createEventBus()
+    local discarded = {}
+    local pc = base_entity.createEntity({
+        id = "pc_stunned_card",
+        name = "Stunned Card PC",
+        isPC = true,
+    })
+    local firstCard = { name = "First Challenge", value = 3, suit = constants.SUITS.SWORDS }
+    local secondCard = { name = "Second Challenge", value = 8, suit = constants.SUITS.CUPS }
+    local hand = player_hand.createPlayerHand({
+        eventBus = bus,
+        playerDeck = {
+            discard = function(_, card)
+                discarded[#discarded + 1] = card
+            end,
+        },
+        guild = { pc },
+    })
+    hand.hands[pc.id] = {
+        cards = { firstCard, secondCard },
+    }
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        playerHand = hand,
+    })
+    local stun = resolver:applyStun(pc, {
+        stunDiscardIndex = 2,
+    })
+
+    assertTrue(pc.conditions.stunned and pc.conditions.stunnedInstant,
+        "Stun should mark the instantaneous Stunned effect")
+    assertTrue(stun.card == secondCard, "Stun should discard the chosen Challenge card")
+    assertEqual(#hand.hands[pc.id].cards, 1, "Stun should remove one card from the PC hand")
+    assertTrue(hand.hands[pc.id].cards[1] == firstCard,
+        "Stun should leave unchosen Challenge cards in hand")
+    assertTrue(discarded[1] == secondCard, "Stun should discard the chosen card to the player deck")
+end
+
+local function checkChallengeActionFavorAndResolve()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_favor",
+        name = "Favor Tester",
+        isPC = true,
+        swords = 1,
+        armorSlots = 0,
+    })
+    actor.resolve = 2
+
+    local target = base_entity.createEntity({
+        id = "npc_favor",
+        name = "Favor Target",
+        isPC = false,
+        health = 3,
+        defense = 0,
+    })
+
+    local favored = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        spendResolveForFavor = true,
+    })
+    assertTrue(favored.success, "Resolve-spent favor should turn a melee miss into a hit")
+    assertEqual(actor.resolve, 1, "Challenge Action favor should spend one Resolve")
+    assertEqual(favored.baseTestValue, 6, "Challenge Action favor should retain base test value")
+    assertEqual(favored.favor, true, "Resolve spend should grant action favor")
+    assertEqual(favored.favorModifier, 3, "action favor should add +3")
+    assertEqual(favored.testValue, 9, "action favor should modify test value")
+    assertTrue(hasValue(favored.effects, "resolve_spent_for_favor"), "Resolve favor spend should be recorded")
+    assertTrue(hasValue(favored.effects, "action_favor"), "action favor should be recorded")
+
+    local disfavored = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        disfavor = true,
+    })
+    assertTrue(not disfavored.success, "disfavor should turn a melee tie into a miss")
+    assertEqual(disfavored.favor, false, "disfavor should be tracked as false favor state")
+    assertEqual(disfavored.favorModifier, -3, "disfavor should subtract 3")
+    assertEqual(disfavored.testValue, 6, "disfavor should modify test value")
+    assertTrue(hasValue(disfavored.effects, "action_disfavor"), "action disfavor should be recorded")
+
+    local exhaustedActor = base_entity.createEntity({
+        id = "pc_exhausted_action",
+        name = "Exhausted Action",
+        isPC = true,
+        swords = 1,
+    })
+    exhaustedActor.conditions.exhausted = true
+    local exhaustedAttack = resolver:resolve({
+        actor = exhaustedActor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+    })
+    assertTrue(not exhaustedAttack.success, "Exhausted should impose disfavor on Challenge Actions")
+    assertTrue(hasValue(exhaustedAttack.effects, "exhausted_action_disfavor"),
+        "Exhausted action disfavor should be recorded")
+
+    local blindActor = base_entity.createEntity({
+        id = "pc_blind_action",
+        name = "Blind Action",
+        isPC = true,
+        swords = 1,
+    })
+    blindActor.conditions.blind = true
+    local blindMelee = resolver:resolve({
+        actor = blindActor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+    })
+    assertTrue(not blindMelee.success, "Blind should impose disfavor on Challenge Actions")
+    assertTrue(hasValue(blindMelee.effects, "blind_action_disfavor"),
+        "Blind action disfavor should be recorded")
+
+    local blindTarget = base_entity.createEntity({
+        id = "npc_blind_target",
+        name = "Blind Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    blindTarget.conditions.blind = true
+    local blindTargetAttack = resolver:resolve({
+        actor = actor,
+        target = blindTarget,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+    })
+    assertTrue(blindTargetAttack.success, "harmful actions against Blind creatures should gain favor")
+    assertTrue(hasValue(blindTargetAttack.effects, "blind_target_favor"),
+        "Blind target favor should be recorded")
+
+    local proneTarget = base_entity.createEntity({
+        id = "npc_prone_target",
+        name = "Prone Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    proneTarget.conditions.prone = true
+    local proneMelee = resolver:resolve({
+        actor = actor,
+        target = proneTarget,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+    })
+    assertTrue(proneMelee.success, "melee attacks against prone targets should gain favor")
+    assertTrue(hasValue(proneMelee.effects, "prone_target_melee_favor"),
+        "prone melee favor should be recorded")
+
+    local archer = base_entity.createEntity({
+        id = "pc_prone_missile",
+        name = "Prone Missile",
+        isPC = true,
+        swords = 1,
+    })
+    archer.inventory = inventory.createInventory()
+    local bow = inventory.createItemFromTemplate("bow")
+    archer.inventory:addItem(bow, inventory.LOCATIONS.HANDS)
+    archer.ammo = 2
+    local proneMissile = resolver:resolve({
+        actor = archer,
+        target = proneTarget,
+        weapon = bow,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 9,
+    })
+    assertTrue(not proneMissile.success, "missile attacks against prone targets should suffer disfavor")
+    assertTrue(hasValue(proneMissile.effects, "prone_target_missile_disfavor"),
+        "prone missile disfavor should be recorded")
+
+    local blindedArcher = base_entity.createEntity({
+        id = "pc_blind_missile",
+        name = "Blind Missile",
+        isPC = true,
+        swords = 3,
+    })
+    blindedArcher.conditions.blind = true
+    blindedArcher.inventory = inventory.createInventory()
+    local blindBow = inventory.createItemFromTemplate("bow")
+    blindedArcher.inventory:addItem(blindBow, inventory.LOCATIONS.HANDS)
+    blindedArcher.ammo = 1
+    local blindShot = resolver:resolve({
+        actor = blindedArcher,
+        target = target,
+        weapon = blindBow,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 1,
+    })
+    assertTrue(not blindShot.success, "Blind creatures should be unable to make missile attacks")
+    assertTrue(hasValue(blindShot.effects, "action_blocked"), "blind missile attacks should be blocked")
+    assertEqual(blindedArcher.ammo, 1, "blocked blind missile attacks should not spend ammo")
+
+    local knockedOutActor = base_entity.createEntity({
+        id = "pc_knocked_out_action",
+        name = "Knocked Out Action",
+        isPC = true,
+        swords = 3,
+    })
+    knockedOutActor.conditions.knocked_out = true
+    local knockedOutAttack = resolver:resolve({
+        actor = knockedOutActor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 1,
+    })
+    assertTrue(not knockedOutAttack.success, "Knocked-out creatures should not take actions")
+    assertTrue(hasValue(knockedOutAttack.effects, "action_blocked"),
+        "knocked-out action attempts should be blocked")
+
+    local deathsDoorActor = base_entity.createEntity({
+        id = "pc_deaths_door_action",
+        name = "Death's Door Action",
+        isPC = true,
+        swords = 3,
+    })
+    deathsDoorActor.conditions.deaths_door = true
+    local deathsDoorAttack = resolver:resolve({
+        actor = deathsDoorActor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 1,
+    })
+    assertTrue(not deathsDoorAttack.success, "Death's Door creatures should not take actions")
+    assertTrue(hasValue(deathsDoorAttack.effects, "action_blocked"),
+        "Death's Door action attempts should be blocked")
+
+    local deadActor = base_entity.createEntity({
+        id = "pc_dead_action",
+        name = "Dead Action",
+        isPC = true,
+        swords = 3,
+    })
+    deadActor.conditions.dead = true
+    local deadAttack = resolver:resolve({
+        actor = deadActor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 1,
+    })
+    assertTrue(not deadAttack.success, "dead creatures should not take actions")
+    assertTrue(hasValue(deadAttack.effects, "action_blocked"),
+        "dead action attempts should be blocked")
+
+    local rootedDodger = base_entity.createEntity({
+        id = "pc_rooted_dodge",
+        name = "Rooted Dodge",
+        isPC = true,
+        cups = 3,
+    })
+    rootedDodger.conditions.rooted = true
+    local rootedDodge = resolver:resolve({
+        actor = rootedDodger,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.DODGE,
+    })
+    assertTrue(not rootedDodge.success, "Rooted creatures should be unable to Dodge")
+    assertTrue(hasValue(rootedDodge.effects, "action_blocked"),
+        "Rooted Dodge attempts should be blocked before preparing a defense")
+    assertTrue(not rootedDodger.pendingDefense,
+        "blocked Rooted Dodge should not prepare a facedown defense")
+
+    local proneMover = base_entity.createEntity({
+        id = "pc_prone_mover",
+        name = "Prone Mover",
+        isPC = true,
+        pentacles = 3,
+        zone = "near",
+    })
+    proneMover.conditions.prone = true
+    for _, actionType in ipairs({
+        action_resolver.ACTION_TYPES.AVOID,
+        action_resolver.ACTION_TYPES.DASH,
+        action_resolver.ACTION_TYPES.MOVE,
+    }) do
+        local proneMove = resolver:resolve({
+            actor = proneMover,
+            card = { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+            type = actionType,
+            destinationZone = "far",
+        })
+        assertTrue(not proneMove.success,
+            "Prone creatures should be unable to " .. tostring(actionType))
+        assertTrue(hasValue(proneMove.effects, "action_blocked"),
+            "Prone movement attempts should be blocked before movement resolution")
+        assertEqual(proneMover.zone, "near",
+            "blocked Prone movement should not change the actor's zone")
+    end
+
+    actor.resolve = 1
+    local cancelled = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        disfavor = true,
+        spendResolveForFavor = true,
+    })
+    assertTrue(cancelled.success, "Resolve favor should cancel disfavor back to the base melee tie")
+    assertEqual(actor.resolve, 0, "canceling disfavor should still spend Resolve")
+    assertEqual(cancelled.favor, nil, "favor and disfavor should cancel to neutral")
+    assertEqual(cancelled.favorModifier, 0, "neutral favor state should not modify the test")
+    assertEqual(cancelled.testValue, 9, "neutralized favor/disfavor should leave base test value")
+    assertTrue(hasValue(cancelled.effects, "resolve_spent_for_favor"), "neutralizing disfavor should record Resolve spend")
+    assertTrue(not hasValue(cancelled.effects, "action_favor"), "neutralized disfavor should not record action favor")
+    assertTrue(not hasValue(cancelled.effects, "action_disfavor"), "neutralized disfavor should not record action disfavor")
+
+    local emptyActor = base_entity.createEntity({
+        id = "pc_empty_resolve",
+        name = "Empty Resolve",
+        isPC = true,
+        swords = 1,
+    })
+    emptyActor.resolve = 0
+    local blocked = resolver:resolve({
+        actor = emptyActor,
+        target = target,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        spendResolveForFavor = true,
+    })
+    assertTrue(not blocked.success, "Resolve favor should block if Resolve is missing")
+    assertTrue(hasValue(blocked.effects, "resolve_missing"), "missing Resolve should be recorded")
+end
+
+local function checkTrivialActionExamples()
+    local resolver = action_resolver.createActionResolver({ eventBus = events.createEventBus() })
+    local actor = base_entity.createEntity({
+        id = "pc_trivial_actor",
+        name = "Trivial Actor",
+        isPC = true,
+        zone = "near",
+    })
+
+    local dropped = resolver:resolve({
+        actor = actor,
+        card = { name = "Two of Wands", value = 2, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.TRIVIAL_ACTION,
+        trivialAction = "drop_prone",
+    })
+    assertTrue(dropped.success, "Trivial Action should allow dropping prone with any card")
+    assertTrue(actor.conditions.prone, "dropping prone should mark the actor Prone")
+    assertTrue(hasValue(dropped.effects, "dropped_prone"), "dropping prone should report a concrete trivial effect")
+
+    local blockedMove = resolver:resolve({
+        actor = actor,
+        card = { name = "Three of Pentacles", value = 3, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.MOVE,
+        destinationZone = "far",
+    })
+    assertTrue(not blockedMove.success, "actor who dropped prone should obey Prone movement restrictions")
+
+    actor.conditions.prone = false
+    local door = { id = "iron_door", state = "closed" }
+    local opened = resolver:resolve({
+        actor = actor,
+        target = door,
+        card = { name = "Four of Cups", value = 4, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.TRIVIAL_ACTION,
+        trivialAction = "open_door",
+    })
+    assertTrue(opened.success, "Trivial Action should handle opening a simple door")
+    assertTrue(door.isOpen and door.open and door.state == "open", "opening a door should update target state")
+    assertTrue(hasValue(opened.effects, "opened"), "opening a door should report a concrete trivial effect")
+
+    local lever = { id = "moon_lever", state = "idle" }
+    local activated = resolver:resolve({
+        actor = actor,
+        target = lever,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.TRIVIAL_ACTION,
+        trivialAction = "throw_lever",
+    })
+    assertTrue(activated.success, "Trivial Action should handle throwing a simple lever")
+    assertTrue(lever.activated and lever.state == "activated", "throwing a lever should update target state")
+    assertTrue(hasValue(activated.effects, "activated"), "throwing a lever should report a concrete trivial effect")
+end
+
+local function checkBanterSocialIntentAndPreferences()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_banter",
+        name = "Banterer",
+        isPC = true,
+        wands = 3,
+    })
+
+    local target = base_entity.createEntity({
+        id = "npc_social",
+        name = "Social Target",
+        isPC = false,
+        baseMorale = 10,
+        health = 2,
+        defense = 0,
+        disposition = "trust",
+    })
+    target.social = {
+        likes = { "respect" },
+        dislikes = { "lies" },
+    }
+
+    local favored = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        socialApproach = "respect",
+        banterIntent = "frighten",
+    })
+    assertTrue(favored.success, "liked Banter approach should grant favor and beat Morale")
+    assertEqual(favored.socialModifier, 3, "liked Banter approach should add favor")
+    assertTrue(hasValue(favored.effects, "social_favor"), "liked Banter approach should record favor")
+    assertEqual(favored.oldDisposition, "trust", "Banter should record old disposition")
+    assertEqual(favored.dispositionTarget, "fear", "frightening Banter should target fear")
+    assertEqual(target.disposition, "fear", "successful frightening Banter should shift toward fear")
+    assertEqual(target.dispositionSeverity, 1, "shifting to a related Disposition should start at mild severity")
+    assertEqual(favored.newDispositionLabel, "Anxiety", "mild Fear should use the rulebook state label")
+
+    target.disposition = "distaste"
+    target.moraleModifier = 0
+    local disfavored = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        socialApproach = "lies",
+        banterIntent = "frighten",
+    })
+    assertTrue(not disfavored.success, "disliked Banter approach should apply disfavor before testing")
+    assertEqual(disfavored.socialModifier, -3, "disliked Banter approach should subtract disfavor")
+    assertTrue(hasValue(disfavored.effects, "social_disfavor"), "disliked Banter approach should record disfavor")
+    assertEqual(target.disposition, "anger", "failed Banter should shift disposition toward anger")
+
+    local corpseSpeaker = base_entity.createEntity({
+        id = "pc_desiccated_banter",
+        name = "Desiccated Banterer",
+        isPC = true,
+        wands = 3,
+    })
+    corpseSpeaker.malediction = {
+        active = true,
+        curse = {
+            flags = {
+                appearsAsDesiccatedCorpse = true,
+                gmCharactersUsuallyHostile = true,
+            },
+        },
+    }
+    local livingListener = base_entity.createEntity({
+        id = "npc_desiccated_living_listener",
+        name = "Living Listener",
+        isPC = false,
+        baseMorale = 10,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+    })
+    local corpseBanter = resolver:resolve({
+        actor = corpseSpeaker,
+        target = livingListener,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "frighten",
+    })
+    assertTrue(not corpseBanter.success,
+        "desiccated-corpse Malediction should make living GM characters hostile to Banter")
+    assertEqual(corpseBanter.socialModifier, -3,
+        "desiccated-corpse Malediction should apply social disfavor")
+    assertTrue(hasValue(corpseBanter.effects, "desiccated_corpse_hostility"),
+        "desiccated-corpse social disfavor should be reported")
+
+    local undeadListener = base_entity.createEntity({
+        id = "npc_desiccated_undead_listener",
+        name = "Undead Listener",
+        isPC = false,
+        baseMorale = 10,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+    })
+    undeadListener.undead = true
+    local undeadBanter = resolver:resolve({
+        actor = corpseSpeaker,
+        target = undeadListener,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "frighten",
+    })
+    assertTrue(undeadBanter.success,
+        "desiccated-corpse social hostility should not apply against undead targets")
+    assertTrue(not hasValue(undeadBanter.effects, "desiccated_corpse_hostility"),
+        "undead targets should not record desiccated-corpse hostility")
+
+    local tylwythSpeaker = base_entity.createEntity({
+        id = "pc_tylwyth_banter",
+        name = "Tylwyth Banterer",
+        isPC = true,
+        wands = 3,
+    })
+    tylwythSpeaker.malediction = {
+        active = true,
+        curse = {
+            flags = {
+                languageLocked = "tylwyth",
+                speaksGibberishToNonTylwyth = true,
+            },
+        },
+    }
+    local uncomprehendingTarget = base_entity.createEntity({
+        id = "npc_no_tylwyth_banter",
+        name = "No Tylwyth Listener",
+        isPC = false,
+        baseMorale = 10,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    local gibberishBanter = resolver:resolve({
+        actor = tylwythSpeaker,
+        target = uncomprehendingTarget,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "frighten",
+    })
+    assertTrue(not gibberishBanter.success,
+        "Tylwyth-only Malediction should block Banter when the target lacks the language")
+    assertTrue(hasValue(gibberishBanter.effects, "language_locked_gibberish"),
+        "Tylwyth-only Banter block should report gibberish")
+    assertEqual(uncomprehendingTarget.disposition, "distaste",
+        "gibberish Banter should not shift Disposition")
+
+    local tylwythTarget = base_entity.createEntity({
+        id = "npc_tylwyth_banter",
+        name = "Tylwyth Listener",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    tylwythTarget.languages = { "tylwyth" }
+    local translatedBanter = resolver:resolve({
+        actor = tylwythSpeaker,
+        target = tylwythTarget,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "frighten",
+    })
+    assertTrue(translatedBanter.success,
+        "Tylwyth-only Banter should work when the target understands Tylwyth")
+    assertTrue(not hasValue(translatedBanter.effects, "language_locked_gibberish"),
+        "shared Tylwyth should avoid the gibberish block")
+
+    local rhymeboundBanterer = base_entity.createEntity({
+        id = "pc_rhymebound_banter",
+        name = "Rhymebound Banterer",
+        isPC = true,
+        wands = 3,
+    })
+    rhymeboundBanterer.conditions.rhymebound = true
+    local rhymeboundTarget = base_entity.createEntity({
+        id = "npc_rhymebound_banter_target",
+        name = "Rhymebound Listener",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    local unrhymedBanter = resolver:resolve({
+        actor = rhymeboundBanterer,
+        target = rhymeboundTarget,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "frighten",
+    })
+    assertTrue(not unrhymedBanter.success,
+        "Rhymebound speakers should not Banter unless the speech rhymes")
+    assertTrue(hasValue(unrhymedBanter.effects, "rhymed_speech_required"),
+        "Rhymebound Banter block should request rhymed speech")
+    assertTrue(hasValue(unrhymedBanter.effects, "rhymebound"),
+        "Rhymebound Banter block should preserve the maleficence condition source")
+    assertEqual(rhymeboundTarget.disposition, "distaste",
+        "unrhymed Banter should not shift Disposition")
+
+    local rhymedBanter = resolver:resolve({
+        actor = rhymeboundBanterer,
+        target = rhymeboundTarget,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "frighten",
+        speechRhymes = true,
+    })
+    assertTrue(rhymedBanter.success,
+        "Rhymebound Banter should proceed once the speech is marked as rhymed")
+    assertTrue(not hasValue(rhymedBanter.effects, "rhymed_speech_required"),
+        "rhymed Banter should not report the rhyme block")
+
+    target.disposition = "distaste"
+    target.moraleModifier = 0
+    local taunt = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "taunt",
+    })
+    assertTrue(taunt.success, "successful taunting Banter should beat Morale")
+    assertEqual(taunt.dispositionTarget, "anger", "taunting Banter should target anger")
+    assertEqual(target.disposition, "anger", "taunting Banter should shift toward anger")
+    assertEqual(target.dispositionSeverity, 1, "new Anger from taunting should begin as Annoyance")
+
+    target.disposition = "anger"
+    target.dispositionSeverity = 2
+    target.moraleModifier = 0
+    target.emotionalIllusion = { spellId = "fear" }
+    local intensified = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "taunt",
+    })
+    assertTrue(intensified.success, "successful same-emotion Banter should resolve")
+    assertEqual(target.disposition, "anger", "same-emotion Banter should keep the current Disposition")
+    assertEqual(target.dispositionSeverity, 3, "same-emotion Banter should increase severity")
+    assertEqual(intensified.newDispositionLabel, "Rage", "intense Anger should use the rulebook state label")
+    assertTrue(hasValue(intensified.effects, "social_combat_risk"),
+        "intense Anger should advertise Challenge transition risk")
+    assertTrue(target.emotionalIllusion == nil, "severity changes should count as Disposition changes for emotional spells")
+end
+
+local function checkSocialOutcomesAndParley()
+    local trustOutcome = disposition.getSocialOutcome("trust", 3)
+    assertTrue(trustOutcome.negotiates, "Trust should negotiate in good faith")
+    assertTrue(trustOutcome.extraAid, "intense positive Dispositions should provide extra aid/advice")
+
+    local fearOutcome = disposition.getSocialOutcome("fear", 2)
+    assertTrue(fearOutcome.concession, "Fear should support concessions")
+    assertTrue(fearOutcome.shouldFlee, "basic Fear should indicate a flee/exit impulse")
+
+    local angerOutcome = disposition.getSocialOutcome("anger", 1)
+    assertTrue(angerOutcome.likelyChallenge, "Anger should flag likely Challenge transition")
+    assertTrue(not angerOutcome.negotiates, "Anger should not negotiate in good faith")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local speaker = base_entity.createEntity({
+        id = "pc_parley",
+        name = "Parley Speaker",
+        isPC = true,
+        cups = 3,
+    })
+
+    local trustingTarget = base_entity.createEntity({
+        id = "npc_trusting_parley",
+        name = "Trusting Listener",
+        isPC = false,
+        baseMorale = 5,
+        health = 2,
+        defense = 0,
+        disposition = "trust",
+        dispositionSeverity = 2,
+    })
+
+    local parleySuccess = resolver:resolve({
+        actor = speaker,
+        target = trustingTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(parleySuccess.success, "successful Parley should resolve")
+    assertEqual(trustingTarget.disposition, "trust", "successful same-emotion Parley should keep Trust")
+    assertEqual(trustingTarget.dispositionSeverity, 3, "successful same-emotion Parley should intensify Trust")
+    assertEqual(parleySuccess.newDispositionLabel, "Admiration", "intense Trust should use the rulebook state label")
+    assertTrue(hasValue(parleySuccess.effects, "social_extra_aid"),
+        "intense positive Parley outcome should advertise extra aid/advice")
+
+    local hostileTarget = base_entity.createEntity({
+        id = "npc_failed_parley",
+        name = "Failed Listener",
+        isPC = false,
+        baseMorale = 12,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+
+    local parleyFailure = resolver:resolve({
+        actor = speaker,
+        target = hostileTarget,
+        card = { name = "Ace of Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(not parleyFailure.success, "failed Parley should fail the social test")
+    assertEqual(hostileTarget.disposition, "anger", "failed Parley should move toward Anger")
+    assertEqual(hostileTarget.dispositionSeverity, 1, "new Anger from failed Parley should begin as Annoyance")
+    assertTrue(hasValue(parleyFailure.effects, "social_combat_risk"),
+        "failed Parley into Anger should flag Challenge transition risk")
+
+    local corpseSpeaker = base_entity.createEntity({
+        id = "pc_desiccated_parley",
+        name = "Desiccated Parley Speaker",
+        isPC = true,
+        cups = 3,
+    })
+    corpseSpeaker.appearsAsDesiccatedCorpse = true
+    corpseSpeaker.gmCharactersUsuallyHostile = true
+    local livingParleyTarget = base_entity.createEntity({
+        id = "npc_desiccated_parley_living",
+        name = "Living Parley Target",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    local corpseParley = resolver:resolve({
+        actor = corpseSpeaker,
+        target = livingParleyTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(not corpseParley.success,
+        "desiccated-corpse Malediction should make living GM characters hostile to Parley")
+    assertEqual(corpseParley.socialModifier, -3,
+        "desiccated-corpse Parley should apply social disfavor")
+    assertTrue(hasValue(corpseParley.effects, "desiccated_corpse_hostility"),
+        "desiccated-corpse Parley disfavor should be reported")
+
+    local undeadParleyTarget = base_entity.createEntity({
+        id = "npc_desiccated_parley_undead",
+        name = "Undead Parley Target",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    undeadParleyTarget.tags = { "undead" }
+    local undeadParley = resolver:resolve({
+        actor = corpseSpeaker,
+        target = undeadParleyTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(undeadParley.success,
+        "desiccated-corpse Parley hostility should not apply against undead targets")
+    assertTrue(not hasValue(undeadParley.effects, "desiccated_corpse_hostility"),
+        "undead Parley targets should not record desiccated-corpse hostility")
+
+    local tylwythSpeaker = base_entity.createEntity({
+        id = "pc_tylwyth_parley",
+        name = "Tylwyth Parley Speaker",
+        isPC = true,
+        cups = 3,
+    })
+    tylwythSpeaker.languageLocked = "tylwyth"
+    tylwythSpeaker.speaksGibberishToNonTylwyth = true
+    local uncomprehendingTarget = base_entity.createEntity({
+        id = "npc_no_tylwyth_parley",
+        name = "No Tylwyth Parley Target",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    local gibberishParley = resolver:resolve({
+        actor = tylwythSpeaker,
+        target = uncomprehendingTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(not gibberishParley.success,
+        "Tylwyth-only Malediction should block Parley when the target lacks the language")
+    assertTrue(hasValue(gibberishParley.effects, "language_locked_gibberish"),
+        "Tylwyth-only Parley block should report gibberish")
+    assertEqual(uncomprehendingTarget.disposition, "distaste",
+        "gibberish Parley should not shift Disposition")
+
+    local tylwythTarget = base_entity.createEntity({
+        id = "npc_tylwyth_parley",
+        name = "Tylwyth Parley Target",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    tylwythTarget.understandsLanguages = { tylwyth = true }
+    local translatedParley = resolver:resolve({
+        actor = tylwythSpeaker,
+        target = tylwythTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(translatedParley.success,
+        "Tylwyth-only Parley should work when the target understands Tylwyth")
+    assertTrue(not hasValue(translatedParley.effects, "language_locked_gibberish"),
+        "shared Tylwyth should avoid the Parley gibberish block")
+
+    local rhymeSpeaker = base_entity.createEntity({
+        id = "pc_rhyme_parley",
+        name = "Rhyming Parley Speaker",
+        isPC = true,
+        cups = 3,
+    })
+    rhymeSpeaker.malediction = {
+        active = true,
+        curse = {
+            flags = {
+                mustSpeakInRhymes = true,
+            },
+        },
+    }
+    local rhymeTarget = base_entity.createEntity({
+        id = "npc_rhyme_parley",
+        name = "Rhyme Parley Target",
+        isPC = false,
+        baseMorale = 8,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        dispositionSeverity = 2,
+    })
+    local unrhymedParley = resolver:resolve({
+        actor = rhymeSpeaker,
+        target = rhymeTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+    })
+    assertTrue(not unrhymedParley.success,
+        "Speak-in-rhymes Malediction should block Parley until the speech rhymes")
+    assertTrue(hasValue(unrhymedParley.effects, "rhymed_speech_required"),
+        "unrhymed Parley should request rhymed speech")
+    assertTrue(hasValue(unrhymedParley.effects, "speak_in_rhymes"),
+        "unrhymed Parley should report the Malediction source")
+    assertEqual(rhymeTarget.disposition, "distaste",
+        "unrhymed Parley should not shift Disposition")
+
+    local rhymedParley = resolver:resolve({
+        actor = rhymeSpeaker,
+        target = rhymeTarget,
+        card = { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+        rhymingCouplets = true,
+    })
+    assertTrue(rhymedParley.success,
+        "Speak-in-rhymes Malediction should allow Parley once the speech rhymes")
+    assertTrue(not hasValue(rhymedParley.effects, "rhymed_speech_required"),
+        "rhymed Parley should not report the rhyme block")
+end
+
+local function checkGuardianRoomSocialEncounterOutcomes()
+    local guardianBlueprint = nil
+    for _, room in ipairs(tomb_data.data.rooms) do
+        if room.id == "118_chamber_of_vigilant" then
+            guardianBlueprint = room
+            break
+        end
+    end
+    assertTrue(guardianBlueprint ~= nil, "Tomb Guardian room blueprint should be present")
+
+    local function createFixture()
+        local bus = events.createEventBus()
+        local resolvedEvents = {}
+        bus:on(events.EVENTS.ROOM_SOCIAL_ENCOUNTER_RESOLVED, function(data)
+            resolvedEvents[#resolvedEvents + 1] = data
+        end)
+
+        local manager = room_manager.createRoomManager({ eventBus = bus })
+        local room = room_manager.createRoomInstance(guardianBlueprint, guardianBlueprint.id)
+        manager:registerRoom(room)
+
+        local resolver = action_resolver.createActionResolver({
+            eventBus = bus,
+            roomManager = manager,
+        })
+
+        local actor = base_entity.createEntity({
+            id = "pc_guardian_speaker",
+            name = "Guardian Speaker",
+            isPC = true,
+            wands = 6,
+            cups = 6,
+            location = room.id,
+        })
+        actor.inventory = inventory.createInventory()
+
+        local guardian = entity_factory.createEntity("tomb_guardian_spirit", {
+            location = room.id,
+        })
+        guardian.id = "tomb_guardian"
+        guardian.location = room.id
+
+        return resolver, room, actor, guardian, resolvedEvents, manager
+    end
+
+    local roomInstance = room_manager.createRoomInstance(guardianBlueprint, guardianBlueprint.id)
+    assertEqual(#roomInstance.zones, 3, "room instances should preserve authored room zones")
+    assertTrue(roomInstance.socialEncounter ~= nil, "room instances should preserve social encounter procedures")
+    assertTrue(roomInstance.socialEncounter.outcomes.trust_success ~= nil,
+        "Guardian social outcomes should be available at runtime")
+    roomInstance.features[1].encounter.count = 99
+    assertEqual(guardianBlueprint.features[1].encounter.count, 1,
+        "room feature procedure data should be deep-copied per instance")
+
+    local offeringResolver, offeringRoom, offeringActor, offeringGuardian, _, offeringManager = createFixture()
+    offeringGuardian.disposition = "distaste"
+    offeringGuardian.dispositionSeverity = 2
+    local offering = offeringManager:resolveSocialFeatureProcedure(
+        offeringRoom.id,
+        "ancient_altar",
+        "make_offering",
+        offeringActor
+    )
+    assertTrue(offering.success, "Guardian altar should accept an offering as a social procedure")
+    assertTrue(hasValue(offering.effects, "room_social_offering_prepared"),
+        "offering should prepare a room social disposition effect")
+    assertEqual(#offeringManager:getSocialPreparedEffects(offeringRoom.id), 1,
+        "offering should persist a prepared social effect on the room")
+    local offeringBanter = offeringResolver:resolve({
+        actor = offeringActor,
+        target = offeringGuardian,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        socialApproach = "respect",
+        banterIntent = "trust",
+        roomId = offeringRoom.id,
+    })
+    assertTrue(hasValue(offeringBanter.effects, "room_social_feature_disposition"),
+        "prepared offerings should shift Guardian Disposition during social resolution")
+    assertEqual(offeringGuardian.disposition, "trust",
+        "Guardian offering should create the authored positive Disposition")
+
+    local loreResolver, loreRoom, loreActor, loreGuardian, _, loreManager = createFixture()
+    local lore = loreManager:resolveSocialFeatureProcedure(
+        loreRoom.id,
+        "inscribed_tablets",
+        "study_lore",
+        loreActor
+    )
+    assertTrue(lore.success, "Guardian tablets should support a study-lore social procedure")
+    assertTrue(hasValue(lore.effects, "room_social_lore_prepared"),
+        "tablet study should prepare a social favor record")
+    assertTrue(loreActor.discoveredLore and loreActor.discoveredLore.tomb_history,
+        "tablet study should mark the actor's tomb-history lore")
+    local loreBanter = loreResolver:resolve({
+        actor = loreActor,
+        target = loreGuardian,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "trust",
+        roomId = loreRoom.id,
+    })
+    assertTrue(loreBanter.success, "prepared tablet lore should turn the edge Banter into a success")
+    assertEqual(loreBanter.roomSocialModifier, 2,
+        "tablet lore should apply the authored social modifier")
+    assertTrue(hasValue(loreBanter.effects, "room_social_feature_favor"),
+        "tablet lore should report social feature favor")
+
+    local resolver, room, actor, guardian, resolvedEvents = createFixture()
+    local trust = resolver:resolve({
+        actor = actor,
+        target = guardian,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        socialApproach = "respect",
+        banterIntent = "trust",
+        roomId = room.id,
+    })
+    assertTrue(trust.success, "respectful Guardian Banter should resolve")
+    assertEqual(guardian.disposition, "trust", "trust-directed Guardian Banter should keep Trust")
+    assertEqual(guardian.dispositionSeverity, 3, "trust-directed Guardian Banter should intensify Trust")
+    assertTrue(hasValue(trust.effects, "room_social_trust_success"),
+        "intense positive Guardian outcome should resolve the authored trust success")
+    assertTrue(hasValue(trust.effects, "room_social_secret_revealed"),
+        "Guardian trust success should reveal the authored secret passage")
+    assertTrue(room.secretPassageRevealed, "Guardian trust success should mark the room secret passage revealed")
+    assertTrue(trust.rewardGranted, "Guardian trust success should grant the authored blessing")
+    local blessing = actor.inventory:findItemByPredicate(function(item)
+        return item.templateId == "guardian_blessing"
+    end)
+    assertTrue(blessing ~= nil, "Guardian blessing should be placed in the actor inventory")
+    assertEqual(#resolvedEvents, 1, "Guardian trust success should emit one room social event")
+    assertEqual(resolvedEvents[1].outcome, "trust_success",
+        "room social event should report the trust_success outcome")
+
+    local fearResolver, fearRoom, fearActor, fearGuardian = createFixture()
+    local fear = fearResolver:resolve({
+        actor = fearActor,
+        target = fearGuardian,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        socialApproach = "respect",
+        banterIntent = "frighten",
+        roomId = fearRoom.id,
+    })
+    assertTrue(fear.success, "fear-directed Guardian Banter should resolve")
+    assertEqual(fear.roomSocialEncounter.outcome, "fear_success",
+        "Guardian fear outcome should use the authored retreat path")
+    assertTrue(fear.guardianRetreats, "Guardian fear outcome should mark retreat")
+    assertTrue(fearGuardian.retreated, "Guardian fear outcome should mark the target retreated")
+
+    local angerResolver, angerRoom, angerActor, angerGuardian = createFixture()
+    angerGuardian.disposition = "distaste"
+    angerGuardian.dispositionSeverity = 2
+    local anger = angerResolver:resolve({
+        actor = angerActor,
+        target = angerGuardian,
+        card = { name = "Ace of Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PARLEY,
+        roomId = angerRoom.id,
+    })
+    assertTrue(not anger.success, "failed Guardian Parley should fail the social test")
+    assertEqual(anger.roomSocialEncounter.outcome, "anger_combat",
+        "Guardian anger outcome should use the authored combat escalation path")
+    assertTrue(anger.triggersCombat, "Guardian anger outcome should flag combat transition")
+    assertTrue(angerGuardian.socialCombatTriggered, "Guardian anger outcome should mark the target hostile")
+end
+
+local function checkStartingDispositionFromMinorDiscard()
+    local mapping = {
+        { value = 2, expected = "anger" },
+        { value = 4, expected = "distaste" },
+        { value = 6, expected = "sadness" },
+        { value = 8, expected = "joy" },
+        { value = 10, expected = "surprise" },
+        { value = 12, expected = "trust" },
+        { value = 14, expected = "fear" },
+    }
+
+    for _, item in ipairs(mapping) do
+        local result, severity = disposition.dispositionFromMinorDiscard({
+            name = "Disposition Test",
+            value = item.value,
+            suit = constants.SUITS.CUPS,
+        })
+        assertEqual(result, item.expected,
+            "minor discard value " .. tostring(item.value) .. " should map to rulebook starting Disposition")
+        assertEqual(severity, 2, "random starting Disposition should start at basic severity")
+    end
+
+    local randomNPC = entity_factory.createEntity("small_ooze", {
+        minorDiscardCard = { name = "Queen of Cups", value = 13, suit = constants.SUITS.CUPS },
+    })
+    assertEqual(randomNPC.disposition, "fear", "NPCs without authored Disposition should use the discard-card table")
+    assertEqual(randomNPC.dispositionSeverity, 2, "discard-card Disposition should use basic severity")
+
+    local authoredNPC = entity_factory.createEntity("tomb_guardian_spirit", {
+        minorDiscardCard = { name = "Queen of Cups", value = 13, suit = constants.SUITS.CUPS },
+    })
+    assertEqual(authoredNPC.disposition, "trust", "authored starting Disposition should override random discard mapping")
+end
+
+local function checkRoughhouseFacade()
+    local roughhouseDef = action_registry.getAction("roughhouse")
+    assertTrue(roughhouseDef ~= nil, "canonical Roughhouse action should exist")
+    assertTrue(roughhouseDef.roughhouseEffects ~= nil, "Roughhouse should advertise effect choices")
+
+    local bus = events.createEventBus()
+    local zoneRegistry = zone_system.createZoneRegistry({ eventBus = bus })
+    zoneRegistry:setRoomZones(buildLinearZones())
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        zoneSystem = zoneRegistry,
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_roughhouse",
+        name = "Roughhouser",
+        isPC = true,
+        pentacles = 3,
+    })
+    actor.zone = "A"
+
+    local target = base_entity.createEntity({
+        id = "npc_roughhouse",
+        name = "Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    target.zone = "A"
+    zoneRegistry:placeEntity(actor.id, actor.zone)
+    zoneRegistry:placeEntity(target.id, target.zone)
+    resolver:formEngagement(actor, target)
+    assertTrue(resolver:areEngaged(actor, target), "setup should engage Roughhouse participants")
+
+    local trip = resolver:resolve({
+        actor = actor,
+        card = { name = "Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+        target = target,
+        targetInitiative = 5,
+        allEntities = { actor, target },
+    })
+    assertTrue(trip.success, "Roughhouse trip should beat Initiative")
+    assertEqual(trip.roughhouseEffect, "trip", "Roughhouse should record chosen trip effect")
+    assertTrue(target.conditions.prone, "Roughhouse trip should make target prone")
+    assertTrue(not resolver:areEngaged(actor, target), "Trip should immediately disengage target")
+
+    target.conditions.prone = false
+    resolver:formEngagement(actor, target)
+    local root = resolver:resolve({
+        actor = actor,
+        card = { name = "Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "root",
+        target = target,
+        targetInitiative = 5,
+        allEntities = { actor, target },
+    })
+    assertTrue(root.success, "Roughhouse root should beat Initiative")
+    assertEqual(root.roughhouseEffect, "root", "Roughhouse should record chosen root effect")
+    assertTrue(target.conditions.rooted, "Roughhouse root should root target")
+    assertTrue(not resolver:areEngaged(actor, target), "Root should immediately disengage target")
+
+    resolver:formEngagement(actor, target)
+    local displace = resolver:resolve({
+        actor = actor,
+        card = { name = "Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "displace",
+        target = target,
+        targetInitiative = 5,
+        destinationZone = "B",
+        allEntities = { actor, target },
+    })
+    assertTrue(displace.success, "Roughhouse displace should beat Initiative")
+    assertEqual(target.zone, "B", "Roughhouse displace should move target")
+    assertTrue(not resolver:areEngaged(actor, target), "Displace should clear old engagement")
+
+    target.zone = "A"
+    zoneRegistry:placeEntity(target.id, target.zone)
+    target.inventory = inventory.createInventory()
+    local targetSword = inventory.createItemFromTemplate("longsword")
+    target.inventory:addItem(targetSword, inventory.LOCATIONS.HANDS)
+    local disarm = resolver:resolve({
+        actor = actor,
+        card = { name = "Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "disarm",
+        target = target,
+        targetInitiative = 5,
+        allEntities = { actor, target },
+    })
+    assertTrue(disarm.success, "Roughhouse disarm should beat Initiative")
+    assertTrue(disarm.droppedItem == targetSword, "Roughhouse disarm should drop a held item")
+    assertTrue(target.conditions.disarmed, "Roughhouse disarm should apply disarmed condition for Recover")
+    assertTrue(target.inventory:findItem(targetSword.id) == nil,
+        "Roughhouse disarm should remove the dropped item from inventory")
+
+    local unarmedAttack = resolver:resolve({
+        actor = actor,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        target = target,
+        targetInitiative = 9,
+        allEntities = { actor, target },
+    })
+    assertTrue(unarmedAttack.success, "attacks against targets with no melee weapon or shield should gain favor")
+    assertTrue(hasValue(unarmedAttack.effects, "unarmed_target_favor"),
+        "unarmed target favor should be recorded")
+
+    target.conditions.rooted = false
+    target.conditions.prone = false
+    local recover = resolver:resolve({
+        actor = target,
+        card = { name = "Ten of Wands", value = 10, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+    })
+    assertTrue(recover.success, "Recover should retrieve a dropped disarmed item")
+    assertEqual(recover.recoveredItem, targetSword, "Recover should report the retrieved item")
+    assertTrue(target.inventory:findItem(targetSword.id) == targetSword,
+        "Recover should return the dropped item to the actor's hands")
+    assertTrue(not target.conditions.disarmed, "Recover should clear the disarmed condition")
+
+    local shieldedTarget = base_entity.createEntity({
+        id = "npc_shielded_disarm_rule",
+        name = "Shielded Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    shieldedTarget.zone = "A"
+    shieldedTarget.inventory = inventory.createInventory()
+    shieldedTarget.inventory:addItem(inventory.createItemFromTemplate("shield_light"), inventory.LOCATIONS.HANDS)
+    local shieldedAttack = resolver:resolve({
+        actor = actor,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        target = shieldedTarget,
+        targetInitiative = 9,
+    })
+    assertTrue(not shieldedAttack.success, "a shield should prevent the unarmed-target favor rider")
+    assertTrue(not hasValue(shieldedAttack.effects, "unarmed_target_favor"),
+        "shielded targets should not report unarmed-target favor")
+end
+
+local function checkGiantsStrengthContestTalent()
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on("giants_strength_contest_won", function(data)
+        emitted = data
+    end)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local troll = base_entity.createEntity({
+        id = "pc_giants_strength",
+        name = "Giant Strength Troll",
+        isPC = true,
+        kin = "troll",
+        pentacles = 0,
+        talents = {
+            giants_strength = { mastered = true },
+        },
+    })
+    local dwarf = base_entity.createEntity({
+        id = "pc_strength_dwarf",
+        name = "Strength Dwarf",
+        isPC = true,
+        kin = "dwarf",
+    })
+    dwarf.zone = "A"
+
+    local rawStrength = resolver:resolve({
+        actor = troll,
+        target = dwarf,
+        card = { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "displace",
+        destinationZone = "B",
+        targetInitiative = 14,
+        rawStrengthContest = true,
+    })
+    assertTrue(rawStrength.success, "Giant's Strength should auto-win raw-strength contests")
+    assertTrue(rawStrength.giantsStrengthAutoWin, "Giant's Strength should mark the auto-win")
+    assertTrue(hasValue(rawStrength.effects, "giants_strength_auto_win"),
+        "Giant's Strength should report the auto-win effect")
+    assertEqual(dwarf.zone, "B", "auto-winning the contest should still apply the chosen Roughhouse result")
+    assertTrue(emitted and emitted.actor == troll and emitted.target == dwarf,
+        "Giant's Strength should emit contest details")
+
+    local trollTarget = base_entity.createEntity({
+        id = "pc_target_troll",
+        name = "Target Troll",
+        isPC = true,
+        kin = "troll",
+    })
+    trollTarget.zone = "A"
+    local versusTroll = resolver:resolve({
+        actor = troll,
+        target = trollTarget,
+        card = { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "displace",
+        destinationZone = "B",
+        targetInitiative = 14,
+        rawStrengthContest = true,
+    })
+    assertTrue(not versusTroll.success, "Giant's Strength should not auto-win against troll kin")
+    assertTrue(not hasValue(versusTroll.effects, "giants_strength_auto_win"),
+        "blocked troll-kin contests should not report Giant's Strength")
+    assertEqual(trollTarget.zone, "A", "failed non-applicable contest should not move the target")
+
+    local subtleContest = resolver:resolve({
+        actor = troll,
+        target = dwarf,
+        card = { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+        targetInitiative = 14,
+        context = "subtle footwork",
+    })
+    assertTrue(not subtleContest.success, "Giant's Strength should require a raw-strength contest")
+    assertTrue(not hasValue(subtleContest.effects, "giants_strength_auto_win"),
+        "non-strength contests should not report Giant's Strength")
+end
+
+local function checkFightDirtyRoughhouseTalent()
+    local function hasAction(actions, id)
+        for _, action in ipairs(actions or {}) do
+            if action.id == id then
+                return true
+            end
+        end
+        return false
+    end
+
+    local swordCard = { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS }
+    local dirtyFighter = base_entity.createEntity({
+        id = "pc_fight_dirty",
+        name = "Fight Dirty",
+        isPC = true,
+        pentacles = 3,
+        talents = {
+            fight_dirty = { mastered = true },
+        },
+    })
+    local plainFighter = base_entity.createEntity({
+        id = "pc_no_fight_dirty",
+        name = "No Fight Dirty",
+        isPC = true,
+        pentacles = 3,
+    })
+
+    assertTrue(hasAction(action_registry.getAvailableActions(swordCard, false, dirtyFighter), "roughhouse"),
+        "Fight Dirty should allow Roughhouse as a Swords-card minor action")
+    assertTrue(not hasAction(action_registry.getAvailableActions(swordCard, false, plainFighter), "roughhouse"),
+        "Roughhouse with a Swords-card minor should require Fight Dirty")
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    controller.state = challenge_controller.STATES.MINOR_WINDOW
+    controller.activeEntity = base_entity.createEntity({ id = "active_fighter", isPC = true })
+    local ok, err = controller:declareMinorAction(dirtyFighter, swordCard, {
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+    })
+    assertTrue(ok, "Fight Dirty should pass the minor declaration suit gate")
+
+    local blockedController = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    blockedController.state = challenge_controller.STATES.MINOR_WINDOW
+    blockedController.activeEntity = controller.activeEntity
+    ok, err = blockedController:declareMinorAction(plainFighter, swordCard, {
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+    })
+    assertTrue(not ok, "Swords-card Roughhouse minors should be rejected without Fight Dirty")
+    assertEqual(err, "suit_mismatch", "missing Fight Dirty should preserve the suit-mismatch reason")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local target = base_entity.createEntity({
+        id = "npc_fight_dirty_target",
+        name = "Fight Dirty Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    target.inventory = inventory.createInventory()
+    local dagger = inventory.createItemFromTemplate("dagger")
+    target.inventory:addItem(dagger, inventory.LOCATIONS.HANDS)
+
+    local exhaust = resolver:resolve({
+        actor = dirtyFighter,
+        target = target,
+        card = { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "exhaust",
+        targetInitiative = 5,
+    })
+    assertTrue(exhaust.success, "Fight Dirty Exhaust should resolve as Roughhouse")
+    assertTrue(target.conditions.exhausted, "Fight Dirty Exhaust should mark the target Exhausted")
+    assertTrue(hasValue(exhaust.effects, "exhausted"), "Fight Dirty Exhaust should report the condition")
+
+    local silence = resolver:resolve({
+        actor = dirtyFighter,
+        target = target,
+        card = { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "silence",
+        targetInitiative = 5,
+    })
+    assertTrue(silence.success, "Fight Dirty Silence should resolve as Roughhouse")
+    assertTrue(target.conditions.silenced, "Fight Dirty Silence should mark the target Silenced")
+    assertTrue(hasValue(silence.effects, "silenced"), "Fight Dirty Silence should report the condition")
+
+    local notch = resolver:resolve({
+        actor = dirtyFighter,
+        target = target,
+        card = { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "notch",
+        targetInitiative = 5,
+        targetItemId = dagger.id,
+    })
+    assertTrue(notch.success, "Fight Dirty Notch should resolve as Roughhouse")
+    assertEqual(dagger.notches, 1, "Fight Dirty Notch should damage the selected item")
+    assertEqual(notch.notchedItem, dagger, "Fight Dirty Notch should report the damaged item")
+
+    local blockedEffect = resolver:resolve({
+        actor = plainFighter,
+        target = target,
+        card = { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "exhaust",
+        targetInitiative = 5,
+    })
+    assertTrue(not blockedEffect.success, "Fight Dirty-only Roughhouse effects should reject ordinary actors")
+    assertTrue(hasValue(blockedEffect.effects, "fight_dirty_required"),
+        "blocked Fight Dirty effects should explain the missing talent")
+end
+
+local function checkAmbusherFirstRoundDamageTalent()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local function controllerForRound(round)
+        return {
+            currentRound = round,
+            isActive = function()
+                return true
+            end,
+        }
+    end
+    local function makeAmbusher(id, talents)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            swords = 2,
+            talents = talents,
+        })
+        actor.inventory = inventory.createInventory()
+        return actor
+    end
+    local function makeTarget(id)
+        return base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = false,
+            health = 3,
+            defense = 0,
+        })
+    end
+
+    local ambusher = makeAmbusher("pc_ambusher", {
+        ambusher = { mastered = true },
+    })
+    local sword = inventory.createItemFromTemplate("longsword")
+    ambusher.inventory:addItem(sword, inventory.LOCATIONS.HANDS)
+    local target = makeTarget("npc_ambusher_target")
+    local firstRound = resolver:resolve({
+        actor = ambusher,
+        target = target,
+        weapon = sword,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 5,
+        challengeController = controllerForRound(1),
+    })
+    assertTrue(firstRound.success, "Ambusher setup Attack should hit")
+    assertEqual(firstRound.damageDealt, 2, "Ambusher should deal two Wounds in the first round")
+    assertEqual(target.npcHealth, 1, "Ambusher first-round melee should apply two Wounds")
+    assertTrue(hasValue(firstRound.effects, "ambusher_first_round_damage"),
+        "Ambusher first-round damage should be reported")
+
+    local laterTarget = makeTarget("npc_ambusher_later_target")
+    local laterRound = resolver:resolve({
+        actor = ambusher,
+        target = laterTarget,
+        weapon = sword,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 5,
+        challengeController = controllerForRound(2),
+    })
+    assertTrue(laterRound.success, "Ambusher later-round setup Attack should hit")
+    assertEqual(laterRound.damageDealt, 1, "Ambusher should not add damage after the first round")
+    assertEqual(laterTarget.npcHealth, 2, "later-round Ambusher attacks should apply one Wound")
+
+    local woundedAmbusher = makeAmbusher("pc_wounded_ambusher", {
+        ambusher = { mastered = true, wounded = true },
+    })
+    local woundedSword = inventory.createItemFromTemplate("longsword")
+    woundedAmbusher.inventory:addItem(woundedSword, inventory.LOCATIONS.HANDS)
+    local woundedTarget = makeTarget("npc_wounded_ambusher_target")
+    local woundedAttack = resolver:resolve({
+        actor = woundedAmbusher,
+        target = woundedTarget,
+        weapon = woundedSword,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 5,
+        challengeController = controllerForRound(1),
+    })
+    assertTrue(woundedAttack.success, "wounded Ambusher setup Attack should still hit")
+    assertEqual(woundedAttack.damageDealt, 1, "wounded Ambusher should not add first-round damage")
+
+    local archer = makeAmbusher("pc_ambusher_archer", {
+        ambusher = { mastered = true },
+    })
+    local bow = inventory.createItemFromTemplate("bow")
+    archer.inventory:addItem(bow, inventory.LOCATIONS.HANDS)
+    archer.ammo = 1
+    local missileTarget = makeTarget("npc_ambusher_missile_target")
+    local missile = resolver:resolve({
+        actor = archer,
+        target = missileTarget,
+        weapon = bow,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 5,
+        challengeController = controllerForRound(1),
+    })
+    assertTrue(missile.success, "Ambusher missile setup Attack should hit")
+    assertEqual(missile.damageDealt, 2, "Ambusher should also double first-round missile Attack damage")
+    assertEqual(missileTarget.npcHealth, 1, "Ambusher first-round missile should apply two Wounds")
+end
+
+local function checkAegisTalentDamageSubstitution()
+    local bus = events.createEventBus()
+    local absorbed = nil
+    bus:on(events.EVENTS.ITEM_DAMAGE_ABSORBED, function(data)
+        absorbed = data
+    end)
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local attacker = base_entity.createEntity({
+        id = "npc_aegis_attacker",
+        name = "Aegis Attacker",
+        isPC = false,
+        swords = 4,
+        health = 2,
+        defense = 0,
+    })
+    local aegisBearer = base_entity.createEntity({
+        id = "pc_aegis_bearer",
+        name = "Aegis Bearer",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    aegisBearer.inventory = inventory.createInventory()
+    local heavyShield = inventory.createItemFromTemplate("shield_heavy")
+    aegisBearer.inventory:addItem(heavyShield, inventory.LOCATIONS.PACK)
+
+    local attack = resolver:resolve({
+        actor = attacker,
+        target = aegisBearer,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 3,
+        useAegis = true,
+    })
+    assertTrue(attack.success, "setup Aegis attack should hit")
+    assertEqual(heavyShield.notches, 1, "Aegis should Notch a carried intact shield")
+    assertTrue(not aegisBearer.talents.aegis.wounded, "Aegis should prevent the physical attack effect")
+    assertTrue(hasValue(attack.effects, "aegis_effect_prevented"), "Aegis should report prevented effect")
+    assertTrue(absorbed and absorbed.item == heavyShield and absorbed.talent == "aegis",
+        "Aegis should emit item damage absorption details")
+
+    local noElection = base_entity.createEntity({
+        id = "pc_aegis_no_election",
+        name = "Aegis No Election",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    noElection.inventory = inventory.createInventory()
+    local lightShield = inventory.createItemFromTemplate("shield_light")
+    noElection.inventory:addItem(lightShield, inventory.LOCATIONS.HANDS)
+    local ordinaryHit = resolver:resolve({
+        actor = attacker,
+        target = noElection,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 3,
+    })
+    assertTrue(ordinaryHit.success, "setup non-Aegis attack should hit")
+    assertEqual(lightShield.notches, 0, "Aegis should require an explicit election")
+    assertTrue(noElection.talents.aegis.wounded, "without election, the normal wound track should apply")
+
+    local spentShieldBearer = base_entity.createEntity({
+        id = "pc_aegis_spent_shield",
+        name = "Aegis Spent Shield",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    spentShieldBearer.inventory = inventory.createInventory()
+    local spentShield = inventory.createItemFromTemplate("shield_light")
+    spentShield.destroyed = true
+    spentShieldBearer.inventory:addItem(spentShield, inventory.LOCATIONS.HANDS)
+    local spentShieldHit = resolver:resolve({
+        actor = attacker,
+        target = spentShieldBearer,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 3,
+        useAegis = true,
+    })
+    assertTrue(spentShieldHit.success, "setup spent-shield attack should hit")
+    assertTrue(spentShieldBearer.talents.aegis.wounded, "Aegis should require an intact shield")
+    assertTrue(not hasValue(spentShieldHit.effects, "aegis_effect_prevented"),
+        "spent shields should not report Aegis prevention")
+
+    local magicTarget = base_entity.createEntity({
+        id = "pc_aegis_magic",
+        name = "Aegis Magic",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    magicTarget.inventory = inventory.createInventory()
+    local magicShield = inventory.createItemFromTemplate("shield_heavy")
+    magicTarget.inventory:addItem(magicShield, inventory.LOCATIONS.HANDS)
+    resolver:applyDamage(magicTarget, 1, { "magic" }, nil, nil, { useAegis = true }, {
+        source = "spell",
+    })
+    assertEqual(magicShield.notches, 0, "Aegis should not block non-physical damage sources")
+    assertTrue(magicTarget.talents.aegis.wounded, "non-physical damage should use the normal wound track")
+
+    local trapTarget = base_entity.createEntity({
+        id = "pc_aegis_trap",
+        name = "Aegis Trap",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 1,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    trapTarget.inventory = inventory.createInventory()
+    local trapShield = inventory.createItemFromTemplate("shield_heavy")
+    trapTarget.inventory:addItem(trapShield, inventory.LOCATIONS.HANDS)
+    resolver:applyDamage(trapTarget, 1, { "trap" }, nil, nil, { useAegis = true }, {
+        source = "trap",
+    })
+    assertEqual(trapShield.notches, 1, "Aegis should also cover elected physical trap damage")
+    assertTrue(not trapTarget.talents.aegis.wounded, "Aegis should prevent the elected trap effect")
+end
+
+local function checkDoomEyePerfectShotTalent()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local activeChallenge = {
+        isActive = function()
+            return true
+        end,
+    }
+    local function makeArcher(id, talents)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            swords = 0,
+            talents = talents,
+        })
+        actor.inventory = inventory.createInventory()
+        actor.inventory:addItem(inventory.createItemFromTemplate("bow"), inventory.LOCATIONS.HANDS)
+        actor.ammo = 2
+        return actor
+    end
+
+    local doomArcher = makeArcher("pc_doom_eye", {
+        doom_eye = { mastered = true },
+    })
+    local target = base_entity.createEntity({
+        id = "npc_doom_eye_target",
+        name = "Doom Eye Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local shot = resolver:resolve({
+        actor = doomArcher,
+        target = target,
+        card = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 20,
+        useDoomEye = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(shot.success, "Doom Eye should auto-hit regardless of target Initiative")
+    assertTrue(shot.doomEyeAutoHit, "Doom Eye should mark auto-hit metadata")
+    assertTrue(hasValue(shot.effects, "doom_eye_auto_hit"), "Doom Eye should report auto-hit")
+    assertTrue(hasValue(shot.effects, "doom_eye_ignores_initiative"),
+        "Doom Eye should report that Initiative was ignored")
+    assertEqual(target.npcHealth, 1, "Doom Eye hit should still apply missile damage")
+    assertEqual(doomArcher.ammo, 1, "Doom Eye should still spend ammunition")
+
+    local dodgeTarget = base_entity.createEntity({
+        id = "npc_doom_eye_dodge",
+        name = "Doom Eye Dodge Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    dodgeTarget:prepareDefense("dodge", { name = "King of Cups", value = 14, suit = constants.SUITS.CUPS }, 20)
+    local dodgedShot = resolver:resolve({
+        actor = doomArcher,
+        target = dodgeTarget,
+        card = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 20,
+        useDoomEye = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(dodgedShot.success, "Doom Eye should ignore Dodge-boosted Initiative")
+    assertTrue(hasValue(dodgedShot.effects, "doom_eye_ignores_dodge"),
+        "Doom Eye should report ignored Dodge")
+    assertTrue(not dodgeTarget:hasDefense(), "Doom Eye shot should still consume the prepared defense")
+
+    local ordinaryShot = resolver:resolve({
+        actor = makeArcher("pc_doom_eye_no_election", {
+            doom_eye = { mastered = true },
+        }),
+        target = base_entity.createEntity({
+            id = "npc_doom_eye_ordinary",
+            name = "Doom Eye Ordinary Target",
+            isPC = false,
+            health = 2,
+            defense = 0,
+        }),
+        card = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 20,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not ordinaryShot.success, "Doom Eye should require explicit election")
+    assertTrue(not hasValue(ordinaryShot.effects, "doom_eye_auto_hit"),
+        "ordinary missile shots should not report Doom Eye")
+
+    local wrongCard = resolver:resolve({
+        actor = makeArcher("pc_doom_eye_wrong_card", {
+            doom_eye = { mastered = true },
+        }),
+        target = target,
+        card = { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 20,
+        useDoomEye = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not wrongCard.success, "Doom Eye should reject non-Sword cards")
+    assertEqual(wrongCard.description, "Doom Eye requires a Sword card",
+        "Doom Eye should explain the card-suit requirement")
+    assertTrue(hasValue(wrongCard.effects, "doom_eye_blocked"), "blocked Doom Eye should report a block")
+
+    local noTalent = resolver:resolve({
+        actor = makeArcher("pc_no_doom_eye", {}),
+        target = target,
+        card = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 20,
+        useDoomEye = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not noTalent.success, "Doom Eye should require the talent")
+    assertEqual(noTalent.description, "Requires Doom Eye", "missing Doom Eye should explain the requirement")
+end
+
+local function checkGramaryeArchwoodWandAttacks()
+    local wandCard = { name = "Seven of Wands", value = 7, suit = constants.SUITS.WANDS }
+    local function makeWandBearer(id, talents)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            swords = 0,
+            wands = 3,
+            talents = talents,
+        })
+        actor.inventory = inventory.createInventory()
+        actor.inventory:addItem(inventory.createItemFromTemplate("wand_archwood"), inventory.LOCATIONS.HANDS)
+        return actor
+    end
+    local function hasAction(actions, id)
+        for _, action in ipairs(actions or {}) do
+            if action.id == id then
+                return true
+            end
+        end
+        return false
+    end
+
+    local gramarye = makeWandBearer("pc_gramarye", {
+        gramarye = { mastered = true },
+    })
+    local plain = makeWandBearer("pc_no_gramarye", {})
+
+    assertTrue(hasAction(action_registry.getAvailableActions(wandCard, false, gramarye), "missile"),
+        "Gramarye should allow an archwood wand Attack with a Wands minor card")
+    assertTrue(not hasAction(action_registry.getAvailableActions(wandCard, false, plain), "missile"),
+        "archwood wand missile Attacks should require Gramarye")
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    controller.state = challenge_controller.STATES.MINOR_WINDOW
+    controller.activeEntity = base_entity.createEntity({ id = "active_gramarye_turn", isPC = true })
+    local ok, err = controller:declareMinorAction(gramarye, wandCard, {
+        type = action_resolver.ACTION_TYPES.MISSILE,
+    })
+    assertTrue(ok, "Gramarye should pass the Wands-card minor declaration suit gate")
+
+    local blockedController = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    blockedController.state = challenge_controller.STATES.MINOR_WINDOW
+    blockedController.activeEntity = controller.activeEntity
+    ok, err = blockedController:declareMinorAction(plain, wandCard, {
+        type = action_resolver.ACTION_TYPES.MISSILE,
+    })
+    assertTrue(not ok, "Wands-card missile minors should be rejected without Gramarye")
+    assertEqual(err, "suit_mismatch", "missing Gramarye should preserve the suit-mismatch reason")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local activeChallenge = {
+        isActive = function()
+            return true
+        end,
+    }
+    local target = base_entity.createEntity({
+        id = "npc_gramarye_target",
+        name = "Gramarye Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local blast = resolver:resolve({
+        actor = gramarye,
+        target = target,
+        card = wandCard,
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(blast.success, "Gramarye wand Attack should use Wands value during Challenges")
+    assertEqual(blast.testValue, 10, "Gramarye wand Attack should add Wands instead of Swords")
+    assertTrue(hasValue(blast.effects, "gramary_wand_attack"), "Gramarye should report wand attack")
+    assertTrue(hasValue(blast.effects, "gramary_wands_action"), "Gramarye should report Wands-action routing")
+    assertEqual(target.npcHealth, 1, "Gramarye wand Attack should damage as a weapon")
+
+    local blocked = resolver:resolve({
+        actor = plain,
+        target = target,
+        card = wandCard,
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not blocked.success, "non-Gramarye archwood wand missile Attack should be blocked")
+    assertEqual(blocked.description, "Requires ranged weapon in hands",
+        "blocked archwood wand Attack should explain the missing missile-weapon permission")
+end
+
+local function checkHeavyMetalMachineInterruptTalent()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local defender = base_entity.createEntity({
+        id = "pc_heavy_metal_machine",
+        name = "Heavy Metal Machine",
+        isPC = true,
+        swords = 3,
+        talents = {
+            heavy_metal_machine = { mastered = true },
+        },
+    })
+    defender.inventory = inventory.createInventory()
+    defender.inventory:addItem(inventory.createItemFromTemplate("iron_armor"), inventory.LOCATIONS.BELT)
+
+    local slot = {
+        card = { name = "Five of Pentacles", value = 5, suit = constants.SUITS.PENTACLES },
+        value = 5,
+        revealed = false,
+    }
+    local controller = {
+        currentRound = 4,
+        isActive = function()
+            return true
+        end,
+        getInitiativeSlot = function(_, entityId)
+            if entityId == defender.id then
+                return slot
+            end
+            return nil
+        end,
+    }
+
+    local readied = resolver:resolve({
+        actor = defender,
+        card = { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.HEAVY_METAL_MACHINE,
+        challengeController = controller,
+        againstActorId = "npc_hmm_attacker",
+    })
+    assertTrue(readied.success, "Heavy Metal Machine should ready as a miscellaneous interrupt")
+    assertTrue(hasValue(readied.effects, "heavy_metal_machine_readied"),
+        "Heavy Metal Machine should report the readied interrupt")
+    assertEqual(readied.heavyMetalMachine.bonus, 3, "Heavy Metal Machine should add Swords to Initiative")
+
+    local attacker = base_entity.createEntity({
+        id = "npc_hmm_attacker",
+        name = "HMM Attacker",
+        isPC = false,
+        swords = 0,
+        health = 2,
+        defense = 0,
+    })
+    local attack = resolver:resolve({
+        actor = attacker,
+        target = defender,
+        card = { name = "Four of Swords", value = 4, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        challengeController = controller,
+    })
+    assertTrue(not attack.success, "Heavy Metal Machine should boost Initiative against the chosen action")
+    assertEqual(attack.difficulty, 8, "Heavy Metal Machine should add Swords to the base Initiative")
+    assertTrue(hasValue(attack.effects, "heavy_metal_machine_interrupt"),
+        "the defended action should report Heavy Metal Machine")
+    assertTrue(defender.heavyMetalMachineInterrupt == nil, "Heavy Metal Machine should be consumed after one action")
+    assertEqual(slot.value, 5, "Heavy Metal Machine should not permanently replace Initiative")
+
+    local spent = resolver:resolve({
+        actor = defender,
+        card = { name = "Three of Wands", value = 3, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.HEAVY_METAL_MACHINE,
+        challengeController = controller,
+    })
+    assertTrue(not spent.success, "Heavy Metal Machine should be once per round")
+    assertTrue(hasValue(spent.effects, "heavy_metal_machine_spent"),
+        "spent Heavy Metal Machine should report the round limit")
+
+    controller.currentRound = 5
+    local nextRound = resolver:resolve({
+        actor = defender,
+        card = { name = "Four of Pentacles", value = 4, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.HEAVY_METAL_MACHINE,
+        challengeController = controller,
+    })
+    assertTrue(nextRound.success, "Heavy Metal Machine should reset on a new round")
+
+    local lightArmor = base_entity.createEntity({
+        id = "pc_hmm_light_armor",
+        name = "HMM Light Armor",
+        isPC = true,
+        swords = 3,
+        talents = {
+            heavy_metal_machine = { mastered = true },
+        },
+    })
+    lightArmor.inventory = inventory.createInventory()
+    lightArmor.inventory:addItem(inventory.createItemFromTemplate("light_armor"), inventory.LOCATIONS.BELT)
+    local blockedArmor = resolver:resolve({
+        actor = lightArmor,
+        card = { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.HEAVY_METAL_MACHINE,
+        challengeController = {
+            currentRound = 1,
+            isActive = function()
+                return true
+            end,
+            getInitiativeSlot = function()
+                return { value = 5 }
+            end,
+        },
+    })
+    assertTrue(not blockedArmor.success, "Heavy Metal Machine should require iron or steel armor")
+    assertEqual(blockedArmor.description, "Requires worn iron or steel armor.",
+        "wrong armor should explain the Heavy Metal Machine requirement")
+end
+
+local function checkMonsterHunterAttackFavorTalent()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local activeChallenge = {
+        isActive = function()
+            return true
+        end,
+    }
+
+    local function makeHunter(id, talents)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            swords = 1,
+            talents = talents,
+        })
+        actor.inventory = inventory.createInventory()
+        actor.inventory:addItem(inventory.createItemFromTemplate("longsword"), inventory.LOCATIONS.HANDS)
+        return actor
+    end
+
+    local function makeTarget(id, tags)
+        local target = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = false,
+            health = 3,
+            defense = 0,
+        })
+        target.tags = tags
+        return target
+    end
+
+    local beastHunter = makeHunter("pc_beast_hunter", {
+        monster_hunter = {
+            mastered = true,
+            foe = "Beast",
+            specialization = "cockatrice",
+            specializationTags = { "cockatrice" },
+        },
+    })
+    local cockatrice = makeTarget("npc_cockatrice", { "beast", "cockatrice" })
+    local favored = resolver:resolve({
+        actor = beastHunter,
+        target = cockatrice,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(favored.success, "Monster Hunter should grant attack favor against the chosen specialization")
+    assertEqual(favored.favorModifier, 3, "Monster Hunter favor should add the standard +3")
+    assertEqual(favored.testValue, 9, "Monster Hunter favor should modify the Attack value")
+    assertTrue(hasValue(favored.effects, "monster_hunter_attack_favor"),
+        "Monster Hunter favor should be reported")
+    assertEqual(favored.monsterHunter.foe, "Beast", "Monster Hunter metadata should preserve the hated foe")
+
+    local wrongTarget = resolver:resolve({
+        actor = beastHunter,
+        target = makeTarget("npc_wrong_hunter_target", { "beast", "wolf" }),
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not wrongTarget.success, "Monster Hunter should not favor non-specialization targets")
+    assertTrue(not hasValue(wrongTarget.effects, "monster_hunter_attack_favor"),
+        "non-specialization targets should not report Hunter favor")
+
+    local woundedHunter = makeHunter("pc_wounded_hunter", {
+        monster_hunter = {
+            mastered = true,
+            wounded = true,
+            foe = "Beast",
+            specialization = "cockatrice",
+        },
+    })
+    local woundedAttack = resolver:resolve({
+        actor = woundedHunter,
+        target = makeTarget("npc_wounded_hunter_target", { "beast", "cockatrice" }),
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not woundedAttack.success, "wounded Monster Hunter should not grant attack favor")
+
+    local undeadHunter = makeHunter("pc_undead_hunter", {
+        undead_hunter = {
+            mastered = true,
+            specialization = "skeleton",
+        },
+    })
+    local skeleton = makeTarget("npc_skeleton_hunter_target", { "undead", "skeleton" })
+    skeleton.undead = true
+    local undeadFavored = resolver:resolve({
+        actor = undeadHunter,
+        target = skeleton,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(undeadFavored.success, "specific Hunter talents should also grant specialization favor")
+    assertEqual(undeadFavored.monsterHunter.talentId, "undead_hunter",
+        "Hunter metadata should preserve the specific Hunter talent")
+end
+
+local function checkTwoHandedFocusMinorAttackTalent()
+    local pentaclesCard = { name = "Seven of Pentacles", value = 7, suit = constants.SUITS.PENTACLES }
+    local swordsCard = { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS }
+
+    local function hasAction(actions, id)
+        for _, action in ipairs(actions or {}) do
+            if action.id == id then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function makeActor(id, talents, itemIds)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            talents = talents,
+        })
+        actor.inventory = inventory.createInventory()
+        for _, itemId in ipairs(itemIds or {}) do
+            actor.inventory:addItem(inventory.createItemFromTemplate(itemId), inventory.LOCATIONS.HANDS)
+        end
+        return actor
+    end
+
+    local focus = makeActor("pc_two_handed_focus", {
+        two_handed_focus = { mastered = true },
+    }, { "longsword" })
+    assertTrue(hasAction(action_registry.getAvailableActions(pentaclesCard, false, focus), "melee"),
+        "Two-handed Focus should allow Pentacles-card minor melee Attacks")
+    assertTrue(hasAction(action_registry.getAvailableActions(swordsCard, false, focus), "melee"),
+        "Two-handed Focus should preserve Swords-card minor melee Attacks")
+
+    local plain = makeActor("pc_no_two_handed_focus", {}, { "longsword" })
+    assertTrue(not hasAction(action_registry.getAvailableActions(pentaclesCard, false, plain), "melee"),
+        "Pentacles-card minor melee Attacks should require Two-handed Focus")
+
+    local daggerFocus = makeActor("pc_dagger_focus", {
+        two_handed_focus = { mastered = true },
+    }, { "dagger" })
+    assertTrue(not hasAction(action_registry.getAvailableActions(pentaclesCard, false, daggerFocus), "melee"),
+        "Two-handed Focus should not work with daggers")
+
+    local shieldFocus = makeActor("pc_shield_focus", {
+        two_handed_focus = { mastered = true },
+    }, { "longsword", "shield_light" })
+    assertTrue(not hasAction(action_registry.getAvailableActions(pentaclesCard, false, shieldFocus), "melee"),
+        "Two-handed Focus should require a free second hand for one-slot weapons")
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    controller.state = challenge_controller.STATES.MINOR_WINDOW
+    controller.activeEntity = base_entity.createEntity({ id = "active_two_handed_focus_turn", isPC = true })
+    local ok, err = controller:declareMinorAction(focus, pentaclesCard, {
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(ok, "Two-handed Focus should pass the Pentacles-card minor declaration suit gate")
+
+    local blockedController = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+    blockedController.state = challenge_controller.STATES.MINOR_WINDOW
+    blockedController.activeEntity = controller.activeEntity
+    ok, err = blockedController:declareMinorAction(plain, pentaclesCard, {
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(not ok, "Pentacles-card melee minors should be rejected without Two-handed Focus")
+    assertEqual(err, "suit_mismatch", "missing Two-handed Focus should preserve the suit-mismatch reason")
+end
+
+local function checkReaverChargeAttackTalent()
+    local bus = events.createEventBus()
+    local zones = zone_system.createZoneRegistry({ eventBus = bus })
+    zones:setRoomZones({
+        zone_system.createZone({ id = "near", adjacent_to = { "far" } }),
+        zone_system.createZone({ id = "far", adjacent_to = { "near" } }),
+        zone_system.createZone({ id = "balcony", adjacent_to = {} }),
+    })
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        zoneSystem = zones,
+    })
+    local activeChallenge = {
+        isActive = function()
+            return true
+        end,
+    }
+
+    local function makeAttacker(id, talents)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            swords = 2,
+            talents = talents,
+            zone = "near",
+        })
+        actor.inventory = inventory.createInventory()
+        actor.inventory:addItem(inventory.createItemFromTemplate("longsword"), inventory.LOCATIONS.HANDS)
+        zones:placeEntity(actor.id, actor.zone)
+        return actor
+    end
+
+    local function makeTarget(id, zone)
+        local target = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = false,
+            health = 3,
+            defense = 0,
+            zone = zone,
+        })
+        zones:placeEntity(target.id, target.zone)
+        return target
+    end
+
+    local target = makeTarget("npc_reaver_target", "far")
+    local ordinary = resolver:resolve({
+        actor = makeAttacker("pc_no_reaver_move", {}),
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 6,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not ordinary.success, "ordinary melee Attacks should not reach a different zone")
+    assertTrue(hasValue(ordinary.effects, "not_engaged"), "ordinary out-of-zone melee should report not engaged")
+
+    local reaver = makeAttacker("pc_reaver_charge", {
+        reaver = { mastered = true },
+    })
+    local chargeTarget = makeTarget("npc_reaver_charge_target", "far")
+    local charged = resolver:resolve({
+        actor = reaver,
+        target = chargeTarget,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 6,
+        useReaver = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(charged.success, "Reaver should move one zone and then resolve the melee Attack")
+    assertEqual(reaver.zone, "far", "Reaver charge should update the actor zone")
+    assertTrue(hasValue(charged.effects, "reaver_charge"), "Reaver charge should be reported")
+    assertEqual(charged.reaverCharge.oldZone, "near", "Reaver metadata should record the old zone")
+    assertEqual(charged.reaverCharge.newZone, "far", "Reaver metadata should record the new zone")
+
+    local missingTalent = makeAttacker("pc_reaver_missing_talent", {})
+    local blocked = resolver:resolve({
+        actor = missingTalent,
+        target = makeTarget("npc_reaver_missing_talent_target", "far"),
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 6,
+        useReaver = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not blocked.success, "Reaver charge should require the talent")
+    assertEqual(blocked.description, "Requires Reaver", "missing Reaver should explain the requirement")
+    assertTrue(hasValue(blocked.effects, "reaver_blocked"), "blocked Reaver should report a block")
+
+    local rooted = makeAttacker("pc_reaver_rooted", {
+        reaver = { mastered = true },
+    })
+    rooted.conditions.rooted = true
+    local rootedCharge = resolver:resolve({
+        actor = rooted,
+        target = makeTarget("npc_reaver_rooted_target", "far"),
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 6,
+        useReaver = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not rootedCharge.success, "Rooted Reavers should not charge")
+    assertEqual(rooted.zone, "near", "Rooted Reaver charge should not move the actor")
+end
+
+local function checkNPCDrawFormula()
+    local bus = events.createEventBus()
+    local ai = npc_ai.createNPCAI({
+        eventBus = bus,
+        challengeController = {
+            npcs = {},
+            pcs = {},
+        },
+    })
+
+    local function makeNPC(id, blueprintId, extra)
+        local npc = {
+            id = id,
+            blueprintId = blueprintId or "imp",
+            isPC = false,
+            rank = "soldier",
+            conditions = {},
+        }
+        for key, value in pairs(extra or {}) do
+            npc[key] = value
+        end
+        return npc
+    end
+
+    local function makePC(id)
+        return {
+            id = id,
+            isPC = true,
+            conditions = {},
+        }
+    end
+
+    for i = 1, 12 do
+        ai.challengeController.npcs[i] = makeNPC("n" .. i, "imp")
+    end
+    for i = 1, 4 do
+        ai.challengeController.pcs[i] = makePC("p" .. i)
+    end
+
+    assertEqual(ai:calculateRoundDrawCount(), 6, "12 imps vs 4 adventurers should draw 6 GM cards")
+
+    ai.challengeController.npcs = {}
+    for i = 1, 7 do
+        ai.challengeController.npcs[i] = makeNPC("n" .. i, "imp")
+    end
+    assertEqual(ai:calculateRoundDrawCount(), 5, "7 imps vs 4 adventurers should draw 5 GM cards")
+
+    ai.challengeController.npcs = {
+        makeNPC("n1", "imp"),
+        makeNPC("n2", "ogre", { size = "large" }),
+        makeNPC("n3", "boss", { rank = "elite" }),
+        makeNPC("n4", "lord", { rank = "lord" }),
+    }
+    assertEqual(ai:calculateRoundDrawCount(), 13, "mixed enemies should apply type, size, elite, and lord bonuses")
+
+    ai.challengeController.npcs[1].stinkingCloudDrawPenalty = 2
+    ai.challengeController.npcs[2].stinkingCloudDrawPenalty = 1
+    assertEqual(ai:calculateRoundDrawCount(), 10, "Stinking Cloud penalties should reduce the GM round draw")
+end
+
+local function checkStartRoundSpellEffectsHook()
+    local pc = {
+        id = "pc_round_effect",
+        name = "Round Effect PC",
+        isPC = true,
+        conditions = {},
+    }
+    local npc = {
+        id = "npc_round_effect",
+        name = "Round Effect NPC",
+        isPC = false,
+        conditions = {},
+    }
+    local called = false
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+        guild = { pc },
+        actionResolver = {
+            applyStinkingCloudRoundStart = function(_, data)
+                called = true
+                assertEqual(data.round, 1, "start-round effects should receive the current round")
+                assertEqual(#data.combatants, 2, "start-round effects should receive current combatants")
+                return {}
+            end,
+        },
+    })
+    controller.pcs = { pc }
+    controller.npcs = { npc }
+
+    controller:startNewRound()
+    assertTrue(called, "ChallengeController should apply start-of-round spell effects before initiative")
+end
+
+local function checkMaledictionChickenDoomChallengeStart()
+    local bus = events.createEventBus()
+    local chickenEvent = nil
+    local clearedEvent = nil
+    bus:on(events.EVENTS.MALEDICTION_CHICKEN_DOOM, function(data)
+        chickenEvent = data
+    end)
+    bus:on(events.EVENTS.MALEDICTION_CHICKEN_CLEARED, function(data)
+        clearedEvent = data
+    end)
+
+    local cursed = base_entity.createEntity({
+        id = "pc_chicken_doom",
+        name = "Chicken Doom Adventurer",
+        isPC = true,
+        wands = 0,
+        health = 2,
+        defense = 0,
+    })
+    cursed.malediction = {
+        active = true,
+        curse = {
+            flags = { stressChickenTest = true },
+        },
+    }
+    local npc = base_entity.createEntity({
+        id = "npc_chicken_stressor",
+        name = "Chicken Stressor",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = bus,
+        guild = { cursed },
+    })
+    local ok = controller:startChallenge({
+        pcs = { cursed },
+        npcs = { npc },
+        chickenDoomTests = {
+            [cursed.id] = { success = false, total = 5, isGreat = false },
+        },
+    })
+    assertTrue(ok, "challenge should start with a chicken-doom cursed adventurer")
+    assertTrue(cursed.conditions.chicken and cursed.conditions.chickenDoom,
+        "failed Chicken Doom stress test should transform the target into a chicken")
+    assertTrue(chickenEvent and chickenEvent.entity == cursed and chickenEvent.result == "chicken",
+        "Chicken Doom stress test should emit a failed transformation event")
+    assertEqual(cursed.chickenDoom.expiresAfterRound, 1, "Chicken Doom should last for one round")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local blocked = resolver:resolve({
+        actor = cursed,
+        card = { name = "Three of Pentacles", value = 3, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.MOVE,
+    })
+    assertTrue(not blocked.success, "Chicken Doom should block normal Challenge actions")
+    assertEqual(blocked.description, "Cannot act while transformed into a chicken",
+        "Chicken Doom action block should explain the transformation")
+
+    local cleared = controller:clearExpiredChickenDoom(1)
+    assertEqual(#cleared, 1, "Chicken Doom should clear after the failed round expires")
+    assertTrue(not cursed.conditions.chicken and not cursed.conditions.chickenDoom and cursed.chickenDoom == nil,
+        "clearing Chicken Doom should restore the adventurer's normal form flags")
+    assertTrue(clearedEvent and clearedEvent.entity == cursed,
+        "Chicken Doom clearing should emit an event")
+
+    local steady = base_entity.createEntity({
+        id = "pc_chicken_steady",
+        name = "Steady Chicken Doom Adventurer",
+        isPC = true,
+        wands = 3,
+        health = 2,
+        defense = 0,
+    })
+    steady.stressChickenTest = true
+    local steadyNPC = base_entity.createEntity({
+        id = "npc_chicken_steady_stressor",
+        name = "Steady Stressor",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local steadyController = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+        guild = { steady },
+    })
+    assertTrue(steadyController:startChallenge({
+        pcs = { steady },
+        npcs = { steadyNPC },
+        chickenDoomTests = {
+            [steady.id] = { success = true, total = 12, isGreat = false },
+        },
+    }), "challenge should start when Chicken Doom stress test succeeds")
+    assertTrue(not (steady.conditions and steady.conditions.chicken),
+        "successful Chicken Doom stress test should not transform the target")
+end
+
+local function checkNPCSharedInitiativeGroups()
+    local submissions = {}
+    local ai = npc_ai.createNPCAI({
+        eventBus = events.createEventBus(),
+        challengeController = {
+            submitInitiative = function(_, npc, card)
+                submissions[#submissions + 1] = { npc = npc, card = card }
+            end,
+        },
+    })
+
+    ai.hand = { major(7) }
+
+    local first = { id = "n1", name = "Imp A", blueprintId = "imp", conditions = {} }
+    local second = { id = "n2", name = "Imp B", blueprintId = "imp", conditions = {} }
+
+    ai:handleNPCInitiative({ npc = first, round = 1 })
+    ai:handleNPCInitiative({ npc = second, round = 1 })
+
+    assertEqual(#submissions, 2, "both grouped NPCs should submit initiative")
+    assertTrue(submissions[1].card == submissions[2].card, "same enemy type should share one initiative card")
+    assertEqual(#ai.hand, 0, "shared initiative should spend only one GM card")
+end
+
+local function checkNPCRoundEndDiscardBeforeReshuffle()
+    local bus = events.createEventBus()
+    local discarded = {}
+    local discardCountWhenClockWouldReshuffle = nil
+    local ai = npc_ai.createNPCAI({
+        eventBus = bus,
+        gmDeck = {
+            discard = function(_, card)
+                discarded[#discarded + 1] = card
+            end,
+        },
+    })
+    ai:init()
+    ai.hand = { major(8), major(19) }
+    ai.roundInitiativeCards = { goblins = major(3) }
+
+    bus:on(events.EVENTS.CHALLENGE_ROUND_END, function()
+        discardCountWhenClockWouldReshuffle = #discarded
+    end)
+
+    bus:emit(events.EVENTS.CHALLENGE_ROUND_END, { round = 1 })
+
+    assertEqual(#discarded, 2, "GM should discard unused Challenge cards at round end")
+    assertEqual(discardCountWhenClockWouldReshuffle, 2,
+        "unused GM cards should be discarded before the controller's Fool reshuffle step")
+    assertEqual(#ai.hand, 0, "GM hand should be empty after round-end discard")
+    assertTrue(next(ai.roundInitiativeCards) == nil, "shared initiative cache should clear at round end")
+end
+
+local function checkFoolReshuffleConditionExpiry()
+    local bus = events.createEventBus()
+    local expired = {}
+    bus:on(events.EVENTS.CONDITION_EXPIRED, function(payload)
+        expired[#expired + 1] = payload
+    end)
+
+    local pc = base_entity.createEntity({
+        id = "pc_fool_condition",
+        name = "Fool Condition PC",
+        isPC = true,
+    })
+    pc.conditions.silenced = true
+    pc.silenced = true
+    pc.conditions.rhymebound = true
+    local healingBlock = {
+        ["until"] = "fool_reshuffle",
+        woundTypes = { "talent", "injured" },
+        active = true,
+    }
+    pc.conditionDurations = {
+        silenced = { ["until"] = "fool_reshuffle" },
+        rhymebound = { ["until"] = "next_camp_complete" },
+    }
+    pc.healingBlocks = {
+        healingBlock,
+        { ["until"] = "city_prayer", woundTypes = { "injured" }, active = true },
+    }
+    pc.healingBlock = healingBlock
+    local npc = base_entity.createEntity({
+        id = "npc_fool_condition",
+        name = "Fool Condition NPC",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+
+    local controller = challenge_controller.createChallengeController({
+        eventBus = bus,
+        guild = { pc },
+        gameClock = {
+            endRound = function()
+                return true
+            end,
+        },
+    })
+    controller.pcs = { pc }
+    controller.npcs = { npc }
+    controller.allCombatants = { pc, npc }
+    controller.currentRound = 1
+    controller.currentCount = 14
+    controller.state = challenge_controller.STATES.COUNT_UP
+
+    controller:advanceCount()
+
+    assertTrue(not pc.conditions.silenced and not pc.silenced,
+        "Fool reshuffle should clear conditions marked until fool_reshuffle")
+    assertTrue(pc.conditions.rhymebound,
+        "Fool reshuffle should not clear next-camp-complete conditions")
+    assertTrue(pc.conditionDurations and pc.conditionDurations.rhymebound and not pc.conditionDurations.silenced,
+        "Fool reshuffle should remove only fool_reshuffle duration metadata")
+    assertTrue(pc.healingBlock == nil and pc.healingBlocks and #pc.healingBlocks == 1,
+        "Fool reshuffle should clear matching healing blocks and preserve other healing blocks")
+    assertEqual(#expired, 2, "Fool reshuffle should emit condition-expired events")
+    assertEqual(expired[1].condition, "silenced", "Fool expiry event should name the condition")
+    assertEqual(expired[1].timing, "fool_reshuffle", "Fool expiry event should carry the timing")
+    assertEqual(expired[1].round, 1, "Fool expiry event should use the completed round")
+    assertEqual(expired[2].condition, "healing_block", "Fool expiry event should report healing block expiry")
+end
+
+local function checkGreaterDoomAttackPairing()
+    local ai = npc_ai.createNPCAI({
+        eventBus = events.createEventBus(),
+        challengeController = {
+            allCombatants = {},
+        },
+    })
+
+    local npc = {
+        id = "brain_spider_1",
+        name = "Brain Spider",
+        zone = "near",
+        rank = "soldier",
+        swords = 3,
+        conditions = {},
+        greaterDooms = {
+            {
+                id = "web",
+                name = "Web",
+                activation = "attack_rider",
+                effect = { type = "web", limbs = 4, suppressDamage = true },
+            },
+        },
+    }
+    local pc = {
+        id = "pc_1",
+        name = "Target",
+        zone = "near",
+        isPC = true,
+        conditions = {},
+    }
+
+    ai.hand = { major(17), major(12) }
+
+    local action = ai:decide(npc, { pc })
+    assertTrue(action ~= nil, "NPC should choose an attack when target is in zone")
+    assertEqual(action.card.value, 12, "greater doom attack should use lesser doom as the Attack card")
+    assertEqual(action.greaterDoomCard.value, 17, "greater doom card should be attached as rider")
+    assertEqual(action.greaterDoom.id, "web", "attack rider should carry the selected doom")
+    assertEqual(#ai.hand, 0, "paired doom attack should spend both cards")
+end
+
+local function checkWebGreaterDoomResolution()
+    local bus = events.createEventBus()
+    local zones = zone_system.createZoneRegistry({
+        eventBus = bus,
+    })
+    zones:setRoomZones({
+        zone_system.createZone({ id = "near", name = "Near" }),
+    })
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        zoneSystem = zones,
+    })
+
+    local npc = {
+        id = "brain_spider_1",
+        name = "Brain Spider",
+        isPC = false,
+        zone = "near",
+        swords = 3,
+        conditions = {},
+    }
+    local pc = {
+        id = "pc_1",
+        name = "Target",
+        isPC = true,
+        zone = "near",
+        pentacles = 1,
+        conditions = {},
+        takeWound = function()
+            error("web greater doom should suppress Attack damage")
+        end,
+    }
+
+    local action = {
+        actor = npc,
+        target = pc,
+        card = major(12),
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 10,
+        allEntities = { npc, pc },
+        greaterDoom = {
+            id = "web",
+            name = "Web",
+            effect = { type = "web", limbs = 2, suppressDamage = true },
+        },
+        greaterDoomCard = major(17),
+    }
+
+    resolver:formEngagement(npc, pc)
+    assertTrue(npc.is_engaged and pc.is_engaged, "test setup should start with engagement")
+
+    local result = resolver:resolve(action)
+    assertTrue(result.success, "web attack should hit")
+    assertTrue(pc.conditions.webbed, "web should mark target webbed")
+    assertTrue(pc.conditions.rooted, "web should root target")
+    assertTrue(not npc.is_engaged and not pc.is_engaged,
+        "Rooted effects should immediately disengage everyone engaged with the target")
+    assertTrue(not resolver:hasAnyEngagement(npc) and not resolver:hasAnyEngagement(pc),
+        "Rooted disengagement should clear the zone engagement registry")
+    assertEqual(pc.webbedLimbs, 2, "web should track limbs to recover")
+    assertEqual(result.damageDealt, 0, "web should suppress normal Attack damage")
+
+    local recover = resolver:resolve({
+        actor = pc,
+        card = { name = "Any", value = 1, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+    })
+    assertTrue(recover.success, "first Recover should free one limb")
+    assertEqual(pc.webbedLimbs, 1, "first Recover should decrement webbed limbs")
+    assertTrue(pc.conditions.rooted, "target remains rooted until all limbs are free")
+
+    recover = resolver:resolve({
+        actor = pc,
+        card = { name = "Any", value = 1, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+    })
+    assertTrue(recover.success, "second Recover should clear web")
+    assertEqual(pc.webbedLimbs, 0, "second Recover should clear webbed limb count")
+    assertTrue(not pc.conditions.webbed, "second Recover should clear webbed")
+    assertTrue(not pc.conditions.rooted, "second Recover should clear rooted")
+end
+
+local function checkRecoverClearsBurningDuration()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_weald_recover_burning",
+        name = "Weald Burning Recover",
+        isPC = true,
+        wands = 3,
+        armorSlots = 0,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+
+    local record = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 10,
+        allEntities = { actor },
+    })
+
+    assertTrue(resolved.success, "Weald X Self-Ignition should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_damage"), "Weald X should wound the sorcerer")
+    assertTrue(hasValue(resolved.effects, "maleficence_condition_burning"), "Weald X should apply Burning")
+    assertTrue(actor.conditions.burning, "Weald X should mark the sorcerer Burning")
+    assertTrue(actor.conditions.onFire, "Weald X should sync the legacy onFire condition")
+    assertTrue(actor.onFire, "Weald X should sync actor.onFire")
+    assertEqual(actor.conditionDurations.burning["until"], "recover",
+        "Weald X Burning should last until Recover")
+    local hadStaggered = actor.conditions.staggered == true
+    local hadInjured = actor.conditions.injured == true
+    local woundedTalents = actor.woundedTalents or 0
+    assertTrue(hadStaggered or hadInjured or woundedTalents > 0,
+        "Weald X wound should still leave normal wound state")
+
+    local recover = resolver:resolve({
+        actor = actor,
+        card = { name = "Any", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+    })
+    assertTrue(recover.success, "Recover should clear Weald X Burning")
+    assertTrue(hasValue(recover.effects, "recovered_burning"), "Recover should report Burning cleared")
+    assertTrue(hasValue(recover.effects, "recovered_duration_cleared"),
+        "Recover should consume the recover-duration marker")
+    assertTrue(not actor.conditions.burning, "Recover should clear Burning")
+    assertTrue(not actor.conditions.onFire, "Recover should clear legacy onFire condition")
+    assertTrue(not actor.onFire, "Recover should clear actor.onFire")
+    assertTrue(actor.conditionDurations == nil or actor.conditionDurations.burning == nil,
+        "Recover should remove the Burning duration marker")
+    assertEqual(actor.conditions.staggered == true, hadStaggered,
+        "Recover should not change Staggered from Self-Ignition")
+    assertEqual(actor.conditions.injured == true, hadInjured,
+        "Recover should not change Injured from Self-Ignition")
+    assertEqual(actor.woundedTalents or 0, woundedTalents,
+        "Recover should not heal the Self-Ignition talent wound")
+end
+
+local function checkBloodyTearsMaleficenceDisfavor()
+    local bus = events.createEventBus()
+    local testRequest = nil
+    bus:on(events.EVENTS.REQUEST_TEST_OF_FATE, function(data)
+        testRequest = data
+    end)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_wastes_bloody_tears",
+        name = "Wastes Bloody Tears",
+        isPC = true,
+        swords = 1,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+
+    local record = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 7,
+        allEntities = { actor },
+    })
+
+    assertTrue(resolved.success, "Wastes VII Bloody Tears should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_condition_bloody_tears"),
+        "Wastes VII should report the Bloody Tears condition")
+    assertTrue(actor.conditions.bloody_tears, "Wastes VII should mark Bloody Tears")
+    assertEqual(actor.conditionDurations.bloody_tears["until"], "fool_reshuffle",
+        "Wastes VII Bloody Tears should last until the next Fool reshuffle")
+
+    local target = base_entity.createEntity({
+        id = "npc_bloody_tears_target",
+        name = "Bloody Tears Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local attack = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+    })
+    assertTrue(not attack.success, "Bloody Tears should impose disfavor in combat")
+    assertEqual(attack.favorModifier, -3, "Bloody Tears combat disfavor should subtract 3")
+    assertTrue(hasValue(attack.effects, "bloody_tears_vision_disfavor"),
+        "Bloody Tears combat disfavor should be reported")
+    assertTrue(hasValue(attack.effects, "action_disfavor"),
+        "Bloody Tears should use the Challenge Action disfavor channel")
+
+    local pending = resolver:resolve({
+        actor = actor,
+        card = { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        visionBased = true,
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(pending.pendingTestOfFate, "vision-based Test Fate should still open the async test flow")
+    assertTrue(testRequest ~= nil, "vision-based Test Fate should emit a request")
+    assertEqual(testRequest.favor, false, "Bloody Tears should pass disfavor to vision-based Tests of Fate")
+    assertTrue(hasValue(pending.effects, "bloody_tears_vision_disfavor"),
+        "Bloody Tears Test Fate disfavor should be reported")
+end
+
+local function checkAngelicChantBlocksStealth()
+    local bus = events.createEventBus()
+    local testRequests = 0
+    bus:on(events.EVENTS.REQUEST_TEST_OF_FATE, function()
+        testRequests = testRequests + 1
+    end)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_welkin_angelic_chant",
+        name = "Welkin Angelic Chant",
+        isPC = true,
+        pentacles = 3,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+
+    local record = resolver:triggerMaleficence(actor, "welkin", "smoke_test", {
+        spell = { id = "heavenfire", branch = "welkin" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 5,
+        allEntities = { actor },
+    })
+
+    assertTrue(resolved.success, "Welkin V Angelic Chant should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_condition_angelic_chant"),
+        "Welkin V should report the Angelic Chant condition")
+    assertTrue(actor.conditions.angelic_chant, "Welkin V should mark Angelic Chant")
+    assertEqual(actor.conditionDurations.angelic_chant["until"], "fool_reshuffle",
+        "Welkin V Angelic Chant should last until the next Fool reshuffle")
+
+    local stealth = resolver:resolve({
+        actor = actor,
+        card = { name = "Three of Pentacles", value = 3, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        stealth = true,
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+
+    assertTrue(not stealth.pendingTestOfFate, "Angelic Chant should block stealth before the async test flow")
+    assertTrue(not stealth.success, "Angelic Chant should make stealth impossible")
+    assertTrue(hasValue(stealth.effects, "stealth_impossible"), "blocked stealth should report stealth impossible")
+    assertTrue(hasValue(stealth.effects, "angelic_chant_stealth_blocked"),
+        "blocked stealth should report Angelic Chant")
+    assertEqual(testRequests, 0, "blocked Angelic Chant stealth should not emit a Test Fate request")
+end
+
+local function checkRustFogNotchesGuildMetalGear()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_wastes_rust_fog",
+        name = "Wastes Rust Fog",
+        isPC = true,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    actor.inventory = inventory.createInventory()
+    local dagger = inventory.createItemFromTemplate("dagger")
+    local torch = inventory.createItemFromTemplate("torch")
+    actor.inventory:addItem(dagger, inventory.LOCATIONS.HANDS)
+    actor.inventory:addItem(torch, inventory.LOCATIONS.PACK)
+
+    local ally = base_entity.createEntity({
+        id = "pc_wastes_rust_fog_ally",
+        name = "Rust Fog Ally",
+        isPC = true,
+    })
+    ally.inventory = inventory.createInventory()
+    local ironArmor = inventory.createItemFromTemplate("iron_armor")
+    local rope = inventory.createItemFromTemplate("rope")
+    ally.inventory:addItem(ironArmor, inventory.LOCATIONS.BELT)
+    ally.inventory:addItem(rope, inventory.LOCATIONS.PACK)
+
+    local bystander = base_entity.createEntity({
+        id = "npc_wastes_rust_fog_bystander",
+        name = "Rust Fog Bystander",
+        isPC = false,
+    })
+    bystander.inventory = inventory.createInventory()
+    local npcSword = inventory.createItemFromTemplate("longsword")
+    bystander.inventory:addItem(npcSword, inventory.LOCATIONS.HANDS)
+
+    local record = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 4,
+        allEntities = { actor, ally, bystander },
+    })
+
+    assertTrue(resolved.success, "Wastes IV Rust Fog should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_items_notched"),
+        "Wastes IV should report notched inventory")
+    assertEqual(#resolved.notchedItems, 2, "Rust Fog should Notch guild metal gear only")
+    assertEqual(dagger.notches, 2, "Rust Fog should add two Notches to metal weapons")
+    assertTrue(dagger.destroyed, "two Notches should destroy a normal dagger")
+    assertEqual(ironArmor.notches, 2, "Rust Fog should add two Notches to iron armor")
+    assertTrue(ironArmor.destroyed, "two Notches should destroy normal iron armor")
+    assertEqual(torch.notches, 0, "Rust Fog should not Notch non-metal torches")
+    assertTrue(not torch.destroyed, "Rust Fog should not destroy non-metal torches")
+    assertEqual(rope.notches, 0, "Rust Fog should not Notch non-metal rope")
+    assertTrue(not rope.destroyed, "Rust Fog should not destroy non-metal rope")
+    assertEqual(npcSword.notches, 0, "guild-scoped Rust Fog should not Notch non-guild NPC gear")
+    assertTrue(not npcSword.destroyed, "guild-scoped Rust Fog should not destroy non-guild NPC gear")
+end
+
+local function checkWelkinItemTransformMaleficence()
+    do
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_welkin_weapons_to_tools",
+            name = "Welkin Weapons To Tools",
+            isPC = true,
+            zone = "sanctum",
+            talents = {
+                magic_of_the_welkin = { mastered = true },
+            },
+        })
+        actor.inventory = inventory.createInventory()
+        local sword = inventory.createItemFromTemplate("longsword")
+        local ironSpear = inventory.createItem({
+            name = "Iron Spear",
+            size = 2,
+            weaponType = "spear",
+            properties = { material = "iron" },
+        })
+        actor.inventory:addItem(sword, inventory.LOCATIONS.HANDS)
+        actor.inventory:addItem(ironSpear, inventory.LOCATIONS.PACK)
+
+        local foe = base_entity.createEntity({
+            id = "npc_welkin_weapons_to_tools",
+            name = "Weapon-Bearing Foe",
+            isPC = false,
+            zone = "sanctum",
+        })
+        foe.inventory = inventory.createInventory()
+        local bow = inventory.createItemFromTemplate("bow")
+        foe.inventory:addItem(bow, inventory.LOCATIONS.HANDS)
+
+        local distant = base_entity.createEntity({
+            id = "npc_welkin_distant_weapon",
+            name = "Distant Weapon-Bearer",
+            isPC = false,
+            zone = "crypt",
+        })
+        distant.inventory = inventory.createInventory()
+        local distantDagger = inventory.createItemFromTemplate("dagger")
+        distant.inventory:addItem(distantDagger, inventory.LOCATIONS.HANDS)
+
+        local record = resolver:triggerMaleficence(actor, "welkin", "smoke_test", {
+            spell = { id = "heavenfire", branch = "welkin" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 7,
+            allEntities = { actor, foe, distant },
+        })
+
+        assertTrue(resolved.success, "Welkin VII Weapons to Tools should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_items_transformed"),
+            "Welkin VII should report transformed items")
+        assertTrue(hasValue(resolved.effects, "maleficence_transform_weapon_to_tool"),
+            "Welkin VII should report the weapon-to-tool transform")
+        assertEqual(#resolved.transformedItems, 2, "Welkin VII should transform non-iron weapons in the room")
+        assertTrue(not sword.isWeapon and sword.properties.tool,
+            "Welkin VII should permanently transform a carried sword into a tool")
+        assertTrue(sword.transformedByMaleficence and sword.maleficenceTransform.to == "tool",
+            "Welkin VII should record permanent transform metadata")
+        assertTrue(not bow.isWeapon and bow.properties.tool,
+            "Welkin VII should transform enemy weapons in the sorcerer's room")
+        assertTrue(ironSpear.isWeapon, "Welkin VII should not transform explicitly iron weapons")
+        assertEqual(ironSpear.weaponType, "spear", "Welkin VII should preserve iron weapon type")
+        assertTrue(distantDagger.isWeapon, "Welkin VII should not transform weapons outside the room")
+    end
+
+    do
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_welkin_scarabs",
+            name = "Welkin Scarabs",
+            isPC = true,
+            zone = "sanctum",
+            talents = {
+                magic_of_the_welkin = { mastered = true },
+            },
+        })
+        actor.inventory = inventory.createInventory()
+        local coins = inventory.createItemFromTemplate("gold_coins_15")
+        local ring = inventory.createItemFromTemplate("ruby_ring")
+        local rope = inventory.createItemFromTemplate("rope")
+        actor.inventory:addItem(coins, inventory.LOCATIONS.PACK)
+        actor.inventory:addItem(ring, inventory.LOCATIONS.PACK)
+        actor.inventory:addItem(rope, inventory.LOCATIONS.PACK)
+
+        local ally = base_entity.createEntity({
+            id = "pc_welkin_scarabs_ally",
+            name = "Scarabs Ally",
+            isPC = true,
+            zone = "sanctum",
+        })
+        ally.inventory = inventory.createInventory()
+        local allyRing = inventory.createItemFromTemplate("ruby_ring")
+        ally.inventory:addItem(allyRing, inventory.LOCATIONS.PACK)
+
+        local record = resolver:triggerMaleficence(actor, "welkin", "smoke_test", {
+            spell = { id = "heavenfire", branch = "welkin" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 11,
+            allEntities = { actor, ally },
+        })
+
+        assertTrue(resolved.success, "Welkin Page Scarabs of Greed should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_transform_treasure_to_scarabs"),
+            "Welkin Page should report the treasure-to-scarabs transform")
+        assertEqual(#resolved.transformedItems, 2, "Welkin Page should transform the sorcerer's coins and gems")
+        assertTrue(coins.properties.scarabs and not currency.isCurrencyItem(coins),
+            "Welkin Page should turn coins into non-currency scarabs")
+        assertTrue(ring.properties.scarabs and ring.properties.value == nil,
+            "Welkin Page should turn jewelry into valueless scarabs")
+        assertTrue(not rope.properties.scarabs, "Welkin Page should not transform ordinary gear")
+        assertTrue(not allyRing.properties.scarabs, "Welkin Page should only transform treasure on the sorcerer")
+    end
+end
+
+local function checkWoodWarpsDestroysRoomWood()
+    local bus = events.createEventBus()
+    local trapEvents = {}
+    bus:on(events.EVENTS.TRAP_TRIGGERED, function(data)
+        trapEvents[#trapEvents + 1] = data
+    end)
+    local manager = room_manager.createRoomManager({
+        eventBus = bus,
+    })
+    local room = room_manager.createRoomInstance({
+        id = "wood_warp_room",
+        name = "Wood Warp Room",
+        description = "A room with a trapped wooden chest.",
+        features = {
+            {
+                id = "trapped_wooden_chest",
+                name = "wooden chest",
+                type = "container",
+                material = "wood",
+                state = "closed",
+                trap = {
+                    damage = 1,
+                    description = "Splinters and sprung hinges slash the nearest adventurer.",
+                },
+            },
+            {
+                id = "stone_plinth",
+                name = "stone plinth",
+                type = "feature",
+                material = "stone",
+                state = "intact",
+            },
+        },
+    }, "wood_warp_room")
+    manager:registerRoom(room)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        roomManager = manager,
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_weald_wood_warps",
+        name = "Weald Wood Warps",
+        isPC = true,
+        zone = "sanctum",
+        location = "wood_warp_room",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    actor.inventory = inventory.createInventory()
+    local torch = inventory.createItemFromTemplate("torch")
+    local wand = inventory.createItemFromTemplate("wand_archwood")
+    local lantern = inventory.createItemFromTemplate("lantern")
+    actor.inventory:addItem(torch, inventory.LOCATIONS.HANDS)
+    actor.inventory:addItem(wand, inventory.LOCATIONS.PACK)
+    actor.inventory:addItem(lantern, inventory.LOCATIONS.PACK)
+
+    local foe = base_entity.createEntity({
+        id = "npc_weald_wood_warps",
+        name = "Wooden Bow Foe",
+        isPC = false,
+        zone = "sanctum",
+        location = "wood_warp_room",
+    })
+    foe.inventory = inventory.createInventory()
+    local bow = inventory.createItemFromTemplate("bow")
+    foe.inventory:addItem(bow, inventory.LOCATIONS.HANDS)
+
+    local distant = base_entity.createEntity({
+        id = "npc_weald_wood_warps_distant",
+        name = "Distant Torchbearer",
+        isPC = false,
+        zone = "crypt",
+        location = "distant_crypt",
+    })
+    distant.inventory = inventory.createInventory()
+    local distantTorch = inventory.createItemFromTemplate("torch")
+    distant.inventory:addItem(distantTorch, inventory.LOCATIONS.HANDS)
+
+    local record = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 8,
+        allEntities = { actor, foe, distant },
+        nearestTrapTarget = actor,
+    })
+
+    assertTrue(resolved.success, "Weald VIII Wood Warps should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_items_destroyed"),
+        "Weald VIII should report destroyed wooden items")
+    assertEqual(#resolved.destroyedItems, 3, "Wood Warps should destroy wooden objects in the room")
+    assertTrue(torch.destroyed, "Wood Warps should destroy torches as wooden objects")
+    assertTrue(wand.destroyed, "Wood Warps should destroy archwood wands")
+    assertTrue(bow.destroyed, "Wood Warps should destroy bows in the room")
+    assertTrue(not lantern.destroyed, "Wood Warps should not destroy non-wood lanterns")
+    assertTrue(not distantTorch.destroyed, "Wood Warps should not destroy wooden objects outside the room")
+    assertTrue(hasValue(resolved.effects, "maleficence_room_wood_destroyed"),
+        "Weald VIII should report destroyed wooden room features")
+    assertTrue(hasValue(resolved.effects, "maleficence_wood_traps_triggered"),
+        "Weald VIII should trigger traps on wooden doors or chests")
+    assertEqual(room.features[1].state, "destroyed", "Weald VIII should destroy wooden trapped features")
+    assertTrue(room.features[1].trap.triggered and room.features[1].trap.triggeredByMaleficence,
+        "Weald VIII should mark the wooden feature trap triggered by maleficence")
+    assertEqual(room.features[2].state, "intact", "Weald VIII should leave non-wood room features intact")
+    assertEqual(#resolved.triggeredWoodTraps, 1, "Weald VIII should record triggered wooden traps")
+    assertEqual(#trapEvents, 1, "Weald VIII should emit a trap-triggered event")
+    assertEqual(trapEvents[1].source, "maleficence", "Weald VIII trap events should retain maleficence source")
+    assertEqual(actor.woundedTalents, 1, "Weald VIII wooden trap should affect the nearest target")
+end
+
+local function checkLightningThroughMetalWoundsRoomCarriers()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_weald_lightning_metal",
+        name = "Weald Lightning Metal",
+        isPC = true,
+        zone = "sanctum",
+        armorSlots = 0,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    actor.inventory = inventory.createInventory()
+    actor.inventory:addItem(inventory.createItemFromTemplate("dagger"), inventory.LOCATIONS.HANDS)
+
+    local ally = base_entity.createEntity({
+        id = "pc_weald_lightning_nonmetal",
+        name = "Nonmetal Ally",
+        isPC = true,
+        zone = "sanctum",
+        armorSlots = 0,
+    })
+    ally.inventory = inventory.createInventory()
+    ally.inventory:addItem(inventory.createItemFromTemplate("torch"), inventory.LOCATIONS.HANDS)
+
+    local foe = base_entity.createEntity({
+        id = "npc_weald_lightning_metal",
+        name = "Metal-Armed Foe",
+        isPC = false,
+        zone = "sanctum",
+        health = 2,
+        defense = 0,
+    })
+    foe.inventory = inventory.createInventory()
+    foe.inventory:addItem(inventory.createItemFromTemplate("longsword"), inventory.LOCATIONS.HANDS)
+
+    local distant = base_entity.createEntity({
+        id = "npc_weald_lightning_distant",
+        name = "Distant Metal Foe",
+        isPC = false,
+        zone = "crypt",
+        health = 2,
+        defense = 0,
+    })
+    distant.inventory = inventory.createInventory()
+    distant.inventory:addItem(inventory.createItemFromTemplate("dagger"), inventory.LOCATIONS.HANDS)
+
+    local record = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 6,
+        allEntities = { actor, ally, foe, distant },
+    })
+
+    assertTrue(resolved.success, "Weald VI Lightning Through Metal should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_room_metal_wound"),
+        "Weald VI should report room metal Wounds")
+    assertEqual(#resolved.metalWoundTargets, 2, "Weald VI should Wound room creatures carrying metal")
+    assertTrue((actor.woundedTalents or 0) == 1 or actor.conditions.staggered or actor.conditions.injured,
+        "Weald VI should Wound the metal-carrying sorcerer")
+    assertEqual(foe.npcHealth, 1, "Weald VI should Wound metal-carrying foes in the room")
+    assertTrue(not ally.conditions.staggered and not ally.conditions.injured,
+        "Weald VI should not Wound non-metal carriers")
+    assertEqual(distant.npcHealth, 2, "Weald VI should not Wound metal carriers outside the room")
+end
+
+local function checkDemonicFliesDestroyRoomPerishables()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_wastes_demonic_flies",
+        name = "Wastes Demonic Flies",
+        isPC = true,
+        zone = "sanctum",
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    actor.inventory = inventory.createInventory()
+    local freshGame = inventory.createItemFromTemplate("fresh_game")
+    local salt = inventory.createItemFromTemplate("salt")
+    actor.inventory:addItem(freshGame, inventory.LOCATIONS.PACK)
+    actor.inventory:addItem(salt, inventory.LOCATIONS.PACK)
+
+    local ally = base_entity.createEntity({
+        id = "pc_wastes_demonic_flies_ally",
+        name = "Perishable Ally",
+        isPC = true,
+        zone = "sanctum",
+    })
+    ally.inventory = inventory.createInventory()
+    local cookedMeal = inventory.createItemFromTemplate("cooked_game_meal")
+    ally.inventory:addItem(cookedMeal, inventory.LOCATIONS.PACK)
+
+    local distant = base_entity.createEntity({
+        id = "pc_wastes_demonic_flies_distant",
+        name = "Distant Perishables",
+        isPC = true,
+        zone = "crypt",
+    })
+    distant.inventory = inventory.createInventory()
+    local distantMeal = inventory.createItemFromTemplate("cooked_game_meal")
+    distant.inventory:addItem(distantMeal, inventory.LOCATIONS.PACK)
+
+    local record = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 5,
+        allEntities = { actor, ally, distant },
+    })
+
+    assertTrue(resolved.success, "Wastes V Demonic Flies should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_items_destroyed"),
+        "Wastes V should report destroyed perishables")
+    assertEqual(#resolved.destroyedItems, 2, "Demonic Flies should destroy perishables in the room")
+    assertTrue(freshGame.destroyed, "Demonic Flies should destroy fresh game as perishable")
+    assertTrue(cookedMeal.destroyed, "Demonic Flies should destroy cooked meals as perishable")
+    assertTrue(not salt.destroyed, "Demonic Flies should leave non-perishable supplies alone")
+    assertTrue(not distantMeal.destroyed, "Demonic Flies should not destroy perishables outside the room")
+end
+
+local function checkMaleficenceRoomFeaturesAndHazards()
+    do
+        local bus = events.createEventBus()
+        local manager = room_manager.createRoomManager({ eventBus = bus })
+        manager:registerRoom(room_manager.createRoomInstance({
+            id = "nightmare_chamber",
+            name = "Nightmare Chamber",
+            features = {},
+        }, "nightmare_chamber"))
+
+        local resolver = action_resolver.createActionResolver({
+            eventBus = bus,
+            roomManager = manager,
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_weird_nightmare_idols",
+            name = "Weird Nightmare Idols",
+            isPC = true,
+            location = "nightmare_chamber",
+            talents = {
+                magic_of_the_weird = { mastered = true },
+            },
+        })
+
+        local record = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+            spell = { id = "illusion", branch = "weird" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 2,
+            roomManager = manager,
+        })
+        local room = manager:getRoom("nightmare_chamber")
+
+        assertTrue(resolved.success, "Weird II Nightmare Idol-Builders should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_room_feature_nightmare_idols"),
+            "Weird II should report the nightmare idol room feature")
+        assertEqual(#resolved.roomFeatures, 1, "Weird II should record one room feature")
+        assertEqual(room.features[1].feature, "nightmare_idols",
+            "Weird II should persist nightmare idols on the active room")
+    end
+
+    do
+        local room = { id = "shrieker_grotto", features = {} }
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_weald_shriekers",
+            name = "Weald Shriekers",
+            isPC = true,
+            talents = {
+                magic_of_the_weald = { mastered = true },
+            },
+        })
+
+        local record = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+            spell = { id = "control_animal", branch = "weald" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 2,
+            room = room,
+        })
+
+        assertTrue(resolved.success, "Weald II Shrieker Bloom should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_room_hazard_shriekers"),
+            "Weald II should report the shrieker hazard")
+        assertEqual(#resolved.roomHazards, 1, "Weald II should record one room hazard")
+        assertEqual(room.features[1].hazard, "shriekers",
+            "Weald II should persist shriekers as an active room hazard")
+    end
+
+    do
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_welkin_prophecy",
+            name = "Welkin Prophecy",
+            isPC = true,
+            talents = {
+                magic_of_the_welkin = { mastered = true },
+            },
+        })
+
+        local record = resolver:triggerMaleficence(actor, "welkin", "smoke_test", {
+            spell = { id = "heavenfire", branch = "welkin" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 9,
+        })
+
+        assertTrue(resolved.success, "Welkin IX Ghostly Prophecy should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_room_feature_doom_prophecy"),
+            "Welkin IX should report the doom prophecy feature")
+        assertEqual(resolved.roomFeatures[1].feature, "doom_prophecy",
+            "Welkin IX should preserve doom prophecy feature metadata even without a room")
+        assertTrue(not resolved.unappliedEffects,
+            "room feature and hazard maleficence effects should no longer be left unapplied")
+    end
+end
+
+local function checkWeirdRandomInspirationDisposition()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_weird_random_inspiration",
+        name = "Weird Random Inspiration",
+        isPC = true,
+        zone = "glyph_circle",
+        disposition = "distaste",
+        dispositionSeverity = 2,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    local ally = base_entity.createEntity({
+        id = "pc_weird_random_inspiration_ally",
+        name = "Inspired Ally",
+        isPC = true,
+        zone = "glyph_circle",
+        disposition = "trust",
+        dispositionSeverity = 1,
+    })
+    local distant = base_entity.createEntity({
+        id = "pc_weird_random_inspiration_distant",
+        name = "Distant Uninspired",
+        isPC = true,
+        zone = "outer_hall",
+        disposition = "joy",
+        dispositionSeverity = 2,
+    })
+
+    local record = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+        spell = { id = "illusion", branch = "weird" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 4,
+        allEntities = { actor, ally, distant },
+        dispositionCard = { name = "Queen of Cups", value = 13, suit = constants.SUITS.CUPS },
+    })
+
+    assertTrue(resolved.success, "Weird IV Random Inspiration should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_zone_inspired_random_disposition"),
+        "Weird IV should report the zone inspiration")
+    assertTrue(hasValue(resolved.effects, "maleficence_inspired_fear"),
+        "Queen/King random Disposition range should inspire Fear")
+    assertEqual(#resolved.inspiredDispositions, 2, "Weird IV should inspire everyone in the sorcerer's zone")
+    assertEqual(actor.disposition, "fear", "Weird IV should set the sorcerer's inspired Disposition")
+    assertEqual(actor.dispositionSeverity, 2, "Weird IV should use basic Disposition severity")
+    assertTrue(actor.conditions.inspired and actor.conditions.inspiredRandomDisposition,
+        "Weird IV should mark the sorcerer Inspired")
+    assertEqual(actor.maleficenceInspiration.previousDisposition, "distaste",
+        "Weird IV should retain previous Disposition metadata")
+    assertEqual(ally.disposition, "fear", "Weird IV should set allies in the zone to the same random Disposition")
+    assertTrue(ally.conditions.inspired_fear, "Weird IV should tag the inspired Disposition")
+    assertEqual(distant.disposition, "joy", "Weird IV should not affect creatures outside the zone")
+    assertTrue(not distant.conditions.inspiredRandomDisposition,
+        "Weird IV should not mark creatures outside the zone Inspired")
+end
+
+local function checkWeirdSleepTestMaleficence()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_weird_sleep_test",
+        name = "Weird Sleep Test Sorcerer",
+        isPC = true,
+        wands = 3,
+        zone = "dais",
+        location = "sleep_chamber",
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    local ally = base_entity.createEntity({
+        id = "pc_weird_sleep_test_ally",
+        name = "Sleep Test Ally",
+        isPC = true,
+        wands = 1,
+        zone = "alcove",
+        location = "sleep_chamber",
+    })
+    local distant = base_entity.createEntity({
+        id = "pc_weird_sleep_test_distant",
+        name = "Distant Awake",
+        isPC = true,
+        wands = 0,
+        zone = "dais",
+        location = "outer_hall",
+    })
+
+    local record = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+        spell = { id = "illusion", branch = "weird" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 3,
+        allEntities = { actor, ally, distant },
+        roomTestCards = {
+            [actor.id] = { name = "Knight of Wands", value = 12, suit = constants.SUITS.WANDS },
+            [ally.id] = { name = "Five of Cups", value = 5, suit = constants.SUITS.CUPS },
+            [distant.id] = { name = "Ace of Cups", value = 1, suit = constants.SUITS.CUPS },
+        },
+    })
+
+    assertTrue(resolved.success, "Weird III Sleep Test should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_room_test_wands"),
+        "Weird III should report the Wands room test")
+    assertTrue(hasValue(resolved.effects, "maleficence_room_test_knocked_out"),
+        "Weird III should report Knockout failures")
+    assertEqual(#resolved.roomTests, 2, "Weird III should test everyone in the sorcerer's room")
+    assertEqual(#resolved.roomTestFailures, 1, "Weird III should record failed Wands tests")
+    assertTrue(not actor.conditions.knocked_out and not actor.conditions.sleeping,
+        "successful Wands tests should avoid Knockout")
+    assertTrue(ally.conditions.knocked_out and ally.conditions.knockout and ally.conditions.sleeping,
+        "failed Wands tests should apply Knockout and deep sleep")
+    assertTrue(ally.maleficenceSleep and ally.maleficenceSleep.deep,
+        "Weird III Knockout should record maleficence sleep metadata")
+    assertTrue(not distant.conditions.knocked_out and not distant.conditions.sleeping,
+        "Weird III should not test creatures outside the sorcerer's room")
+    assertTrue(not resolved.unappliedEffects, "room-test maleficence should not be left unapplied")
+end
+
+local function checkPermanentBodyChangeMaleficence()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_body_change_maleficence",
+        name = "Body Change Sorcerer",
+        isPC = true,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+
+    local goldenRecord = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local golden = resolver:resolvePendingMaleficence(actor, {
+        record = goldenRecord,
+        value = 11,
+    })
+
+    assertTrue(golden.success, "Wastes Page Golden Eyes should resolve from table data")
+    assertTrue(hasValue(golden.effects, "maleficence_body_change_golden_eyes"),
+        "Wastes Page should report Golden Eyes as a body change")
+    assertEqual(actor.bodyChanges[1].id, "golden_eyes", "Golden Eyes should be stored on the sorcerer")
+    assertTrue(actor.bodyChanges[1].permanent, "Golden Eyes should be permanent")
+    assertTrue(actor.conditions.golden_eyes and actor.conditions.body_changed,
+        "Golden Eyes should expose condition flags")
+    assertTrue(not golden.unappliedEffects, "body change maleficence should not be left unapplied")
+
+    local thirdEyeRecord = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+        spell = { id = "illusion", branch = "weird" },
+    })
+    local thirdEye = resolver:resolvePendingMaleficence(actor, {
+        record = thirdEyeRecord,
+        value = 12,
+    })
+
+    assertTrue(thirdEye.success, "Weird Knight Third Eye should resolve from table data")
+    assertTrue(hasValue(thirdEye.effects, "maleficence_body_change_third_eye"),
+        "Weird Knight should report Third Eye as a body change")
+    assertEqual(actor.bodyChanges[2].id, "third_eye", "Third Eye should append to body changes")
+    assertEqual(actor.bodyChanges[2].branch, "weird", "body change metadata should retain branch")
+    assertTrue(actor.conditions.third_eye, "Third Eye should expose a condition flag")
+end
+
+local function checkMassGraveStenchAreaCondition()
+    local bus = events.createEventBus()
+    local manager = room_manager.createRoomManager({ eventBus = bus })
+    manager:registerRoom(room_manager.createRoomInstance({
+        id = "mass_grave",
+        name = "Mass Grave",
+        features = {},
+    }, "mass_grave"))
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        roomManager = manager,
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_wastes_stench",
+        name = "Wastes Stench Sorcerer",
+        isPC = true,
+        location = "mass_grave",
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    local ally = base_entity.createEntity({
+        id = "pc_wastes_stench_ally",
+        name = "Stench Ally",
+        isPC = true,
+        location = "mass_grave",
+    })
+    local npc = base_entity.createEntity({
+        id = "npc_wastes_stench",
+        name = "Unstressed NPC",
+        isPC = false,
+        location = "mass_grave",
+    })
+
+    local record = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 3,
+        guild = { actor, ally },
+        allEntities = { actor, ally, npc },
+        roomManager = manager,
+    })
+    local room = manager:getRoom("mass_grave")
+
+    assertTrue(resolved.success, "Wastes III Mass-Grave Stench should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_area_condition_stressed"),
+        "Wastes III should report the Stressed area condition")
+    assertTrue(hasValue(resolved.effects, "maleficence_area_condition_applied"),
+        "Wastes III should apply the condition to the exposed guild")
+    assertEqual(#resolved.areaConditions, 1, "Wastes III should record one area condition")
+    assertEqual(room.features[1].type, "area_condition", "Wastes III should persist an area condition feature")
+    assertEqual(room.features[1].condition, "stressed", "Wastes III should persist the Stressed area condition")
+    assertEqual(#resolved.areaConditionTargets, 2, "Wastes III should affect the current guild")
+    assertTrue(actor.conditions.stressed and ally.conditions.stressed,
+        "Wastes III should mark guild members Stressed")
+    assertTrue(not npc.conditions.stressed, "Wastes III should not stress non-guild NPCs via guild targeting")
+    assertTrue(not resolved.unappliedEffects, "area-condition maleficence should not be left unapplied")
+end
+
+local function checkMaleficenceSpawnEffects()
+    do
+        local controller = { npcs = {}, allCombatants = {} }
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+            challengeController = controller,
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_wastes_imp_spawn",
+            name = "Wastes Imp Caller",
+            isPC = true,
+            zone = "sanctum",
+            location = "rat_chapel",
+            talents = {
+                magic_of_the_wastes = { mastered = true },
+            },
+        })
+        controller.allCombatants[#controller.allCombatants + 1] = actor
+
+        local record = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+            spell = { id = "necromancy", branch = "wastes" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 1,
+            minorDiscardCard = { name = "Four of Pentacles", value = 4, suit = constants.SUITS.PENTACLES },
+            challengeController = controller,
+        })
+
+        assertTrue(resolved.success, "Wastes I Imp Manifest should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_spawn_imp"),
+            "Wastes I should report imp spawning")
+        assertEqual(#resolved.spawnedEntities, 4, "Wastes I should spawn imps equal to the minor discard value")
+        assertEqual(#controller.npcs, 4, "spawned imps should join the active Challenge NPC list")
+        assertEqual(#controller.allCombatants, 5, "spawned imps should join active combatants")
+        assertEqual(resolved.spawnedEntities[1].blueprintId, "imp", "Wastes I should create imp blueprints")
+        assertEqual(resolved.spawnedEntities[1].zone, "sanctum", "spawned imps should appear in the sorcerer's zone")
+        assertEqual(resolved.spawnedEntities[1].location, "rat_chapel", "spawned imps should appear in the sorcerer's room")
+        assertEqual(resolved.spawnedEntities[1].impDesire, "shinies",
+            "Pentacles discard should give imps the shiny-object desire")
+        assertTrue(actor.maleficenceSpawns and #actor.maleficenceSpawns == 4,
+            "the sorcerer should retain spawned maleficence references")
+        assertTrue(not resolved.unappliedEffects, "imp spawn maleficence should not be left unapplied")
+    end
+
+    do
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_weird_ooze_spawn",
+            name = "Weird Ooze Weeper",
+            isPC = true,
+            zone = "well",
+            location = "salted_vault",
+            talents = {
+                magic_of_the_weird = { mastered = true },
+            },
+        })
+
+        local record = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+            spell = { id = "illusion", branch = "weird" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 6,
+            severalSpawnCount = 2,
+        })
+
+        assertTrue(resolved.success, "Weird VI Ooze Tears should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_spawn_small_ooze"),
+            "Weird VI should report small ooze spawning")
+        assertEqual(#resolved.spawnedEntities, 2, "Weird VI should spawn the requested several small oozes")
+        assertEqual(resolved.spawnedEntities[1].blueprintId, "small_ooze", "Weird VI should use small ooze blueprints")
+        assertEqual(resolved.spawnedEntities[1].zone, "well", "small oozes should appear in the sorcerer's zone")
+    end
+
+    do
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_weird_hekatephage",
+            name = "Weird Spirit Magnet",
+            isPC = true,
+            zone = "mirror_nave",
+            location = "moon_room",
+            talents = {
+                magic_of_the_weird = { mastered = true },
+            },
+        })
+
+        local record = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+            spell = { id = "illusion", branch = "weird" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 13,
+        })
+        local spirit = resolved.spawnedEntities[1]
+
+        assertTrue(resolved.success, "Weird Queen Hekatephage should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_spawn_hekatephage"),
+            "Weird Queen should report hekatephage spawning")
+        assertEqual(spirit.blueprintId, "hekatephage", "Weird Queen should spawn a hekatephage")
+        assertTrue(spirit.conditions.shrouded and spirit.conditions.intangible,
+            "hekatephage should preserve its Shrouded and intangible maleficence state")
+        assertEqual(spirit.followsSorcererId, actor.id, "hekatephage should follow the sorcerer")
+        assertTrue(spirit.magicEater and spirit.endsNonConcentrationSpells,
+            "hekatephage should record its magic-eating consequence")
+    end
+
+    do
+        local resolver = action_resolver.createActionResolver({
+            eventBus = events.createEventBus(),
+        })
+        local actor = base_entity.createEntity({
+            id = "pc_welkin_stone_twin",
+            name = "Welkin Twin Source",
+            isPC = true,
+            zone = "statue_court",
+            location = "white_chapel",
+            talents = {
+                magic_of_the_welkin = { mastered = true },
+            },
+        })
+
+        local record = resolver:triggerMaleficence(actor, "welkin", "smoke_test", {
+            spell = { id = "heavenfire", branch = "welkin" },
+        })
+        local resolved = resolver:resolvePendingMaleficence(actor, {
+            record = record,
+            value = 12,
+        })
+        local twin = resolved.spawnedEntities[1]
+
+        assertTrue(resolved.success, "Welkin Knight Stone Twin should resolve from table data")
+        assertTrue(hasValue(resolved.effects, "maleficence_spawn_stone_twin"),
+            "Welkin Knight should report stone twin spawning")
+        assertEqual(twin.blueprintId, "stone_twin", "Welkin Knight should spawn a stone twin")
+        assertEqual(twin.replaceTargetId, actor.id, "stone twin should target the sorcerer for replacement")
+        assertEqual(twin.mission, "kill_and_replace_sorcerer",
+            "stone twin should record its kill-and-replace mission")
+        assertTrue(twin.hostile and twin.conditions.hostile, "stone twin should be hostile")
+    end
+end
+
+local function checkAnimalConvergenceForcedEncounter()
+    local bus = events.createEventBus()
+    local randomEncounterEvents = {}
+    bus:on(events.EVENTS.RANDOM_ENCOUNTER, function(data)
+        randomEncounterEvents[#randomEncounterEvents + 1] = data
+    end)
+
+    local fakeDeck = {
+        drawCount = 0,
+        discardCount = 0,
+        draw = function(self)
+            self.drawCount = self.drawCount + 1
+            return { name = "The Tower", value = 16, is_major = true }
+        end,
+        discard = function(self, _)
+            self.discardCount = self.discardCount + 1
+        end,
+    }
+
+    local manager = watch_manager.createWatchManager({
+        eventBus = bus,
+        gmDeck = fakeDeck,
+    })
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        watchManager = manager,
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_weald_animals",
+        name = "Animal Magnet",
+        isPC = true,
+        zone = "grove",
+        location = "old_forest",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+
+    local record = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 7,
+    })
+
+    assertTrue(resolved.success, "Weald VII Animal Convergence should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_force_encounter"),
+        "Weald VII should schedule a forced encounter")
+    assertTrue(hasValue(resolved.effects, "maleficence_force_encounter_animals"),
+        "Weald VII should preserve its animal encounter filter")
+    assertEqual(#manager.forcedEncounters, 1, "Weald VII should queue one forced encounter")
+    assertEqual(manager.forcedEncounters[1].filter, "animals", "forced encounter should target animals")
+    assertEqual(manager.forcedEncounters[1].nextWatch, 1, "forced encounter should be scheduled for the next watch")
+    assertTrue(not resolved.unappliedEffects, "force-encounter maleficence should not be left unapplied")
+
+    local firstWatch = manager:incrementWatch({ careful = true })
+    assertEqual(fakeDeck.drawCount, 0, "forced encounter watch should not draw from the GM deck")
+    assertEqual(fakeDeck.discardCount, 0, "forced encounter watch should not discard a GM deck card")
+    assertEqual(#firstWatch.meatgrinderResults, 1, "forced encounter should replace the normal Meatgrinder draw")
+    assertEqual(#firstWatch.forcedEncounters, 1, "watch result should expose forced encounters")
+
+    local forced = firstWatch.meatgrinderResults[1]
+    assertEqual(forced.category, watch_manager.MEATGRINDER.RANDOM_ENCOUNTER,
+        "forced encounter should resolve as a random encounter")
+    assertTrue(forced.forced, "forced encounter result should be marked forced")
+    assertEqual(forced.source, "maleficence", "forced encounter should retain maleficence source")
+    assertEqual(forced.filter, "animals", "forced encounter should retain animal filter")
+    assertEqual(#manager.forcedEncounters, 0, "forced encounter should be consumed after the next watch")
+    assertEqual(#randomEncounterEvents, 1, "forced encounter should emit a random encounter event")
+    assertTrue(randomEncounterEvents[1].forced, "emitted random encounter should be marked forced")
+
+    manager:incrementWatch()
+    assertEqual(fakeDeck.drawCount, 1, "normal Meatgrinder draws should resume after forced encounter")
+    assertEqual(fakeDeck.discardCount, 1, "normal Meatgrinder discards should resume after forced encounter")
+end
+
+local function checkProceduralMaleficenceRecords()
+    local bus = events.createEventBus()
+    local environment = environment_manager.createEnvironmentManager({
+        eventBus = bus,
+    })
+    local worldState = {}
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        environmentManager = environment,
+        worldState = worldState,
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_procedure_maleficence",
+        name = "Procedure Keeper",
+        isPC = true,
+        zone = "threshold",
+        location = "green_cavern",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+            magic_of_the_wastes = { mastered = true },
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+
+    local weatherRecord = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "woodweave", branch = "weald" },
+    })
+    local weather = resolver:resolvePendingMaleficence(actor, {
+        record = weatherRecord,
+        value = 4,
+    })
+    assertTrue(weather.success, "Weald IV Underworld Weather should resolve from table data")
+    assertTrue(hasValue(weather.effects, "maleficence_environment_shift"),
+        "environment-shift maleficence should report a structured environment record")
+    assertTrue(hasValue(weather.effects, "maleficence_environment_shift_area"),
+        "environment-shift maleficence should preserve scope")
+    assertEqual(#environment.environmentShifts, 1, "environment manager should retain the weather shift")
+    assertEqual(environment.environmentShifts[1].source, "maleficence",
+        "environment shift should retain maleficence source")
+    assertEqual(environment.environmentShifts[1].scope, "area", "environment shift should retain scope")
+    assertTrue(not weather.unappliedEffects, "environment-shift maleficence should not be left unapplied")
+
+    local diseaseRecord = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "necromancy", branch = "wastes" },
+    })
+    local disease = resolver:resolvePendingMaleficence(actor, {
+        record = diseaseRecord,
+        value = 2,
+    })
+    assertTrue(disease.success, "Wastes II Diseased Ratbirth should resolve from table data")
+    assertTrue(hasValue(disease.effects, "maleficence_gm_adjudication"),
+        "GM-adjudicated maleficence should report a structured hook")
+    assertTrue(hasValue(disease.effects, "maleficence_gm_disease"),
+        "GM-adjudicated maleficence should preserve hook tag")
+    assertEqual(#disease.gmAdjudicationHooks, 1, "result should expose one GM adjudication hook")
+    assertEqual(actor.pendingGMAdjudications[1].tag, "disease",
+        "actor should retain pending GM adjudication hooks")
+    assertEqual(worldState.gmAdjudicationHooks[1].source, "maleficence",
+        "world state should retain GM adjudication hooks")
+    assertTrue(not disease.unappliedEffects, "GM-hook maleficence should not be left unapplied")
+
+    local blightRecord = resolver:triggerMaleficence(actor, "wastes", "smoke_test", {
+        spell = { id = "malediction", branch = "wastes" },
+    })
+    local blight = resolver:resolvePendingMaleficence(actor, {
+        record = blightRecord,
+        value = 14,
+    })
+    assertTrue(blight.success, "Wastes King Regional Blight should resolve from table data")
+    assertTrue(hasValue(blight.effects, "maleficence_world_consequence_region"),
+        "world-consequence maleficence should preserve scope")
+    assertEqual(#worldState.worldConsequences, 1, "world state should retain world consequences")
+    assertEqual(worldState.worldConsequences[1].entryTitle, "Regional Blight",
+        "world consequence should retain table entry title")
+    assertTrue(not blight.unappliedEffects, "world-consequence maleficence should not be left unapplied")
+
+    local nightmareRecord = resolver:triggerMaleficence(actor, "weird", "smoke_test", {
+        spell = { id = "illusion", branch = "weird" },
+    })
+    local nightmare = resolver:resolvePendingMaleficence(actor, {
+        record = nightmareRecord,
+        value = 10,
+    })
+    assertTrue(nightmare.success, "Weird X Embodied Nightmare should resolve from table data")
+    assertTrue(hasValue(nightmare.effects, "maleficence_delayed_next_camp_phase"),
+        "delayed-consequence maleficence should preserve timing")
+    assertEqual(#worldState.delayedConsequences, 1, "world state should retain delayed consequences")
+    assertEqual(actor.delayedMaleficenceConsequences[1].timing, "next_camp_phase",
+        "actor should retain delayed maleficence consequences")
+    assertTrue(not nightmare.unappliedEffects, "delayed-consequence maleficence should not be left unapplied")
+
+    local omenRecord = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local omen = resolver:resolvePendingMaleficence(actor, {
+        record = omenRecord,
+        value = 1,
+    })
+    assertTrue(omen.success, "Weald I Hairless Ape Omen should resolve from table data")
+    assertTrue(hasValue(omen.effects, "maleficence_omen"), "omen maleficence should report an omen")
+    assertEqual(#omen.omens, 1, "result should expose omen records")
+    assertEqual(actor.maleficenceOmens[1].entryTitle, "Hairless Ape Omen",
+        "actor should retain maleficence omen records")
+    assertTrue(not omen.unappliedEffects, "omen maleficence should not be left unapplied")
+end
+
+local function checkPotionDetonationAdjacentInventory()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+        worldState = {},
+    })
+    local actor = base_entity.createEntity({
+        id = "pc_potion_detonation",
+        name = "Potion Carrier",
+        isPC = true,
+        zone = "lab",
+        location = "green_still",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    actor.inventory = inventory.createInventory()
+
+    local rope = inventory.createItem({ name = "Rope", properties = { tool = true, toolType = "rope" } })
+    local potion = inventory.createItemFromTemplate("healing_potion")
+    local dagger = inventory.createItem({ name = "Dagger", weaponType = "dagger", isWeapon = true })
+    local chalk = inventory.createItem({ name = "Chalk", properties = { tool = true, toolType = "marking" } })
+
+    actor.inventory:addItem(rope, "belt")
+    actor.inventory:addItem(potion, "belt")
+    actor.inventory:addItem(dagger, "belt")
+    actor.inventory:addItem(chalk, "pack")
+
+    local record = resolver:triggerMaleficence(actor, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local resolved = resolver:resolvePendingMaleficence(actor, {
+        record = record,
+        value = 5,
+    })
+
+    assertTrue(resolved.success, "Weald V Potion Detonation should resolve from table data")
+    assertTrue(hasValue(resolved.effects, "maleficence_items_destroyed"),
+        "Weald V should destroy carried potion bottles")
+    assertTrue(hasValue(resolved.effects, "maleficence_adjacent_inventory_ruined"),
+        "Weald V should ruin same-sheet adjacent inventory")
+    assertTrue(hasValue(resolved.effects, "maleficence_gm_adjacent_inventory_ruin"),
+        "Weald V should preserve a GM hook for sheet-layout edge cases")
+    assertTrue(potion.destroyed, "Weald V should destroy the potion bottle")
+    assertTrue(rope.destroyed and rope.ruinedByPotionDetonation,
+        "Weald V should ruin the previous belt item adjacent to the potion")
+    assertTrue(dagger.destroyed and dagger.ruinedByPotionDetonation,
+        "Weald V should ruin the next belt item adjacent to the potion")
+    assertTrue(not chalk.destroyed and not chalk.ruined,
+        "Weald V should not ruin non-adjacent inventory in another location")
+    assertEqual(#resolved.ruinedAdjacentItems, 2, "Weald V should record two ruined adjacent items")
+    assertTrue(not resolved.unappliedEffects, "potion detonation maleficence should not be left unapplied")
+end
+
+local function checkChallengeItemActions()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_1",
+        name = "Item User",
+        isPC = true,
+        cups = 3,
+        armorSlots = 0,
+        talents = { nimble = { wounded = false } },
+    })
+    actor.inventory = inventory.createInventory()
+
+    local sword = inventory.createItem({ name = "Sword", size = 1 })
+    local potion = inventory.createItemFromTemplate("healing_potion")
+    local torch = inventory.createItem({ name = "Torch", size = 1 })
+
+    actor.inventory:addItem(sword, inventory.LOCATIONS.HANDS)
+    actor.inventory:addItem(potion, inventory.LOCATIONS.PACK)
+    actor.inventory:addItem(torch, inventory.LOCATIONS.BELT)
+
+    local pullPack = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.PULL_ITEM,
+        itemId = potion.id,
+        swapWithItemId = sword.id,
+    })
+    assertTrue(pullPack.success, "Pull Item from Pack should succeed with a swappable held item")
+    local potionLoc = select(2, actor.inventory:findItem(potion.id))
+    local swordLoc = select(2, actor.inventory:findItem(sword.id))
+    assertEqual(potionLoc, inventory.LOCATIONS.HANDS, "pulled pack item should move to hands")
+    assertEqual(swordLoc, inventory.LOCATIONS.PACK, "held item should swap back to pack")
+
+    actor.conditions.injured = true
+    local usePotion = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = potion.id,
+    })
+    assertTrue(usePotion.success, "Use Item should allow a held item")
+    assertTrue(not actor.conditions.injured, "healing potion should clear a wound through healWound")
+    assertTrue(not actor.inventory:findItem(potion.id), "consumable potion should leave inventory after use")
+
+    local deathDoorActor = base_entity.createEntity({
+        id = "pc_death_door_heal",
+        name = "Death Door Heal Target",
+        isPC = true,
+    })
+    deathDoorActor.conditions.deaths_door = true
+    local deathDoorHealer = base_entity.createEntity({
+        id = "pc_death_door_healer",
+        name = "Death Door Healer",
+        isPC = true,
+        cups = 2,
+    })
+    deathDoorHealer.inventory = inventory.createInventory()
+    local deathDoorPotion = inventory.createItemFromTemplate("healing_potion")
+    deathDoorHealer.inventory:addItem(deathDoorPotion, inventory.LOCATIONS.HANDS)
+    local deathDoorHeal = resolver:resolve({
+        actor = deathDoorHealer,
+        target = deathDoorActor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = deathDoorPotion.id,
+    })
+    assertTrue(deathDoorHeal.success, "Heal effect should save a PC at Death's Door")
+    assertTrue(not deathDoorActor.conditions.deaths_door, "Heal effect should clear Death's Door")
+    assertTrue(deathDoorActor.conditions.stressed, "Heal effect at Death's Door should mark Stressed")
+    assertTrue(not deathDoorHealer.inventory:findItem(deathDoorPotion.id),
+        "Death's Door healing potion should be consumed from the conscious healer")
+
+    local medic = entity_factory.createAdventurer({
+        id = "pc_poultice_medic",
+        name = "Poultice Medic",
+        wands = 1,
+        motifs = { "Battlefield Medic" },
+    })
+    local poultice = inventory.createItemFromTemplate("poultice")
+    medic.inventory:addItem(poultice, inventory.LOCATIONS.HANDS)
+    local poulticeTarget = base_entity.createEntity({
+        id = "pc_poultice_target",
+        name = "Poultice Target",
+        isPC = true,
+        wands = 1,
+    })
+    poulticeTarget:markDeathsDoor(0)
+    local poulticeSave = resolver:resolve({
+        actor = medic,
+        target = poulticeTarget,
+        card = { name = "Eleven of Wands", value = 11, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = poultice.id,
+    })
+    assertTrue(poulticeSave.success, "poultice should save Death's Door target on a successful Wands test")
+    assertEqual(poulticeSave.poulticeTest.attribute, "wands", "poultice should test the injured character's Wands")
+    assertTrue(poulticeSave.poulticeTest.medicalMotif ~= nil, "medical motif should grant favor to poultice saves")
+    assertTrue(not poulticeTarget.conditions.deaths_door, "successful poultice should clear Death's Door")
+    assertTrue(poulticeTarget.conditions.stressed, "successful poultice should mark Stressed")
+    assertTrue(not medic.inventory:findItem(poultice.id), "poultice should be consumed on a save attempt")
+
+    local failedMedic = entity_factory.createAdventurer({
+        id = "pc_poultice_failed_medic",
+        name = "Poultice Failed Medic",
+        wands = 1,
+    })
+    local failedPoultice = inventory.createItemFromTemplate("poultice")
+    failedMedic.inventory:addItem(failedPoultice, inventory.LOCATIONS.HANDS)
+    local failedTarget = base_entity.createEntity({
+        id = "pc_poultice_failed_target",
+        name = "Poultice Failed Target",
+        isPC = true,
+        wands = 1,
+    })
+    failedTarget:markDeathsDoor(0)
+    local poulticeFailure = resolver:resolve({
+        actor = failedMedic,
+        target = failedTarget,
+        card = { name = "Five of Wands", value = 5, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = failedPoultice.id,
+        currentWatch = 0,
+    })
+    assertTrue(not poulticeFailure.success, "failed poultice Wands test should fail the save")
+    assertTrue(failedTarget.conditions.dead, "failed poultice save should kill the Death's Door target")
+    assertEqual(failedTarget.undeadRise.riseAtWatch, 1, "failed poultice save should schedule zombie rise at the next watch")
+    assertTrue(not failedMedic.inventory:findItem(failedPoultice.id), "failed poultice attempt should still consume the item")
+
+    local raisedEvents = {}
+    local raiseBus = events.createEventBus()
+    raiseBus:on(events.EVENTS.UNDEAD_RAISED, function(payload)
+        raisedEvents[#raisedEvents + 1] = payload
+    end)
+    local raiseManager = watch_manager.createWatchManager({
+        eventBus = raiseBus,
+        guild = { failedTarget },
+    })
+    local raiseWatch = raiseManager:incrementWatch()
+    assertEqual(#raiseWatch.undeadRaised, 1, "failed poultice corpse should rise as a zombie on the next watch")
+    assertEqual(raiseWatch.undeadRaised[1].blueprintId, "zombie", "scheduled undead rise should create a zombie")
+    assertEqual(raiseWatch.undeadRaised[1].sourceAdventurerId, failedTarget.id, "raised zombie should retain its source adventurer")
+    assertEqual(#raisedEvents, 1, "scheduled zombie rise should emit an event")
+
+    local catastrophicMedic = entity_factory.createAdventurer({
+        id = "pc_poultice_catastrophic_medic",
+        name = "Poultice Catastrophic Medic",
+        wands = 1,
+    })
+    local catastrophicPoultice = inventory.createItemFromTemplate("poultice")
+    catastrophicMedic.inventory:addItem(catastrophicPoultice, inventory.LOCATIONS.HANDS)
+    local catastrophicTarget = base_entity.createEntity({
+        id = "pc_poultice_catastrophic_target",
+        name = "Poultice Catastrophic Target",
+        isPC = true,
+        wands = 4,
+    })
+    catastrophicTarget:markDeathsDoor(0)
+    local poulticeGreatFailure = resolver:resolve({
+        actor = catastrophicMedic,
+        target = catastrophicTarget,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = catastrophicPoultice.id,
+        poulticeGreatFailure = true,
+    })
+    assertTrue(not poulticeGreatFailure.success, "poultice great failure should fail regardless of total")
+    assertTrue(catastrophicTarget.conditions.dead, "poultice great failure should kill the target")
+    assertTrue(poulticeGreatFailure.undeadRaised ~= nil, "poultice great failure should instantly raise a zombie")
+    assertEqual(poulticeGreatFailure.undeadRaised.blueprintId, "zombie", "instant undead rise should create a zombie")
+
+    local wardActor = base_entity.createEntity({
+        id = "pc_garlic_ward",
+        name = "Garlic Warder",
+        isPC = true,
+        cups = 0,
+        wands = 3,
+    })
+    wardActor.inventory = inventory.createInventory()
+    local garlic = inventory.createItemFromTemplate("garlic")
+    wardActor.inventory:addItem(garlic, inventory.LOCATIONS.HANDS)
+    local zombie = entity_factory.createEntity("zombie", { name = "Ward Target" })
+    zombie.zone = "near"
+    local garlicWard = resolver:resolve({
+        actor = wardActor,
+        target = zombie,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = garlic.id,
+        targetInitiative = 10,
+        destinationZone = "far",
+    })
+    assertTrue(garlicWard.success, "brandished garlic should use Wands to affect undead")
+    assertEqual(garlicWard.itemUseAttribute, "wands", "garlic ward should be a Wands item action")
+    assertEqual(zombie.zone, "far", "successful garlic ward should displace the affected undead")
+    assertTrue(wardActor.inventory:findItem(garlic.id), "garlic should not be consumed by brandishing")
+
+    local livingTarget = base_entity.createEntity({
+        id = "living_garlic_target",
+        name = "Living Target",
+        isPC = false,
+        health = 1,
+        defense = 0,
+    })
+    local garlicNoEffect = resolver:resolve({
+        actor = wardActor,
+        target = livingTarget,
+        card = { name = "Ten of Wands", value = 10, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = garlic.id,
+        targetInitiative = 1,
+        destinationZone = "far",
+    })
+    assertTrue(not garlicNoEffect.success, "garlic should not displace unaffected living targets")
+    assertTrue(not livingTarget.conditions.displaced, "unaffected target should not receive displaced condition")
+
+    local saltThrower = base_entity.createEntity({
+        id = "pc_salt_thrower",
+        name = "Salt Thrower",
+        isPC = true,
+        swords = 3,
+        cups = 0,
+    })
+    saltThrower.inventory = inventory.createInventory()
+    local salt = inventory.createItemFromTemplate("salt")
+    saltThrower.inventory:addItem(salt, inventory.LOCATIONS.HANDS)
+    local ooze = base_entity.createEntity({
+        id = "ooze_salt_target",
+        name = "Salt Target Ooze",
+        isPC = false,
+        health = 3,
+        defense = 0,
+    })
+    ooze.tags = { "ooze", "slime" }
+    local saltAttack = resolver:resolve({
+        actor = saltThrower,
+        target = ooze,
+        card = { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = salt.id,
+        targetInitiative = 9,
+    })
+    assertTrue(saltAttack.success, "thrown salt should be treated as an Attack against oozes")
+    assertEqual(saltAttack.itemUseAttribute, "swords", "salt throw should use Swords attack value")
+    assertEqual(saltAttack.damageDealt, 2, "salt should inflict two Wounds to ooze monsters")
+    assertEqual(ooze.npcHealth, 1, "ooze should lose two Health to salt")
+    assertTrue(not saltThrower.inventory:findItem(salt.id), "thrown salt should be consumed on attempt")
+
+    local harmlessSalt = inventory.createItemFromTemplate("salt")
+    saltThrower.inventory:addItem(harmlessSalt, inventory.LOCATIONS.HANDS)
+    local saltNoEffect = resolver:resolve({
+        actor = saltThrower,
+        target = livingTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = harmlessSalt.id,
+        targetInitiative = 1,
+    })
+    assertTrue(not saltNoEffect.success, "salt should have no special effect on non-ooze targets")
+    assertEqual(livingTarget.npcHealth, 1, "salt no-effect path should not damage non-ooze targets")
+
+    actor.conditions.stressed = true
+    local pipeweed = inventory.createItemFromTemplate("pipeweed")
+    actor.inventory:addItem(pipeweed, inventory.LOCATIONS.HANDS)
+    local pipeweedUse = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = pipeweed.id,
+    })
+    assertTrue(pipeweedUse.success, "pipeweed should be usable from hand")
+    assertTrue(not actor.conditions.stressed, "smoking pipeweed should clear Stressed")
+    assertTrue(not actor.inventory:findItem(pipeweed.id), "smoked pipeweed should be consumed")
+
+    local lantern = inventory.createItemFromTemplate("lantern")
+    lantern.properties.flicker_count = 0
+    lantern.properties.extinguished = true
+    lantern.properties.isLit = false
+    local oil = inventory.createItemFromTemplate("oil")
+    actor.inventory:addItem(oil, inventory.LOCATIONS.HANDS)
+    local refuel = resolver:resolve({
+        actor = actor,
+        target = lantern,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = oil.id,
+    })
+    assertTrue(refuel.success, "oil should refill a lantern")
+    assertEqual(lantern.properties.flicker_count, 4, "oil should provide four lantern flickers")
+    assertTrue(lantern.properties.isLit, "refueled lantern should be lit")
+    assertTrue(not actor.inventory:findItem(oil.id), "oil should be consumed when refueling a lantern")
+
+    local useTorch = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = torch.id,
+    })
+    assertTrue(not useTorch.success, "Use Item should reject items that are not held")
+
+    actor.inventory:removeItem(potion.id)
+    local pullBelt = resolver:resolve({
+        actor = actor,
+        card = { name = "Any", value = 1, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.PULL_ITEM_BELT,
+        itemId = torch.id,
+    })
+    assertTrue(pullBelt.success, "Pull Item from Belt should be a miscellaneous action")
+    local torchLoc = select(2, actor.inventory:findItem(torch.id))
+    assertEqual(torchLoc, inventory.LOCATIONS.HANDS, "pulled belt item should move to hands")
+
+    local spiderBomb = inventory.createItemFromTemplate("brain_spider_bomb")
+    local target = base_entity.createEntity({
+        id = "npc_1",
+        name = "Bomb Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    actor.inventory:addItem(spiderBomb, inventory.LOCATIONS.HANDS)
+
+    local bombUse = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = spiderBomb.id,
+        target = target,
+        targetInitiative = 7,
+    })
+    assertTrue(bombUse.success, "bomb Use Item should beat target Initiative")
+    assertTrue(target.conditions.rooted, "spider sac bomb should root the target")
+    assertTrue(not actor.inventory:findItem(spiderBomb.id), "thrown bomb should be consumed")
+
+    local missedBomb = inventory.createItem({
+        name = "Missed Bomb",
+        size = 1,
+        properties = {
+            bomb = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            useEffect = {
+                type = "apply_conditions",
+                target = "target",
+                conditions = { rooted = true },
+            },
+        },
+    })
+    actor.inventory:addItem(missedBomb, inventory.LOCATIONS.HANDS)
+    local miss = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = missedBomb.id,
+        target = target,
+        targetInitiative = 20,
+    })
+    assertTrue(not miss.success, "missed bomb should fail the Initiative contest")
+    assertTrue(not actor.inventory:findItem(missedBomb.id), "bomb should be consumed on attempt")
+
+    local slimeBomb = inventory.createItemFromTemplate("slime_bomb")
+    target.npcDefense = 2
+    target.npcMaxDefense = 2
+    actor.inventory:addItem(slimeBomb, inventory.LOCATIONS.HANDS)
+    local slimeUse = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = slimeBomb.id,
+        target = target,
+        targetInitiative = 7,
+    })
+    assertTrue(slimeUse.success, "slime bomb should land")
+    assertEqual(target.npcDefense, 0, "slime bomb should destroy target armor/defense")
+
+    local slimePotion = inventory.createItemFromTemplate("slime_potion")
+    actor.inventory:addItem(slimePotion, inventory.LOCATIONS.HANDS)
+    local slimePotionUse = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = slimePotion.id,
+    })
+    assertTrue(slimePotionUse.success, "slime potion should be usable on self without contest")
+    assertTrue(actor.conditions.shapeless_body, "slime potion should grant shapeless body")
+    assertTrue(actor.conditions.no_fall_damage, "slime potion should protect against falls")
+    assertTrue(not actor.inventory:findItem(slimePotion.id), "slime potion should be consumed")
+
+    local brainOil = inventory.createItemFromTemplate("brain_spider_oil")
+    local gluedDoor = inventory.createItem({ name = "Loose Door", size = 2, durability = 2 })
+    local gluedFrame = inventory.createItem({ name = "Door Frame", size = 2, durability = 2 })
+    actor.inventory:addItem(brainOil, inventory.LOCATIONS.HANDS)
+    local brainOilUse = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = brainOil.id,
+        target = gluedDoor,
+        secondaryTarget = gluedFrame,
+    })
+    assertTrue(brainOilUse.success, "brain spider oil should be usable on an object")
+    assertTrue(gluedDoor.properties.adhered, "brain spider oil should mark the object as adhered")
+    assertTrue(gluedDoor.adheredTo == gluedFrame, "brain spider oil should remember the second object")
+    assertTrue(not actor.inventory:findItem(brainOil.id), "brain spider oil should be consumed")
+
+    local slimeOil = inventory.createItemFromTemplate("slime_oil")
+    local woodenDoor = inventory.createItem({
+        name = "Wooden Door",
+        size = 2,
+        durability = 2,
+        properties = { material = "wood" },
+    })
+    actor.inventory:addItem(slimeOil, inventory.LOCATIONS.HANDS)
+    local slimeOilUse = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = slimeOil.id,
+        target = woodenDoor,
+    })
+    assertTrue(slimeOilUse.success, "slime oil should be usable on an object")
+    assertTrue(woodenDoor.destroyed, "slime oil should destroy non-magical objects it touches")
+    assertTrue(not actor.inventory:findItem(slimeOil.id), "slime oil should be consumed")
+
+    local undeadActor = base_entity.createEntity({
+        id = "undead_potion_user",
+        name = "Undead",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        undead = true,
+    })
+    undeadActor.undead = true
+    undeadActor.inventory = inventory.createInventory()
+    local undeadPotion = inventory.createItemFromTemplate("slime_potion")
+    undeadActor.inventory:addItem(undeadPotion, inventory.LOCATIONS.HANDS)
+    local undeadPotionUse = resolver:resolve({
+        actor = undeadActor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.USE_ITEM,
+        itemId = undeadPotion.id,
+    })
+    assertTrue(undeadPotionUse.success, "potion use on undead should still spend the item")
+    assertTrue(not undeadActor.conditions.shapeless_body, "potions should not affect undead")
+    assertTrue(not undeadActor.inventory:findItem(undeadPotion.id), "ineffective potion should still be consumed")
+end
+
+local function checkCampTinkersKitRepair()
+    local actor = base_entity.createEntity({
+        id = "pc_tinker",
+        name = "Tinker",
+        isPC = true,
+    })
+    actor.inventory = inventory.createInventory()
+
+    local kit = inventory.createItemFromTemplate("tinkers_kit")
+    assertEqual(kit.size, 2, "tinker's kit should take two slots")
+    actor.inventory:addItem(kit, inventory.LOCATIONS.PACK)
+
+    local sword = inventory.createItem({
+        name = "Notched Sword",
+        size = 1,
+        durability = 2,
+    })
+    sword.notches = 1
+
+    local ok, result = camp_actions.resolveRepair(actor, sword, events.createEventBus())
+    assertTrue(ok, "tinker's kit camp action should repair a notched item")
+    assertEqual(result, "repaired", "repair action should report repaired")
+    assertEqual(sword.notches, 0, "tinker's kit should remove one notch")
+
+    local destroyedShield = inventory.createItem({
+        name = "Destroyed Shield",
+        size = 1,
+        durability = 1,
+    })
+    destroyedShield.notches = 1
+    destroyedShield.destroyed = true
+    ok, result = camp_actions.resolveRepair(actor, destroyedShield, events.createEventBus())
+    assertTrue(not ok, "tinker's kit should not salvage destroyed equipment")
+    assertEqual(destroyedShield.notches, 1, "failed repair should leave destroyed item notches unchanged")
+    assertTrue(destroyedShield.destroyed, "failed repair should leave destroyed item destroyed")
+end
+
+local function checkCampFletchArrowsAction()
+    local actor = base_entity.createEntity({
+        id = "pc_fletcher",
+        name = "Fletcher",
+        isPC = true,
+    })
+    actor.inventory = inventory.createInventory()
+    actor.inventory:addItem(inventory.createItemFromTemplate("bow"), inventory.LOCATIONS.PACK)
+    actor.ammo = 2
+
+    local available = camp_actions.getAvailableActions(actor, { actor })
+    local sawFletch = false
+    for _, action in ipairs(available) do
+        if action.id == "fletch_arrows" then
+            sawFletch = true
+            break
+        end
+    end
+    assertTrue(sawFletch, "Fletch Arrows should be available to a PC carrying a missile weapon")
+
+    local ok, result = camp_actions.resolveFletchArrows(actor, events.createEventBus())
+    assertTrue(ok, "Fletch Arrows should resolve for a missile-weapon user")
+    assertEqual(result, "ammo_refilled", "Fletch Arrows should report ammo refill")
+    assertEqual(actor.ammo, 12, "Fletch Arrows should refill ammunition to twelve")
+
+    actor.ammo = 14
+    ok = camp_actions.resolveFletchArrows(actor, events.createEventBus())
+    assertTrue(ok, "Fletch Arrows should allow already-full quivers")
+    assertEqual(actor.ammo, 14, "Fletch Arrows should not reduce ammo above twelve")
+
+    local noBow = base_entity.createEntity({
+        id = "pc_no_missile_weapon",
+        name = "No Missile Weapon",
+        isPC = true,
+    })
+    noBow.inventory = inventory.createInventory()
+    ok, result = camp_actions.resolveFletchArrows(noBow, events.createEventBus())
+    assertTrue(not ok, "Fletch Arrows should require a bow or crossbow")
+    assertEqual(result, "Requires a bow or crossbow", "missing missile weapon should explain Fletch failure")
+end
+
+local function checkCampFellowshipAction()
+    local actor = base_entity.createEntity({
+        id = "pc_fellowship_actor",
+        name = "Fellowship Actor",
+        isPC = true,
+    })
+    local target = base_entity.createEntity({
+        id = "pc_fellowship_target",
+        name = "Fellowship Target",
+        isPC = true,
+    })
+
+    local available = camp_actions.getAvailableActions(actor, { actor })
+    local sawFellowship = false
+    for _, action in ipairs(available) do
+        if action.id == "fellowship" then
+            sawFellowship = true
+            break
+        end
+    end
+    assertTrue(not sawFellowship, "Fellowship should require another adventurer")
+
+    available = camp_actions.getAvailableActions(actor, { actor, target })
+    sawFellowship = false
+    for _, action in ipairs(available) do
+        if action.id == "fellowship" then
+            sawFellowship = true
+            break
+        end
+    end
+    assertTrue(sawFellowship, "Fellowship should be available with another adventurer")
+
+    local ok, result = camp_actions.resolveFellowship(actor, actor, events.createEventBus())
+    assertTrue(not ok, "Fellowship should not target yourself")
+    assertEqual(result, "Cannot fellowship with yourself", "self-fellowship should explain failure")
+
+    ok, result = camp_actions.resolveFellowship(actor, target, events.createEventBus())
+    assertTrue(ok, "Fellowship should resolve with another adventurer")
+    assertEqual(result, "fellowship_complete", "Fellowship should report completion")
+    assertTrue(actor.bonds[target.id].charged, "Fellowship should charge actor's bond with target")
+    assertTrue(target.bonds[actor.id].charged, "Fellowship should charge target's bond with actor")
+end
+
+local function checkCampTrainAction()
+    local trainee = base_entity.createEntity({
+        id = "pc_train_trainee",
+        name = "Train Trainee",
+        isPC = true,
+    })
+    trainee.xp = 3
+    trainee.talents = {}
+
+    local trainer = base_entity.createEntity({
+        id = "pc_train_trainer",
+        name = "Train Trainer",
+        isPC = true,
+        talents = {
+            war_stories = { mastered = true },
+        },
+    })
+
+    local available = camp_actions.getAvailableActions(trainee, { trainee, trainer })
+    local sawTrain = false
+    for _, action in ipairs(available) do
+        if action.id == "train" and action.name == "Train" then
+            sawTrain = true
+            break
+        end
+    end
+    assertTrue(sawTrain, "Train should be available with another adventurer")
+
+    local controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { trainee, trainer },
+    })
+    controller:transitionTo(camp_controller.STATES.ACTIONS)
+
+    local ok, result = controller:submitAction(trainee, {
+        type = "train",
+        target = trainer,
+        talentId = "war_stories",
+        xp = 2,
+    })
+    assertTrue(ok, "Train should resolve with a mastered trainer talent and enough XP")
+    assertEqual(result, "training_complete", "Train should report completion")
+    assertEqual(trainee.xp, 1, "Train should spend invested XP")
+    assertTrue(trainee.talents.war_stories ~= nil, "Train should create the mentored talent")
+    assertTrue(not trainee.talents.war_stories.mastered, "two invested XP should not master the talent")
+    assertEqual(trainee.talents.war_stories.xp_invested, 2, "Train should record invested XP")
+    assertEqual(trainee.talents.war_stories.uses_remaining, 2, "Train should prepare uses equal to XP invested")
+    assertTrue(controller.actionsCompleted[trainer.id] ~= nil, "Train should consume the trainer's Camp Action")
+    assertTrue(controller:canAdvanceFromActions(), "Train should count as both adventurers' Camp Actions")
+
+    ok, result = controller:submitAction(trainer, { type = "rest" })
+    assertTrue(not ok, "trainer should not take a second Camp Action after training")
+    assertEqual(result, "Action already taken", "spent trainer action should explain duplicate action failure")
+
+    local poorTrainee = base_entity.createEntity({
+        id = "pc_poor_trainee",
+        name = "Poor Trainee",
+        isPC = true,
+    })
+    poorTrainee.xp = 0
+    poorTrainee.talents = {}
+    ok, result = camp_actions.resolveTrain(poorTrainee, trainer, {
+        talentId = "war_stories",
+        xp = 1,
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Train should require XP to invest")
+    assertEqual(result, "Not enough XP", "missing XP should explain Train failure")
+
+    trainee.xp = 5
+    ok, result = camp_actions.resolveTrain(trainee, trainer, {
+        talentId = "war_stories",
+        xp = 5,
+    }, {}, events.createEventBus())
+    assertTrue(ok, "additional training should resolve")
+    assertTrue(trainee.talents.war_stories.mastered, "seven total invested XP should master the talent")
+end
+
+local function checkCampUseTalentAction()
+    local beastMaster = base_entity.createEntity({
+        id = "pc_camp_beast_master",
+        name = "Camp Beast Master",
+        isPC = true,
+        talents = {
+            beast_master = { mastered = true },
+        },
+    })
+    local hound = {
+        id = "hound_camp",
+        name = "Camp Hound",
+        knownCommands = { "Fetch", "Stay" },
+        conditions = {},
+    }
+    beastMaster.animalCompanions = { hound }
+
+    local available = camp_actions.getAvailableActions(beastMaster, { beastMaster })
+    local sawUseTalent = false
+    for _, action in ipairs(available) do
+        if action.id == "use_talent" and action.name == "Use a Talent" then
+            sawUseTalent = true
+            break
+        end
+    end
+    assertTrue(sawUseTalent, "Use a Talent should be available for usable Camp talents")
+
+    local ok, result = camp_actions.resolveUseTalent(beastMaster, {
+        talentId = "beast_master",
+        companionId = "hound_camp",
+        command = "Guard",
+    }, {}, events.createEventBus())
+    assertTrue(ok, "Beast Master camp talent should teach a command")
+    assertEqual(result, "companion_command_taught", "Beast Master should report command teaching")
+    assertTrue(hasValue(hound.knownCommands, "Guard"), "Beast Master should add the taught command")
+
+    ok, result = camp_actions.resolveUseTalent(beastMaster, {
+        talentId = "beast_master",
+        companionId = "hound_camp",
+        command = "Track",
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "ordinary animal companions should cap at three commands")
+    assertEqual(result, "Companion already knows three commands", "command cap should explain Beast Master failure")
+
+    ok, result = camp_actions.resolveUseTalent(beastMaster, {
+        talentId = "beast_master",
+        companionId = "hound_camp",
+        command = "Track",
+        replaceCommand = "Stay",
+    }, {}, events.createEventBus())
+    assertTrue(ok, "Beast Master should retrain a known command")
+    assertTrue(hasValue(hound.knownCommands, "Track"), "replacement command should be learned")
+    assertTrue(not hasValue(hound.knownCommands, "Stay"), "replaced command should be removed")
+
+    local storyteller = base_entity.createEntity({
+        id = "pc_war_stories",
+        name = "Storyteller",
+        isPC = true,
+        talents = {
+            war_stories = { mastered = true },
+        },
+    })
+    storyteller.resolve = { current = 4, max = 4 }
+    local listener = base_entity.createEntity({
+        id = "pc_story_listener",
+        name = "Story Listener",
+        isPC = true,
+    })
+    listener.bonds = {
+        pc_war_stories = { charged = false },
+    }
+    ok, result = camp_actions.resolveUseTalent(storyteller, {
+        talentId = "war_stories",
+        participants = { storyteller, listener },
+        benefits = {
+            pc_war_stories = { type = "resolve" },
+            pc_story_listener = { type = "charge_bond", bondTargetId = "pc_war_stories" },
+        },
+    }, {}, events.createEventBus())
+    assertTrue(ok, "War Stories should resolve as a Camp talent")
+    assertEqual(result, "war_stories_shared", "War Stories should report shared story")
+    assertEqual(storyteller.resolve.current, 5, "War Stories should raise Resolve to five")
+    assertEqual(storyteller.resolve.max, 5, "War Stories should allow Resolve maximum five")
+    assertTrue(listener.bonds.pc_war_stories.charged, "War Stories should charge selected uncharged Bonds")
+
+    local bookworm = base_entity.createEntity({
+        id = "pc_bookworm",
+        name = "Bookworm",
+        isPC = true,
+        motifs = {},
+        talents = {
+            bookworm = { mastered = true },
+        },
+    })
+    bookworm.inventory = inventory.createInventory()
+    local book = inventory.createItemFromTemplate("tomb_lore_book")
+    bookworm.inventory:addItem(book, inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveReadBook(bookworm, book, {
+        questionType = "identity_or_origin",
+    }, {}, events.createEventBus())
+    assertTrue(ok, "Bookworm should still use Read a Book normally")
+    assertEqual(result, "book_answered", "Bookworm Read a Book should answer")
+    assertTrue(#(bookworm.bookwormBooks or {}) == 1, "Bookworm should record read books")
+    assertTrue(hasValue(bookworm.motifs, "Guardian Shrine and tomb astronomy"),
+        "Bookworm should add read books as lore motifs")
+
+    local woundedTalent = base_entity.createEntity({
+        id = "pc_wounded_camp_talent",
+        name = "Wounded Talent",
+        isPC = true,
+        talents = {
+            war_stories = { mastered = true, wounded = true },
+        },
+    })
+    assertTrue(not camp_actions.hasCampTalent(woundedTalent), "wounded Camp talents should not be usable")
+end
+
+local function checkLaborUnendingCampActionAllowance()
+    local dwarf = base_entity.createEntity({
+        id = "pc_labor_unending",
+        name = "Labor Unending Dwarf",
+        isPC = true,
+        talents = {
+            labor_unending = { mastered = true },
+        },
+    })
+
+    local bus = events.createEventBus()
+    local laborEvent = nil
+    bus:on("labor_unending_used", function(data)
+        laborEvent = data
+    end)
+    local controller = camp_controller.createCampController({
+        eventBus = bus,
+        guild = { dwarf },
+    })
+    controller:transitionTo(camp_controller.STATES.ACTIONS)
+
+    local ok, result = controller:submitAction(dwarf, { type = "scout" })
+    assertTrue(ok, "Labor Unending actor should take a normal first Camp Action")
+    assertEqual(result, "scout_initiated", "first Labor Unending setup action should resolve normally")
+
+    ok, result = controller:submitAction(dwarf, { type = "scout" })
+    assertTrue(not ok, "second Camp Action should still require explicit Labor Unending use")
+    assertEqual(result, "Action already taken", "ordinary duplicate Camp Action should still be blocked")
+
+    ok, result = controller:submitAction(dwarf, {
+        type = "scout",
+        useLaborUnending = true,
+    })
+    assertTrue(ok, "Labor Unending should allow one explicit second Camp Action")
+    assertEqual(result, "scout_initiated", "Labor Unending extra action should preserve action result")
+    assertTrue(dwarf.conditions.stressed, "Labor Unending should mark the actor Stressed")
+    assertTrue(controller.extraCampActionsUsed[dwarf.id], "Labor Unending should be consumed for the camp")
+    assertTrue(controller.actionsCompleted[dwarf.id].laborUnending,
+        "Labor Unending action history should record the extra action")
+    assertEqual(#controller.actionsCompleted[dwarf.id].actions, 2,
+        "Labor Unending action history should preserve both Camp Actions")
+    assertTrue(laborEvent and laborEvent.actor == dwarf, "Labor Unending should emit usage details")
+
+    ok, result = controller:submitAction(dwarf, {
+        type = "scout",
+        useLaborUnending = true,
+    })
+    assertTrue(not ok, "Labor Unending should not allow a third Camp Action")
+    assertEqual(result, "Labor Unending already used", "spent Labor Unending should explain duplicate extra action")
+
+    local noTalent = base_entity.createEntity({
+        id = "pc_no_labor_unending",
+        name = "No Labor Unending",
+        isPC = true,
+    })
+    local noTalentController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { noTalent },
+    })
+    noTalentController:transitionTo(camp_controller.STATES.ACTIONS)
+    ok = noTalentController:submitAction(noTalent, { type = "scout" })
+    assertTrue(ok, "ordinary first Camp Action should still work without Labor Unending")
+    ok, result = noTalentController:submitAction(noTalent, {
+        type = "scout",
+        useLaborUnending = true,
+    })
+    assertTrue(not ok, "extra Camp Action should require Labor Unending")
+    assertEqual(result, "Requires Labor Unending", "missing Labor Unending should explain extra action failure")
+
+    local alreadyStressed = base_entity.createEntity({
+        id = "pc_labor_unending_stressed",
+        name = "Stressed Labor Unending Dwarf",
+        isPC = true,
+        talents = {
+            labor_unending = { mastered = true },
+        },
+    })
+    alreadyStressed.conditions.stressed = true
+    local stressedController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { alreadyStressed },
+    })
+    stressedController:transitionTo(camp_controller.STATES.ACTIONS)
+    ok = stressedController:submitAction(alreadyStressed, { type = "scout" })
+    assertTrue(ok, "Stressed Labor Unending actor should still take a normal first action")
+    ok, result = stressedController:submitAction(alreadyStressed, {
+        type = "scout",
+        useLaborUnending = true,
+    })
+    assertTrue(not ok, "Labor Unending should require the ability to mark Stressed")
+    assertEqual(result, "Already Stressed", "already-Stressed Labor Unending should explain payment failure")
+end
+
+local function checkCampBrewAlchemyAction()
+    local alchemist = base_entity.createEntity({
+        id = "pc_alchemist",
+        name = "Alchemist",
+        isPC = true,
+        talents = {
+            alchemy = { mastered = true },
+        },
+    })
+    alchemist.inventory = inventory.createInventory()
+    alchemist.inventory:addItem(inventory.createItemFromTemplate("alchemy_kit"), inventory.LOCATIONS.PACK)
+    local brainReagent = inventory.createItemFromTemplate("brain_spider_reagent")
+    local slimeReagent = inventory.createItemFromTemplate("slime_reagent")
+    alchemist.inventory:addItem(brainReagent, inventory.LOCATIONS.PACK)
+    alchemist.inventory:addItem(slimeReagent, inventory.LOCATIONS.PACK)
+
+    local available = camp_actions.getAvailableActions(alchemist, { alchemist })
+    local sawBrewAlchemy = false
+    local sawUseTalent = false
+    for _, action in ipairs(available) do
+        if action.id == "brew_alchemy" and action.name == "Brew Alchemy" then
+            sawBrewAlchemy = true
+        elseif action.id == "use_talent" then
+            sawUseTalent = true
+        end
+    end
+    assertTrue(sawBrewAlchemy, "Brew Alchemy should be available with Alchemy, kit, and reagents")
+    assertTrue(not sawUseTalent, "Alchemy should expose its dedicated Camp Action instead of generic Use a Talent")
+
+    local promptBus = events.createEventBus()
+    local prompt = nil
+    promptBus:on("camp_action_resolved", function(data)
+        if data.action == "brew_alchemy" then
+            prompt = data
+        end
+    end)
+    local ok, result, choices = camp_actions.resolveBrewAlchemy(alchemist, {}, {}, promptBus)
+    assertTrue(ok, "Brew Alchemy without selections should request reagent choices")
+    assertEqual(result, "alchemy_choices_required", "Brew Alchemy should report a choice prompt")
+    assertTrue(prompt and prompt.requiresBrews, "Brew Alchemy prompt should advertise brew selections")
+    assertEqual(#choices, 2, "Brew Alchemy prompt should list carried reagents")
+
+    local brewBus = events.createEventBus()
+    local emitted = nil
+    brewBus:on("camp_action_resolved", function(data)
+        if data.action == "brew_alchemy" then
+            emitted = data
+        end
+    end)
+    local brewed
+    ok, result, brewed = camp_actions.resolveAction({
+        type = "brew_alchemy",
+        actor = alchemist,
+        transforms = {
+            { reagentId = brainReagent.id, form = "bomb" },
+            { source = "slime", form = "potion" },
+        },
+    }, { eventBus = brewBus })
+    assertTrue(ok, "Brew Alchemy should transform selected reagents")
+    assertEqual(result, "alchemy_brewed", "Brew Alchemy should report brewed substances")
+    assertEqual(#brewed, 2, "Brew Alchemy should transform multiple reagents in one Camp Action")
+    assertTrue(not alchemist.inventory:findItem(brainReagent.id), "brewed reagent should be replaced in inventory")
+    assertTrue(not alchemist.inventory:findItem(slimeReagent.id), "each brewed reagent should be replaced")
+    local spiderBomb = alchemist.inventory:findItemByPredicate(function(item)
+        return item.templateId == "brain_spider_bomb"
+    end)
+    local slimePotion = alchemist.inventory:findItemByPredicate(function(item)
+        return item.templateId == "slime_potion"
+    end)
+    assertTrue(spiderBomb ~= nil, "Brain spider reagent should brew into a Spider Sac Bomb")
+    assertTrue(slimePotion ~= nil, "Slime reagent should brew into a Slime Potion")
+    assertTrue(spiderBomb.properties.hermeticBottle, "brewed alchemy should remain in its hermetic bottle")
+    assertTrue(emitted and #emitted.brews == 2, "Brew Alchemy should emit batch brew details")
+
+    local noTalent = base_entity.createEntity({
+        id = "pc_no_alchemy",
+        name = "No Alchemy",
+        isPC = true,
+    })
+    noTalent.inventory = inventory.createInventory()
+    noTalent.inventory:addItem(inventory.createItemFromTemplate("alchemy_kit"), inventory.LOCATIONS.PACK)
+    noTalent.inventory:addItem(inventory.createItemFromTemplate("brain_spider_reagent"), inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveBrewAlchemy(noTalent, {
+        source = "brain_spider",
+        form = "bomb",
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Brew Alchemy should require the Alchemy talent")
+    assertEqual(result, "Requires Alchemy talent", "missing Alchemy should explain Brew Alchemy failure")
+
+    local noKit = base_entity.createEntity({
+        id = "pc_no_alchemy_kit",
+        name = "No Alchemy Kit",
+        isPC = true,
+        talents = {
+            alchemy = { mastered = true },
+        },
+    })
+    noKit.inventory = inventory.createInventory()
+    noKit.inventory:addItem(inventory.createItemFromTemplate("brain_spider_reagent"), inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveBrewAlchemy(noKit, {
+        source = "brain_spider",
+        form = "bomb",
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Brew Alchemy should require an alchemy kit")
+    assertEqual(result, "Requires alchemy kit", "missing kit should explain Brew Alchemy failure")
+
+    local potionOnly = base_entity.createEntity({
+        id = "pc_potion_only",
+        name = "Potion Only",
+        isPC = true,
+        talents = {
+            alchemy = { mastered = true },
+        },
+    })
+    potionOnly.inventory = inventory.createInventory()
+    potionOnly.inventory:addItem(inventory.createItemFromTemplate("alchemy_kit"), inventory.LOCATIONS.PACK)
+    potionOnly.inventory:addItem(inventory.createItem({
+        name = "Hermetic Bottle: Potion-Only Reagent",
+        type = "reagent",
+        properties = {
+            reagent = true,
+            source = "potion_only",
+            brewOutputs = {
+                potion = "slime_potion",
+            },
+        },
+    }), inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveBrewAlchemy(potionOnly, {
+        source = "potion_only",
+        form = "oil",
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Brew Alchemy should reject unavailable substance forms")
+    assertEqual(result, "Reagent cannot brew that substance", "unavailable form should explain Brew Alchemy failure")
+end
+
+local function checkAlchemyHarvestReagents()
+    local harvester = base_entity.createEntity({
+        id = "pc_reagent_harvester",
+        name = "Reagent Harvester",
+        isPC = true,
+        talents = {
+            alchemy = { mastered = true },
+        },
+    })
+    harvester.inventory = inventory.createInventory()
+    harvester.inventory:addItem(inventory.createItemFromTemplate("hermetic_bottle"), inventory.LOCATIONS.PACK)
+
+    local spider = entity_factory.createEntity("brain_spider")
+    spider.id = "fresh_brain_spider"
+    spider.conditions.dead = true
+    spider.defeatedAtWatch = 0
+
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.ALCHEMY_REAGENT_HARVESTED, function(data)
+        emitted = data
+    end)
+    local manager = watch_manager.createWatchManager({
+        eventBus = bus,
+        guild = { harvester },
+    })
+
+    local ok, result, harvest = alchemy.resolveHarvestReagent(harvester, spider, {
+        watchManager = manager,
+        eventBus = bus,
+    })
+    assertTrue(ok, "Alchemy users should harvest fresh monster corpses")
+    assertEqual(result, "reagent_harvested", "harvest should report reagent collection")
+    assertEqual(manager:getWatchCount(), 1, "harvesting reagents should spend a watch")
+    assertTrue(harvest.reagent.templateId == "brain_spider_reagent", "brain spiders should yield brain spider reagents")
+    assertTrue(harvest.reagent.properties.hermeticBottle, "harvested reagents should be stored in hermetic bottles")
+    assertTrue(harvest.reagent.properties.harvestedFrom == "Brain Spider", "harvest should record its source creature")
+    assertTrue(harvester.inventory:findItemByPredicate(function(item)
+        return item.templateId == "brain_spider_reagent"
+    end) ~= nil, "harvested reagent should replace an empty bottle in inventory")
+    assertTrue(harvester.inventory:findItemByPredicate(function(item)
+        return item.templateId == "hermetic_bottle"
+    end) == nil, "empty hermetic bottle should be consumed by harvest")
+    assertTrue(spider.alchemy.depleted, "one-yield monsters should be depleted after harvest")
+    assertTrue(emitted and emitted.reagent == harvest.reagent, "harvest should emit reagent details")
+
+    harvester.inventory:addItem(inventory.createItemFromTemplate("hermetic_bottle"), inventory.LOCATIONS.PACK)
+    ok, result = alchemy.resolveHarvestReagent(harvester, spider, {
+        watchManager = manager,
+        eventBus = bus,
+    })
+    assertTrue(not ok, "depleted corpses should not produce more reagents")
+    assertEqual(result, "No viable alchemical reagents remain", "depleted corpse should explain harvest failure")
+    assertEqual(manager:getWatchCount(), 1, "failed depleted harvest should not spend a watch")
+
+    local staleHarvester = base_entity.createEntity({
+        id = "pc_stale_reagent_harvester",
+        name = "Stale Reagent Harvester",
+        isPC = true,
+        talents = {
+            alchemy = { mastered = true },
+        },
+    })
+    staleHarvester.inventory = inventory.createInventory()
+    staleHarvester.inventory:addItem(inventory.createItemFromTemplate("hermetic_bottle"), inventory.LOCATIONS.PACK)
+    local staleSpider = entity_factory.createEntity("brain_spider")
+    staleSpider.conditions.dead = true
+    staleSpider.defeatedAtWatch = 0
+    local staleManager = watch_manager.createWatchManager({ eventBus = events.createEventBus() })
+    staleManager.watchCount = 1
+    ok, result = alchemy.resolveHarvestReagent(staleHarvester, staleSpider, {
+        watchManager = staleManager,
+    })
+    assertTrue(not ok, "corpses left for a watch should lose alchemical potency")
+    assertEqual(result, "Reagents have spoiled", "stale corpse should explain harvest failure")
+    assertEqual(staleManager:getWatchCount(), 1, "spoiled harvest should not spend another watch")
+
+    local untrained = base_entity.createEntity({
+        id = "pc_untrained_alchemy",
+        name = "Untrained Alchemy",
+        isPC = true,
+    })
+    untrained.inventory = inventory.createInventory()
+    untrained.inventory:addItem(inventory.createItemFromTemplate("hermetic_bottle"), inventory.LOCATIONS.PACK)
+    local ooze = entity_factory.createEntity("small_ooze")
+    ooze.conditions.dead = true
+    ok, result = alchemy.resolveHarvestReagent(untrained, ooze, {
+        watchManager = watch_manager.createWatchManager({ eventBus = events.createEventBus() }),
+    })
+    assertTrue(not ok, "reagent harvesting should require Alchemy")
+    assertEqual(result, "Requires Alchemy talent", "missing Alchemy should explain harvest failure")
+
+    local system = interaction.createInteractionSystem({})
+    local actions = system:getValidActions({
+        id = "fresh_spider_corpse",
+        type = "corpse",
+        alchemy = {
+            reagentTemplateId = "brain_spider_reagent",
+            yield = 1,
+        },
+    })
+    local sawHarvest = false
+    for _, action in ipairs(actions) do
+        if action.action == "harvest_reagent" then
+            sawHarvest = true
+            break
+        end
+    end
+    assertTrue(sawHarvest, "alchemy-bearing corpses should expose a harvest interaction")
+end
+
+local function checkHarvestableCorpseFeatures()
+    local manager = room_manager.createRoomManager({ eventBus = events.createEventBus() })
+    manager:registerRoom(room_manager.createRoomInstance({
+        id = "alchemy_lab",
+        name = "Alchemy Lab",
+        description = "A room prepared for reagent tests.",
+        features = {},
+    }, "alchemy_lab"))
+
+    local spider = entity_factory.createEntity("brain_spider")
+    spider.id = "dead_spider_for_corpse"
+    spider.conditions.dead = true
+    manager:addMob("alchemy_lab", spider.id)
+
+    local corpse = manager:addCorpseForEntity("alchemy_lab", spider, {
+        currentWatch = 2,
+    })
+    assertTrue(corpse ~= nil, "dead alchemy-bearing monsters should create corpse POIs")
+    assertEqual(corpse.type, "corpse", "corpse feature should use corpse type")
+    assertTrue(corpse.freshCorpse, "generated corpse should start fresh")
+    assertEqual(corpse.defeatedEntityId, spider.id, "corpse should remember defeated entity id")
+    assertEqual(corpse.defeatedAtWatch, 2, "corpse should record defeat watch for spoilage")
+    assertEqual(corpse.alchemy.reagentTemplateId, "brain_spider_reagent", "corpse should carry reagent yield data")
+    assertEqual(#manager:getMobs("alchemy_lab"), 0, "defeated mob should be removed from room mob list")
+    assertEqual(manager:getFeature("alchemy_lab", corpse.id), corpse, "generated corpse should be registered as a room feature")
+
+    local duplicate = manager:addCorpseForEntity("alchemy_lab", spider, {
+        currentWatch = 2,
+    })
+    assertEqual(duplicate, corpse, "repeated defeat events should not duplicate corpse POIs")
+    assertEqual(#manager:getFeaturesByType("alchemy_lab", "corpse"), 1, "room should keep one corpse feature per defeated entity")
+
+    corpse.alchemy.harvestedCount = 1
+    assertTrue(spider.alchemy.harvestedCount == nil, "corpse alchemy data should not mutate the source blueprint copy")
+
+    local system = interaction.createInteractionSystem({})
+    local actions = system:getValidActions(corpse)
+    local sawHarvest = false
+    for _, action in ipairs(actions) do
+        if action.action == "harvest_reagent" then
+            sawHarvest = true
+            break
+        end
+    end
+    assertTrue(sawHarvest, "generated monster corpses should expose harvest interaction")
+
+    local zombie = entity_factory.createEntity("zombie")
+    zombie.id = "dead_zombie_no_reagent"
+    zombie.conditions.dead = true
+    local noCorpse, reason = manager:addCorpseForEntity("alchemy_lab", zombie, {
+        currentWatch = 2,
+    })
+    assertTrue(noCorpse == nil, "non-reagent creatures should not create harvestable corpse POIs")
+    assertEqual(reason, "no_harvestable_reagents", "missing reagent data should explain skipped corpse POI")
+
+    local livingSpider = entity_factory.createEntity("brain_spider")
+    livingSpider.id = "living_spider_no_corpse"
+    noCorpse, reason = manager:addCorpseForEntity("alchemy_lab", livingSpider, {
+        currentWatch = 2,
+    })
+    assertTrue(noCorpse == nil, "living monsters should not create corpse POIs")
+    assertEqual(reason, "entity_not_dead", "living source should explain skipped corpse POI")
+end
+
+local function checkAlchemyMenagerieReagentPurchase()
+    local buyer = base_entity.createEntity({
+        id = "pc_menagerie_buyer",
+        name = "Menagerie Buyer",
+        isPC = true,
+    })
+    buyer.gold = 50
+    buyer.inventory = inventory.createInventory()
+
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.ALCHEMY_REAGENT_PURCHASED, function(data)
+        emitted = data
+    end)
+
+    local ok, result, purchase = alchemy.resolveMenagerieReagentPurchase(buyer, {
+        source = "brain_spider",
+        quantity = 2,
+    }, { eventBus = bus })
+    assertTrue(ok, "menagerie purchase should buy authored reagent templates")
+    assertEqual(result, "reagent_purchased", "menagerie purchase should report success")
+    assertEqual(purchase.cost, 50, "menagerie reagents should cost 25g each")
+    assertEqual(buyer.gold, 0, "menagerie purchase should spend PC gold")
+    assertEqual(#purchase.reagents, 2, "menagerie purchase should create one reagent per purchase")
+    assertTrue(emitted and emitted.quantity == 2, "menagerie purchase should emit purchase details")
+    local purchasedCount = buyer.inventory:countItemsByPredicate(function(item)
+        return item.templateId == "brain_spider_reagent" and
+            item.properties.cityPurchased == true and
+            item.properties.purchasedAt == "Master Underhill's Menagerie"
+    end)
+    assertEqual(purchasedCount, 2, "menagerie purchase should add bottled reagents to inventory")
+
+    local coinBuyer = base_entity.createEntity({
+        id = "pc_coin_menagerie_buyer",
+        name = "Coin Menagerie Buyer",
+        isPC = true,
+    })
+    coinBuyer.gold = 10
+    coinBuyer.inventory = inventory.createInventory()
+    coinBuyer.inventory:addItem(inventory.createItemFromTemplate("gold_coins_15"), inventory.LOCATIONS.PACK)
+    ok, result, purchase = alchemy.resolveMenagerieReagentPurchase(coinBuyer, {
+        reagentTemplateId = "slime_reagent",
+    }, { eventBus = events.createEventBus() })
+    assertTrue(ok, "menagerie purchase should combine PC gold and carried coin stacks")
+    assertEqual(coinBuyer.gold, 0, "menagerie purchase should empty numeric gold first")
+    assertEqual(alchemy.getGold(coinBuyer), 0, "menagerie purchase should spend carried coin stack remainder")
+    assertTrue(coinBuyer.inventory:findItemByPredicate(function(item)
+        return item.templateId == "slime_reagent"
+    end) ~= nil, "menagerie purchase should add selected reagent")
+
+    local poorBuyer = base_entity.createEntity({
+        id = "pc_poor_menagerie_buyer",
+        name = "Poor Menagerie Buyer",
+        isPC = true,
+    })
+    poorBuyer.gold = 24
+    poorBuyer.inventory = inventory.createInventory()
+    ok, result = alchemy.resolveMenagerieReagentPurchase(poorBuyer, {
+        source = "brain_spider",
+    }, { eventBus = events.createEventBus() })
+    assertTrue(not ok, "menagerie purchase should require 25g per reagent")
+    assertEqual(result, "Not enough gold", "insufficient gold should explain menagerie purchase failure")
+    assertEqual(poorBuyer.gold, 24, "failed menagerie purchase should not spend gold")
+    assertEqual(#poorBuyer.inventory.pack, 0, "failed menagerie purchase should not add reagents")
+
+    local crampedBuyer = base_entity.createEntity({
+        id = "pc_cramped_menagerie_buyer",
+        name = "Cramped Menagerie Buyer",
+        isPC = true,
+    })
+    crampedBuyer.gold = 25
+    crampedBuyer.inventory = inventory.createInventory({ packSlots = 0 })
+    ok, result = alchemy.resolveMenagerieReagentPurchase(crampedBuyer, {
+        source = "brain_spider",
+    }, { eventBus = events.createEventBus() })
+    assertTrue(not ok, "menagerie purchase should need inventory room")
+    assertEqual(result, "insufficient_slots", "full pack should explain menagerie purchase failure")
+    assertEqual(crampedBuyer.gold, 25, "failed slot check should not spend gold")
+
+    ok, result = alchemy.resolveMenagerieReagentPurchase(buyer, {
+        source = "wraith",
+    }, { eventBus = events.createEventBus() })
+    assertTrue(not ok, "menagerie purchase should reject unknown reagent sources")
+    assertEqual(result, "Unknown alchemical reagent", "unknown menagerie source should explain failure")
+end
+
+local function checkAlchemyReagentSale()
+    local seller = base_entity.createEntity({
+        id = "pc_reagent_seller",
+        name = "Reagent Seller",
+        isPC = true,
+    })
+    seller.gold = 0
+    seller.inventory = inventory.createInventory()
+    local spiderReagent = inventory.createItemFromTemplate("brain_spider_reagent")
+    seller.inventory:addItem(spiderReagent, inventory.LOCATIONS.PACK)
+
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.ALCHEMY_REAGENT_SOLD, function(data)
+        emitted = data
+    end)
+
+    local ok, result, sale = alchemy.resolveReagentSale(seller, {
+        itemId = spiderReagent.id,
+    }, { eventBus = bus })
+    assertTrue(ok, "Alchemists' Hall should buy bottled reagents")
+    assertEqual(result, "reagent_sold", "reagent sale should report success")
+    assertEqual(sale.value, 20, "brain spider reagent should use 5g x total HD sale value")
+    assertEqual(seller.gold, 20, "reagent sale should add gold to seller")
+    assertTrue(not seller.inventory:findItem(spiderReagent.id), "sold reagent should leave inventory")
+    assertTrue(emitted and emitted.reagent == spiderReagent, "reagent sale should emit sold reagent details")
+
+    local gmPricedSeller = base_entity.createEntity({
+        id = "pc_gm_priced_reagent_seller",
+        name = "GM Priced Reagent Seller",
+        isPC = true,
+    })
+    gmPricedSeller.gold = 5
+    gmPricedSeller.inventory = inventory.createInventory()
+    local slimeReagent = inventory.createItemFromTemplate("slime_reagent")
+    gmPricedSeller.inventory:addItem(slimeReagent, inventory.LOCATIONS.PACK)
+    ok, result, sale = alchemy.resolveReagentSale(gmPricedSeller, {
+        source = "slime",
+        price = 37,
+    }, { eventBus = events.createEventBus() })
+    assertTrue(ok, "reagent sale should accept GM-adjudicated value")
+    assertEqual(sale.value, 37, "explicit GM value should override fallback HD value")
+    assertEqual(gmPricedSeller.gold, 42, "explicit-value reagent sale should pay the seller")
+
+    local harvestedSeller = base_entity.createEntity({
+        id = "pc_harvested_reagent_seller",
+        name = "Harvested Reagent Seller",
+        isPC = true,
+        talents = {
+            alchemy = { mastered = true },
+        },
+    })
+    harvestedSeller.gold = 0
+    harvestedSeller.inventory = inventory.createInventory()
+    harvestedSeller.inventory:addItem(inventory.createItemFromTemplate("hermetic_bottle"), inventory.LOCATIONS.PACK)
+    local queen = entity_factory.createEntity("brain_spider_queen")
+    queen.conditions.dead = true
+    local harvestOk, _, harvest = alchemy.resolveHarvestReagent(harvestedSeller, queen, {
+        watchSpent = true,
+        currentWatch = 0,
+        eventBus = events.createEventBus(),
+    })
+    assertTrue(harvestOk, "queen reagent should be harvestable before sale")
+    assertEqual(harvest.reagent.properties.sourceTotalHD, 9, "harvest should record source total HD")
+    ok, result, sale = alchemy.resolveReagentSale(harvestedSeller, {
+        itemId = harvest.reagent.id,
+    }, { eventBus = events.createEventBus() })
+    assertTrue(ok, "harvested reagent should be saleable")
+    assertEqual(sale.value, 45, "harvested reagent should sell for 5g x source total HD")
+    assertEqual(harvestedSeller.gold, 45, "harvested reagent sale should pay fallback value")
+
+    local unknownValueSeller = base_entity.createEntity({
+        id = "pc_unknown_value_reagent_seller",
+        name = "Unknown Value Reagent Seller",
+        isPC = true,
+    })
+    unknownValueSeller.gold = 0
+    unknownValueSeller.inventory = inventory.createInventory()
+    local unknown = inventory.createItem({
+        name = "Hermetic Bottle: Nameless Reagent",
+        type = "reagent",
+        properties = {
+            reagent = true,
+            hermeticBottle = true,
+        },
+    })
+    unknownValueSeller.inventory:addItem(unknown, inventory.LOCATIONS.PACK)
+    ok, result = alchemy.resolveReagentSale(unknownValueSeller, {
+        itemId = unknown.id,
+    }, { eventBus = events.createEventBus() })
+    assertTrue(not ok, "reagent sale should require a known value or GM price")
+    assertEqual(result, "Reagent value unknown", "unknown reagent value should explain sale failure")
+    assertTrue(unknownValueSeller.inventory:findItem(unknown.id) ~= nil, "failed reagent sale should not remove item")
+
+    local looseSeller = base_entity.createEntity({
+        id = "pc_loose_reagent_seller",
+        name = "Loose Reagent Seller",
+        isPC = true,
+    })
+    looseSeller.inventory = inventory.createInventory()
+    local loose = inventory.createItem({
+        name = "Loose Monster Guts",
+        type = "reagent",
+        properties = {
+            reagent = true,
+            saleValue = 5,
+        },
+    })
+    looseSeller.inventory:addItem(loose, inventory.LOCATIONS.PACK)
+    ok, result = alchemy.resolveReagentSale(looseSeller, {
+        itemId = loose.id,
+    }, { eventBus = events.createEventBus() })
+    assertTrue(not ok, "reagent sale should require hermetic preservation")
+    assertEqual(result, "Requires bottled reagent", "unbottled reagent should explain sale failure")
+end
+
+local function checkCityPhaseDeathAndTaxes()
+    local purseAndCoins = base_entity.createEntity({
+        id = "pc_city_tax_purse",
+        name = "City Tax Purse",
+        isPC = true,
+    })
+    purseAndCoins.gold = 101
+    purseAndCoins.inventory = inventory.createInventory()
+    local coinStack = inventory.createItemFromTemplate("gold_coins_15")
+    local jewel = inventory.createItemFromTemplate("ruby_ring")
+    purseAndCoins.inventory:addItem(coinStack, inventory.LOCATIONS.PACK)
+    purseAndCoins.inventory:addItem(jewel, inventory.LOCATIONS.PACK)
+
+    local coinOnly = base_entity.createEntity({
+        id = "pc_city_tax_coins",
+        name = "City Tax Coins",
+        isPC = true,
+    })
+    coinOnly.inventory = inventory.createInventory()
+    local coinOnlyStack = inventory.createItemFromTemplate("gold_coins_15")
+    coinOnly.inventory:addItem(coinOnlyStack, inventory.LOCATIONS.PACK)
+
+    local broke = base_entity.createEntity({
+        id = "pc_city_tax_broke",
+        name = "City Tax Broke",
+        isPC = true,
+    })
+    broke.gold = 0
+    broke.inventory = inventory.createInventory()
+
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_DEATH_AND_TAXES_RESOLVED, function(data)
+        emitted = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { purseAndCoins, coinOnly, broke },
+    })
+
+    local ok, result, detail = controller:resolveDeathAndTaxes()
+    assertTrue(ok, "City Phase should resolve Death and taxes")
+    assertEqual(result, "death_and_taxes_resolved", "Death and taxes should report completion")
+    assertEqual(detail.totalTax, 65, "Death and taxes should collect 50% of liquid gold from the guild")
+    assertEqual(detail.details[1].startingGold, 116, "Death and taxes should count purse gold plus carried coins")
+    assertEqual(detail.details[1].taxPaid, 58, "Death and taxes should tax half of carried liquid gold")
+    assertEqual(currency.getGold(purseAndCoins), 58, "Death and taxes should leave the untaxed half")
+    assertEqual(purseAndCoins.gold, 43, "Death and taxes should spend numeric purse gold before carried coin stacks")
+    assertTrue(purseAndCoins.inventory:findItem(jewel.id) ~= nil, "Death and taxes should not tax non-liquid treasure")
+    assertEqual(detail.details[2].taxPaid, 7, "Death and taxes should round odd half-coin taxes down")
+    assertEqual(currency.getGold(coinOnly), 8, "Death and taxes should update carried coin stacks")
+    assertEqual(coinOnlyStack.quantity, 8, "Death and taxes should decrement stack quantity for carried coins")
+    assertEqual(detail.details[3].taxPaid, 0, "Death and taxes should tolerate penniless adventurers")
+    assertTrue(emitted and emitted.totalTax == 65, "Death and taxes should emit city tax details")
+
+    ok, result = controller:resolveDeathAndTaxes()
+    assertTrue(not ok, "Death and taxes should only resolve once per City Phase controller")
+    assertEqual(result, "Death and taxes already resolved", "repeat Death and taxes should explain existing resolution")
+end
+
+local function checkCityPhaseNoteworthyDeeds()
+    local roster = {
+        noteworthyDeeds = {
+            { id = "first_lord", description = "First dungeon lord slain" },
+            { id = "hidden_path", description = "New path through the Underworld forged" },
+        },
+        fame = 2,
+    }
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_NOTEWORTHY_DEEDS_RESOLVED, function(data)
+        emitted = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guildRoster = roster,
+    })
+
+    local ok, result, detail = controller:resolveNoteworthyDeeds({
+        deeds = {
+            { id = "golden_ghost", description = "Tomb of Golden Ghosts sealed", approved = true },
+            { id = "ancient_gossip", description = "Learned strange old lore", approved = false },
+        },
+    })
+    assertTrue(ok, "Noteworthy deeds should resolve as a City Phase step")
+    assertEqual(result, "noteworthy_deeds_recorded", "approved new deeds should report roster update")
+    assertEqual(detail.previousFame, 2, "Noteworthy deeds should record previous Fame")
+    assertEqual(detail.erased.id, "first_lord", "Noteworthy deeds should erase the oldest active deed")
+    assertEqual(#detail.added, 1, "Noteworthy deeds should add only GM-approved deeds")
+    assertEqual(#detail.rejected, 1, "Noteworthy deeds should report rejected suggestions")
+    assertEqual(roster.fame, 2, "Fame should equal active noteworthy deeds after aging and additions")
+    assertEqual(roster.Fame, 2, "Noteworthy deeds should update roster Fame alias")
+    assertEqual(roster.noteworthyDeeds[1].id, "hidden_path", "remaining old deeds should stay active")
+    assertEqual(roster.noteworthyDeeds[2].id, "golden_ghost", "approved new deeds should be active")
+    assertTrue(emitted and emitted.fame == 2, "Noteworthy deeds should emit roster details")
+
+    ok, result = controller:resolveNoteworthyDeeds({
+        deeds = { "Another praiseworthy deed" },
+    })
+    assertTrue(not ok, "Noteworthy deeds should only resolve once per City Phase controller")
+    assertEqual(result, "Noteworthy deeds already resolved", "repeat Noteworthy deeds should explain existing resolution")
+
+    local quietRoster = {
+        noteworthyDeeds = {
+            { id = "old_glory", description = "Old glory" },
+            { id = "older_glory", description = "Older glory" },
+        },
+        fame = 2,
+    }
+    local quietController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guildRoster = quietRoster,
+    })
+    ok, result, detail = quietController:resolveNoteworthyDeeds()
+    assertTrue(ok, "Noteworthy deeds should resolve even with no new accomplishments")
+    assertEqual(result, "noteworthy_deeds_aged", "no new deeds should report aging")
+    assertEqual(detail.erased.id, "old_glory", "no-accomplishment return should still erase the oldest deed")
+    assertEqual(quietRoster.fame, 1, "no-accomplishment return should lose 1 Fame when possible")
+
+    local famousRoster = {
+        noteworthyDeeds = {
+            { id = "old_1", description = "Old deed one" },
+            { id = "old_2", description = "Old deed two" },
+            { id = "old_3", description = "Old deed three" },
+            { id = "old_4", description = "Old deed four" },
+            { id = "old_5", description = "Old deed five" },
+        },
+    }
+    local famousController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guildRoster = famousRoster,
+    })
+    ok, result, detail = famousController:resolveNoteworthyDeeds({
+        deeds = {
+            { id = "dragon_slayer", description = "Dungeon lord dragon slain" },
+            { id = "relic_reclaimed", description = "Potent relic reclaimed" },
+        },
+        selectedDeedIds = { "old_2", "old_3", "old_4", "dragon_slayer", "relic_reclaimed" },
+    })
+    assertTrue(ok, "Noteworthy deeds should allow curation when more than five deeds qualify")
+    assertEqual(famousRoster.fame, 5, "Fame should be capped at five active deeds")
+    assertEqual(#famousRoster.noteworthyDeeds, 5, "noteworthy roster should keep only five active deeds")
+    assertEqual(#detail.dropped, 1, "Noteworthy deeds should report deeds dropped by the five-deed cap")
+    assertEqual(detail.dropped[1].id, "old_5", "selected deeds should determine which over-cap deed is dropped")
+end
+
+local function checkCityPhaseCityEvents()
+    local rumorCard = {
+        name = "The Hanged Man",
+        value = 12,
+        suit = constants.SUITS.MAJOR,
+        is_major = true,
+    }
+    local discardedMajor = nil
+    local fakeGMDeck = {
+        draw = function()
+            return rumorCard
+        end,
+        discard = function(_, card)
+            discardedMajor = card
+        end,
+    }
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_EVENT_RESOLVED, function(data)
+        emitted = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        gmDeck = fakeGMDeck,
+    })
+
+    local ok, result, detail = controller:resolveCityEvent()
+    assertTrue(ok, "City Events should resolve as a City Phase step")
+    assertEqual(result, "city_event_resolved", "City Events should report completion")
+    assertEqual(detail.card, rumorCard, "City Events should use the drawn major arcana")
+    assertEqual(detail.category, "rumor", "major XI-XV City Events should be rumors")
+    assertEqual(detail.event.title, "The Star's Daughter", "City Events should consult the drawn card table entry")
+    assertEqual(discardedMajor, rumorCard, "City Events should discard automatically drawn major cards")
+    assertTrue(controller.lastCityEvent == detail, "City Events should store the last event on the controller")
+    assertTrue(emitted and emitted.event.title == "The Star's Daughter", "City Events should emit event details")
+
+    ok, result = controller:resolveCityEvent()
+    assertTrue(not ok, "City Events should resolve only once per City Phase controller")
+    assertEqual(result, "City Event already resolved", "repeat City Events should explain existing resolution")
+
+    local signCard = {
+        name = "The World",
+        value = 21,
+        suit = constants.SUITS.MAJOR,
+        is_major = true,
+    }
+    local minorDiscard = {
+        name = "Eight of Cups",
+        value = 8,
+        suit = constants.SUITS.CUPS,
+    }
+    local fakeMinorDeck = {
+        peekDiscard = function()
+            return minorDiscard
+        end,
+    }
+    local signsController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        playerDeck = fakeMinorDeck,
+    })
+    ok, result, detail = signsController:resolveCityEvent({
+        majorCard = signCard,
+    })
+    assertTrue(ok, "City Events should resolve Signs and Portents when a minor discard exists")
+    assertEqual(detail.category, "signs_and_portents", "major XXI should use Signs and Portents")
+    assertEqual(detail.signCard, minorDiscard, "Signs and Portents should inspect the top minor discard")
+    assertEqual(detail.sign.title, "The Mushroom Forest", "Signs and Portents should consult the minor discard value")
+    assertTrue(signsController.cityEventResolved, "successful Signs and Portents should mark City Events resolved")
+
+    local noDiscardController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+    })
+    ok, result = noDiscardController:resolveCityEvent({
+        majorCard = signCard,
+    })
+    assertTrue(not ok, "Signs and Portents should require a minor discard card")
+    assertEqual(result, "Requires minor discard for Signs and Portents", "missing Signs discard should explain failure")
+    assertTrue(not noDiscardController.cityEventResolved, "failed Signs and Portents should not mark City Events resolved")
+
+    local noDeckController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+    })
+    ok, result = noDeckController:resolveCityEvent()
+    assertTrue(not ok, "City Events should require a major draw or explicit card")
+    assertEqual(result, "Requires major arcana draw", "missing City Event draw should explain failure")
+end
+
+local function checkCityPhaseCityEventEffects()
+    local commonActor = base_entity.createEntity({
+        id = "pc_city_event_common",
+        name = "City Event Common",
+        isPC = true,
+    })
+    commonActor.gold = 25
+    commonActor.inventory = inventory.createInventory()
+    local upkeepController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { commonActor },
+    })
+    local ok, result, detail = upkeepController:resolveCityEvent({
+        majorCard = {
+            name = "Justice",
+            value = 8,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Coronation City Event should resolve")
+    assertTrue(detail.effects.upkeepCosts.common == 25, "Coronation should install reduced upkeep costs")
+    ok, result, detail = upkeepController:resolveUpkeep(commonActor, {
+        tier = "common",
+    })
+    assertTrue(ok, "reduced City Event upkeep should allow common lodging at event price")
+    assertEqual(detail.cost, 25, "Coronation should reduce common upkeep to 25g")
+    assertEqual(detail.baseCost, 50, "reduced upkeep should preserve the base tier cost")
+    assertEqual(commonActor.gold, 0, "reduced upkeep should spend only the event cost")
+
+    local busker = base_entity.createEntity({
+        id = "pc_city_event_busker",
+        name = "City Event Busker",
+        isPC = true,
+        wands = 2,
+    })
+    busker.gold = 0
+    busker.inventory = inventory.createInventory()
+    local carouser = base_entity.createEntity({
+        id = "pc_city_event_carouser",
+        name = "City Event Carouser",
+        isPC = true,
+    })
+    carouser.gold = 50
+    carouser.xp = 0
+    carouser.inventory = inventory.createInventory()
+    local carouseOnlyController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { busker, carouser },
+    })
+    ok = carouseOnlyController:resolveCityEvent({
+        majorCard = {
+            name = "The Chariot",
+            value = 7,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Ecstasy of St. Naos City Event should resolve")
+    ok, result = carouseOnlyController:resolveAction(busker, {
+        type = "beg_and_busk",
+        card = {
+            name = "Five of Wands",
+            value = 5,
+            suit = constants.SUITS.WANDS,
+        },
+    })
+    assertTrue(not ok, "only-Carouse City Event should reject other City Actions")
+    assertEqual(result, "City Action not available during this City Event", "only-Carouse rejection should explain event limit")
+    assertTrue(not carouseOnlyController:hasActed(busker), "event-rejected City Action should not consume action")
+    ok, result = carouseOnlyController:resolveAction(carouser, {
+        type = "carouse",
+        spend = "all",
+        hangoverCard = {
+            name = "The Hermit",
+            value = 9,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "only-Carouse City Event should still allow Carouse")
+    assertEqual(result, "carouse_resolved", "allowed event Carouse should resolve normally")
+
+    local dryCarouser = base_entity.createEntity({
+        id = "pc_city_event_dry_carouser",
+        name = "City Event Dry Carouser",
+        isPC = true,
+    })
+    dryCarouser.gold = 50
+    dryCarouser.inventory = inventory.createInventory()
+    local dryController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { dryCarouser },
+    })
+    ok = dryController:resolveCityEvent({
+        majorCard = {
+            name = "The Hermit",
+            value = 9,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Feast of the Constellations City Event should resolve")
+    ok, result = dryController:resolveAction(dryCarouser, {
+        type = "carouse",
+        spend = "half",
+        hangoverCard = {
+            name = "The Magician",
+            value = 1,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(not ok, "Carouse-ban City Event should reject Carouse")
+    assertEqual(result, "City Action blocked by City Event", "blocked Carouse should explain event limit")
+    assertEqual(dryCarouser.gold, 50, "blocked Carouse should not spend gold")
+    assertTrue(not dryController:hasActed(dryCarouser), "blocked Carouse should not consume action")
+
+    local hauntedBusker = base_entity.createEntity({
+        id = "pc_city_event_haunted_busker",
+        name = "City Event Haunted Busker",
+        isPC = true,
+        wands = 1,
+    })
+    hauntedBusker.gold = 0
+    hauntedBusker.inventory = inventory.createInventory()
+    local hauntedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { hauntedBusker },
+    })
+    ok = hauntedController:resolveCityEvent({
+        majorCard = {
+            name = "The World",
+            value = 21,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+        minorDiscardCard = {
+            name = "King of Cups",
+            value = 14,
+            suit = constants.SUITS.CUPS,
+        },
+    })
+    assertTrue(ok, "What Is Dead May Never Die portent should resolve")
+    ok, result = hauntedController:resolveAction(hauntedBusker, {
+        type = "beg_and_busk",
+        card = {
+            name = "Two of Wands",
+            value = 2,
+            suit = constants.SUITS.WANDS,
+        },
+    })
+    assertTrue(not ok, "all-blocking City Event should reject every City Action")
+    assertEqual(result, "City Actions blocked by City Event", "all-blocking City Event should explain lockout")
+    assertEqual(hauntedBusker.gold, 0, "all-blocked City Action should not apply effects")
+    assertTrue(not hauntedController:hasActed(hauntedBusker), "all-blocked City Action should not consume action")
+end
+
+local function checkCityPhaseEndMaledictionConsequences()
+    local cursed = base_entity.createEntity({
+        id = "pc_city_dogs_hate",
+        name = "City Dogs Hate",
+        isPC = true,
+    })
+    cursed.conditions = {}
+    cursed.malediction = {
+        active = true,
+        curse = {
+            flags = { cityPhaseDogCurse = true, dogsHateYou = true },
+            metadata = {
+                cityPhaseConditionChance = {
+                    staggered = 0.5,
+                    stressed = 0.5,
+                },
+            },
+        },
+    }
+
+    local calm = base_entity.createEntity({
+        id = "pc_city_no_dog_curse",
+        name = "City No Dog Curse",
+        isPC = true,
+    })
+    calm.conditions = {}
+
+    local emitted = nil
+    local phaseChanged = nil
+    local bus = events.createEventBus()
+    bus:on(events.EVENTS.CITY_PHASE_ENDED, function(data)
+        emitted = data
+    end)
+    bus:on(events.EVENTS.PHASE_CHANGED, function(data)
+        phaseChanged = data
+    end)
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { cursed, calm },
+    })
+
+    local ok, result, detail = controller:resolveEndOfCityPhase({
+        dogCurseCondition = {
+            pc_city_dogs_hate = "staggered",
+        },
+    })
+    assertTrue(ok, "City Phase end should resolve")
+    assertEqual(result, "city_phase_ended", "City Phase end should report completion")
+    assertTrue(cursed.conditions.staggered, "Dogs Hate You should mark a City-end Staggered outcome")
+    assertTrue(not cursed.conditions.stressed, "explicit Staggered dog-curse outcome should not also stress")
+    assertTrue(not calm.conditions.staggered and not calm.conditions.stressed,
+        "uncursed City Phase members should not receive dog-curse consequences")
+    assertEqual(#detail.dogCurseConsequences, 1, "City Phase end should record one dog-curse consequence")
+    assertEqual(detail.dogCurseConsequences[1].condition, "staggered",
+        "City Phase end should record the selected dog-curse condition")
+    assertTrue(emitted == detail, "City Phase end should emit its detail")
+    assertTrue(phaseChanged and phaseChanged.oldPhase == "city" and phaseChanged.newPhase == "crawl",
+        "City Phase end should emit a phase transition")
+
+    ok, result = controller:resolveEndOfCityPhase()
+    assertTrue(not ok, "City Phase end should resolve only once")
+    assertEqual(result, "City Phase already ended", "repeat City Phase end should explain existing resolution")
+
+    local stressedCursed = base_entity.createEntity({
+        id = "pc_city_dogs_stressed",
+        name = "City Dogs Stressed",
+        isPC = true,
+    })
+    stressedCursed.conditions = {}
+    stressedCursed.cityPhaseDogCurse = true
+    local stressedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { stressedCursed },
+    })
+    ok, result = stressedController:resolveEndOfCityPhase({
+        dogCurseCondition = "stressed",
+    })
+    assertTrue(ok, "City Phase end should accept explicit Stressed dog-curse outcome")
+    assertTrue(stressedCursed.conditions.stressed,
+        "Dogs Hate You should mark a City-end Stressed outcome")
+
+    do
+        local prayerBus = events.createEventBus()
+        local expired = {}
+        local cityResolved = nil
+        prayerBus:on(events.EVENTS.CONDITION_EXPIRED, function(data)
+            expired[#expired + 1] = data
+        end)
+        prayerBus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+            cityResolved = data
+        end)
+
+        local sorcerer = base_entity.createEntity({
+            id = "pc_city_prayer_welkin",
+            name = "City Prayer Welkin",
+            isPC = true,
+            talents = {
+                magic_of_the_welkin = { mastered = true },
+            },
+        })
+        local resolver = action_resolver.createActionResolver({
+            eventBus = prayerBus,
+        })
+
+        local exhaustedRecord = resolver:triggerMaleficence(sorcerer, "welkin", "smoke_test", {
+            spell = { id = "heavenfire", branch = "welkin" },
+        })
+        local exhausted = resolver:resolvePendingMaleficence(sorcerer, {
+            record = exhaustedRecord,
+            value = 6,
+            allEntities = { sorcerer },
+        })
+        assertTrue(exhausted.success, "Welkin VI Piteous Stigmata should resolve from table data")
+        assertTrue(sorcerer.conditions.exhausted, "Welkin VI should mark Exhausted")
+        assertEqual(sorcerer.conditionDurations.exhausted["until"], "city_prayer",
+            "Welkin VI Exhausted should last until City prayer")
+
+        local haloRecord = resolver:triggerMaleficence(sorcerer, "welkin", "smoke_test", {
+            spell = { id = "heavenfire", branch = "welkin" },
+        })
+        local halo = resolver:resolvePendingMaleficence(sorcerer, {
+            record = haloRecord,
+            value = 8,
+            allEntities = { sorcerer },
+        })
+        assertTrue(halo.success, "Welkin VIII Halo should resolve from table data")
+        assertTrue(sorcerer.conditions.halo, "Welkin VIII should mark Halo")
+        assertEqual(sorcerer.conditionDurations.halo["until"], "city_prayer",
+            "Welkin VIII Halo should last until City prayer")
+
+        sorcerer.conditions.silenced = true
+        sorcerer.conditionDurations.silenced = { ["until"] = "fool_reshuffle" }
+
+        local prayerController = city_phase.createCityPhaseController({
+            eventBus = prayerBus,
+            guild = { sorcerer },
+        })
+        ok, result, detail = prayerController:resolveAction(sorcerer, {
+            type = "pray_at_mythraeum",
+        })
+        assertTrue(ok, "City prayer should resolve through the City Action facade")
+        assertEqual(result, "city_prayer_complete", "City prayer should report completion")
+        assertTrue(not sorcerer.conditions.exhausted, "City prayer should clear Welkin VI Exhausted")
+        assertTrue(not sorcerer.conditions.halo, "City prayer should clear Welkin VIII Halo")
+        assertTrue(sorcerer.conditions.silenced, "City prayer should leave non-city-prayer conditions")
+        assertTrue(sorcerer.conditionDurations and sorcerer.conditionDurations.silenced and
+            not sorcerer.conditionDurations.exhausted and not sorcerer.conditionDurations.halo,
+            "City prayer should remove only city-prayer duration metadata")
+        assertEqual(#detail.conditionsCleared, 2, "City prayer should report both cleared conditions")
+        assertTrue(hasValue(detail.conditionsCleared, "exhausted"),
+            "City prayer detail should include Exhausted")
+        assertTrue(hasValue(detail.conditionsCleared, "halo"), "City prayer detail should include Halo")
+        assertEqual(#expired, 2, "City prayer should emit condition-expired events")
+        assertEqual(expired[1].timing, "city_prayer", "City prayer expiry event should carry timing")
+        assertTrue(cityResolved and cityResolved.action == city_phase.ACTIONS.PRAY_AT_MYTHRAEUM,
+            "City prayer should emit normalized City Action details")
+        assertTrue(prayerController:hasActed(sorcerer), "City prayer should consume a successful City Action")
+    end
+end
+
+local function checkCityPhaseTurnInContracts()
+    local weela = base_entity.createEntity({
+        id = "pc_city_contract_weela",
+        name = "City Contract Weela",
+        isPC = true,
+    })
+    weela.gold = 0
+    weela.xp = 0
+    weela.inventory = inventory.createInventory()
+    local alisander = base_entity.createEntity({
+        id = "pc_city_contract_alisander",
+        name = "City Contract Alisander",
+        isPC = true,
+    })
+    alisander.gold = 0
+    alisander.xp = 2
+    alisander.inventory = inventory.createInventory()
+    local lucind = base_entity.createEntity({
+        id = "pc_city_contract_lucind",
+        name = "City Contract Lucind",
+        isPC = true,
+    })
+    lucind.gold = 10
+    lucind.xp = 1
+    lucind.inventory = inventory.createInventory()
+
+    local contracts = {
+        {
+            id = "basilisk_eggs",
+            name = "Basilisk Eggs for Master Underhill",
+            completed = true,
+            quantity = 6,
+            rewardPerItem = 50,
+        },
+        {
+            id = "unopened_contract",
+            name = "Find the Fallen Star",
+            completed = false,
+            rewardGold = 500,
+        },
+    }
+    local treasury = { gold = 0 }
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_CONTRACTS_TURNED_IN, function(data)
+        emitted = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { weela, alisander, lucind },
+        contracts = contracts,
+        guildTreasury = treasury,
+    })
+
+    local ok, result, detail = controller:resolveTurnInContracts()
+    assertTrue(ok, "Turn in contracts should resolve as a City Phase step")
+    assertEqual(result, "contracts_turned_in", "completed contracts should report turned in")
+    assertEqual(detail.completedCount, 1, "Turn in contracts should count only completed contracts")
+    assertEqual(detail.totalGold, 300, "Turn in contracts should pay per-item rewards")
+    assertEqual(detail.contracts[1].distribution.perRecipient, 100, "Turn in contracts should split rewards across the guild")
+    assertEqual(weela.gold, 100, "Turn in contracts should pay each guild member")
+    assertEqual(alisander.gold, 100, "Turn in contracts should pay the second guild member")
+    assertEqual(lucind.gold, 110, "Turn in contracts should add rewards to existing gold")
+    assertEqual(treasury.gold, 0, "even contract split should leave no treasury remainder")
+    assertEqual(weela.xp, 1, "Turn in contracts should grant 1XP per fulfilled contract")
+    assertEqual(alisander.xp, 3, "Turn in contracts should add XP to existing totals")
+    assertEqual(lucind.xp, 2, "Turn in contracts should grant each member XP")
+    assertTrue(contracts[1].turnedIn, "Turn in contracts should mark completed contracts turned in")
+    assertTrue(not contracts[2].turnedIn, "Turn in contracts should not turn in incomplete contracts")
+    assertTrue(emitted and emitted.completedCount == 1, "Turn in contracts should emit step details")
+
+    ok, result = controller:resolveTurnInContracts()
+    assertTrue(not ok, "Turn in contracts should only resolve once per City Phase controller")
+    assertEqual(result, "Contracts already turned in", "repeat Turn in contracts should explain existing resolution")
+
+    local noContractController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { weela },
+        contracts = {
+            { id = "still_open", completed = false, rewardGold = 100 },
+        },
+    })
+    ok, result, detail = noContractController:resolveTurnInContracts()
+    assertTrue(ok, "Turn in contracts should gracefully skip when no contracts are complete")
+    assertEqual(result, "no_completed_contracts", "no completed contracts should report skip state")
+    assertEqual(detail.completedCount, 0, "no completed contracts should not count open contracts")
+
+    local remainderA = base_entity.createEntity({
+        id = "pc_city_contract_remainder_a",
+        name = "City Contract Remainder A",
+        isPC = true,
+    })
+    remainderA.gold = 0
+    remainderA.inventory = inventory.createInventory()
+    local remainderB = base_entity.createEntity({
+        id = "pc_city_contract_remainder_b",
+        name = "City Contract Remainder B",
+        isPC = true,
+    })
+    remainderB.gold = 0
+    remainderB.inventory = inventory.createInventory()
+    local remainderTreasury = { gold = 0 }
+    local remainderController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { remainderA, remainderB },
+        contracts = {
+            { id = "odd_reward", completed = true, rewardGold = 5 },
+        },
+        guildTreasury = remainderTreasury,
+    })
+    ok, result, detail = remainderController:resolveTurnInContracts()
+    assertTrue(ok, "Turn in contracts should resolve uneven reward splits")
+    assertEqual(remainderA.gold, 2, "uneven contract reward should pay floor split")
+    assertEqual(remainderB.gold, 2, "uneven contract reward should pay every recipient")
+    assertEqual(remainderTreasury.gold, 1, "uneven contract reward should retain remainder in guild treasury")
+    assertEqual(detail.contracts[1].distribution.remainder, 1, "uneven contract reward should report treasury remainder")
+end
+
+local function checkCityPhaseSellTreasure()
+    local seller = base_entity.createEntity({
+        id = "pc_city_treasure_seller",
+        name = "City Treasure Seller",
+        isPC = true,
+    })
+    seller.gold = 5
+    seller.inventory = inventory.createInventory()
+    local ring = inventory.createItemFromTemplate("ruby_ring")
+    local amulet = inventory.createItemFromTemplate("golden_amulet")
+    seller.inventory:addItem(ring, inventory.LOCATIONS.PACK)
+    seller.inventory:addItem(amulet, inventory.LOCATIONS.PACK)
+
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_TREASURE_SOLD, function(data)
+        emitted = data
+    end)
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { seller },
+    })
+
+    local ok, result, detail = controller:resolveSellTreasure(seller, {
+        itemIds = { ring.id, amulet.id },
+        values = {
+            [amulet.id] = 80,
+        },
+    })
+    assertTrue(ok, "City Phase should sell non-liquid treasure before Upkeep")
+    assertEqual(result, "treasure_sold", "treasure sale should report completion")
+    assertEqual(detail.totalGold, 130, "treasure sale should use item value or explicit GM value")
+    assertEqual(seller.gold, 135, "treasure sale should pay the seller before Upkeep")
+    assertTrue(seller.inventory:findItem(ring.id) == nil, "sold treasure should leave inventory")
+    assertTrue(seller.inventory:findItem(amulet.id) == nil, "explicit-value sold treasure should leave inventory")
+    assertTrue(emitted and emitted.totalGold == 130, "treasure sale should emit sale details")
+
+    local coinSeller = base_entity.createEntity({
+        id = "pc_city_coin_seller",
+        name = "City Coin Seller",
+        isPC = true,
+    })
+    coinSeller.gold = 0
+    coinSeller.inventory = inventory.createInventory()
+    local coins = inventory.createItemFromTemplate("gold_coins_15")
+    coinSeller.inventory:addItem(coins, inventory.LOCATIONS.PACK)
+    local coinController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { coinSeller },
+    })
+    ok, result = coinController:resolveSellTreasure(coinSeller, {
+        itemIds = { coins.id },
+    })
+    assertTrue(not ok, "treasure sale should not treat liquid coin as non-liquid treasure")
+    assertEqual(result, "Item is not non-liquid treasure", "liquid coin sale should explain rejection")
+    assertTrue(coinSeller.inventory:findItem(coins.id) ~= nil, "rejected coin sale should leave coin stack carried")
+
+    local junkSeller = base_entity.createEntity({
+        id = "pc_city_junk_seller",
+        name = "City Junk Seller",
+        isPC = true,
+    })
+    junkSeller.gold = 0
+    junkSeller.inventory = inventory.createInventory()
+    local junk = inventory.createItem({ name = "Rusty Pot" })
+    junkSeller.inventory:addItem(junk, inventory.LOCATIONS.PACK)
+    local junkController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { junkSeller },
+    })
+    ok, result = junkController:resolveSellTreasure(junkSeller, {
+        itemIds = { junk.id },
+    })
+    assertTrue(not ok, "treasure sale should reject ordinary gear without treasure value")
+    assertEqual(result, "Item is not non-liquid treasure", "ordinary gear sale should explain rejection")
+    assertEqual(junkSeller.gold, 0, "failed treasure sale should not pay gold")
+    assertTrue(junkSeller.inventory:findItem(junk.id) ~= nil, "failed treasure sale should leave item carried")
+end
+
+local function checkCityPhasePlanNextCrawl()
+    local offers = {
+        { id = "rat_cellar", name = "Rat Cellar Cleanup", rewardGold = 50 },
+        { id = "sepulcher_titans", name = "Sepulcher of Titans Survey", rewardGold = 120 },
+        { id = "star_daughter", name = "Star Daughter Dowry", rewardGold = 200 },
+        { id = "mushroom_forest", name = "Mushroom Forest Samples", rewardGold = 75 },
+        { id = "missing_butler", name = "Missing Butler Aethelred", rewardGold = 30 },
+    }
+    local existing = {
+        { id = "old_contract", name = "Old Open Contract", status = "active" },
+    }
+    local roster = {}
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_NEXT_CRAWL_PLANNED, function(data)
+        emitted = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        contracts = existing,
+        jobBoard = offers,
+        guildRoster = roster,
+    })
+
+    local ok, result, detail = controller:resolvePlanNextCrawl({
+        selectedContractIds = { "rat_cellar", "star_daughter" },
+        destination = "Rat Cellar",
+        notes = "Seal two jobs, then return below.",
+    })
+    assertTrue(ok, "Plan the next Crawl should resolve as a City Phase step")
+    assertEqual(result, "next_crawl_planned", "Plan the next Crawl should report completion")
+    assertEqual(detail.offeredCount, 5, "Plan the next Crawl should present the job-board contracts")
+    assertEqual(detail.signedCount, 2, "Plan the next Crawl should sign selected offered contracts")
+    assertTrue(offers[1].signed and offers[1].sealed, "selected contracts should be sealed by the guild")
+    assertTrue(offers[3].signed and offers[3].sealed, "multiple selected contracts should be sealed")
+    assertEqual(#existing, 3, "signed contracts should join current guild contracts")
+    assertEqual(existing[2].id, "rat_cellar", "first signed contract should be appended to current contracts")
+    assertEqual(existing[3].id, "star_daughter", "second signed contract should be appended to current contracts")
+    assertEqual(roster.currentContracts, existing, "Plan the next Crawl should update the guild roster contract list")
+    assertEqual(roster.nextDestination, "Rat Cellar", "Plan the next Crawl should record the chosen destination")
+    assertEqual(roster.nextCrawlNotes, "Seal two jobs, then return below.", "Plan the next Crawl should record guild discussion notes")
+    assertTrue(emitted and emitted.signedCount == 2, "Plan the next Crawl should emit planning details")
+
+    ok, result = controller:resolvePlanNextCrawl({
+        selectedContractIds = { "sepulcher_titans" },
+    })
+    assertTrue(not ok, "Plan the next Crawl should resolve only once per City Phase controller")
+    assertEqual(result, "Next Crawl already planned", "repeat Plan the next Crawl should explain existing resolution")
+
+    local questRoster = {}
+    local questController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        jobBoard = offers,
+        guildRoster = questRoster,
+        contracts = {},
+    })
+    ok, result, detail = questController:resolvePlanNextCrawl({
+        currentQuest = "Alisander's necromantic errand",
+        destination = "Sepulcher of Titans",
+    })
+    assertTrue(ok, "Plan the next Crawl should allow continuing a quest without sealing a new contract")
+    assertEqual(detail.signedCount, 0, "continuing a quest should not require a new contract")
+    assertEqual(questRoster.currentQuest, "Alisander's necromantic errand", "Plan the next Crawl should record current quest direction")
+    assertEqual(questRoster.nextDestination, "Sepulcher of Titans", "Plan the next Crawl should record the next destination")
+
+    local shortBoardController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        jobBoard = {
+            { id = "a" },
+            { id = "b" },
+            { id = "c" },
+        },
+    })
+    ok, result = shortBoardController:resolvePlanNextCrawl()
+    assertTrue(not ok, "Plan the next Crawl should require the rulebook four-to-six contract job board")
+    assertEqual(result, "Job board should offer four to six contracts", "short job board should explain requirement")
+    assertTrue(not shortBoardController.nextCrawlPlanned, "failed job board validation should not mark the step planned")
+
+    local unofferedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        jobBoard = offers,
+        contracts = {},
+    })
+    ok, result = unofferedController:resolvePlanNextCrawl({
+        selectedContractIds = { "not_on_board" },
+    })
+    assertTrue(not ok, "Plan the next Crawl should reject contracts not offered on the job board")
+    assertEqual(result, "Selected contract not on job board", "unoffered contract should explain rejection")
+    assertEqual(#unofferedController.contracts, 0, "failed contract selection should not add contracts")
+
+    local completedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        jobBoard = {
+            { id = "fresh_1" },
+            { id = "fresh_2" },
+            { id = "fresh_3" },
+            { id = "fresh_4" },
+            { id = "done_already", completed = true },
+        },
+        contracts = {},
+    })
+    ok, result = completedController:resolvePlanNextCrawl({
+        selectedContractIds = { "done_already" },
+    })
+    assertTrue(not ok, "Plan the next Crawl should reject completed contracts")
+    assertEqual(result, "Selected contract already completed", "completed job-board contract should explain rejection")
+    assertEqual(#completedController.contracts, 0, "failed completed contract selection should not add contracts")
+
+    local jobBoardCards = {
+        { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+        { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        { name = "Four of Wands", value = 4, suit = constants.SUITS.WANDS },
+        { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+    }
+    local generated, generationDetail = city_phase.generateJobBoard({
+        jobBoardCards = jobBoardCards,
+        idPrefix = "rat_milk",
+    })
+    assertEqual(#generated, 5, "card-generated job board should create one offer per card")
+    assertEqual(generationDetail.cardCount, 5, "card-generated job board should report drawn card count")
+    assertEqual(generated[1].templateId, "tricky_woo", "value I should map to the Tricky Woo contract")
+    assertEqual(generated[1].cardRank, "I", "generated contracts should preserve the card-table rank")
+    assertEqual(generated[5].templateId, "onion_jack", "value V should map to the Onion Jack bounty")
+    assertEqual(generated[1].id, "rat_milk_01_tricky_woo_swords", "generated contract ids should be stable")
+
+    local generatedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        contracts = {},
+    })
+    ok, result, detail = generatedController:resolvePlanNextCrawl({
+        generateJobBoard = true,
+        jobBoardCards = jobBoardCards,
+        idPrefix = "rat_milk",
+        selectedContractIds = { "rat_milk_01_tricky_woo_swords" },
+        destination = "Mouth of the Underworld",
+    })
+    assertTrue(ok, "Plan the next Crawl should generate a job board from cards when requested")
+    assertEqual(result, "next_crawl_planned", "generated job-board planning should report completion")
+    assertEqual(detail.generatedJobBoard.cardCount, 5, "Plan the next Crawl should report generated board details")
+    assertEqual(detail.signedContracts[1].templateId, "tricky_woo", "generated offers should be selectable contracts")
+    assertEqual(#generatedController.contracts, 1, "selected generated contract should join current contracts")
+    assertEqual(generatedController.jobBoard[5].templateId, "onion_jack", "generated board should be retained on the controller")
+
+    local deckCards = {
+        { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        { name = "Four of Wands", value = 4, suit = constants.SUITS.WANDS },
+        { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+        { name = "The Fool", value = 0, suit = constants.SUITS.MAJOR, is_major = true },
+    }
+    local generatedDeck = {
+        discarded = {},
+        cards = deckCards,
+        draw = function(self)
+            return table.remove(self.cards)
+        end,
+        discard = function(self, card)
+            self.discarded[#self.discarded + 1] = card
+        end,
+    }
+    generated, generationDetail = city_phase.generateJobBoard({
+        deck = generatedDeck,
+        idPrefix = "drawn_board",
+    })
+    assertEqual(#generated, 5, "job board generation should draw five cards by default")
+    assertTrue(generationDetail.drawnFromDeck, "deck-generated job board should report deck drawing")
+    assertEqual(#generationDetail.skippedCards, 1, "deck-generated job board should skip non-table cards")
+    assertEqual(#generatedDeck.discarded, 6, "deck-generated job board should discard automatic draws and skipped cards")
+
+    local shortGeneratedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        contracts = {},
+    })
+    ok, result = shortGeneratedController:resolvePlanNextCrawl({
+        generateJobBoard = true,
+        jobBoardCards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+            { name = "Three of Swords", value = 3, suit = constants.SUITS.SWORDS },
+        },
+    })
+    assertTrue(not ok, "generated job boards should still require four to six cards")
+    assertEqual(result, "Job board should offer four to six contracts", "short generated job board should explain requirement")
+
+    local invalidCardController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        contracts = {},
+    })
+    ok, result = invalidCardController:resolvePlanNextCrawl({
+        generateJobBoard = true,
+        jobBoardCards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+            { name = "Three of Swords", value = 3, suit = constants.SUITS.SWORDS },
+            { name = "The Fool", value = 0, suit = constants.SUITS.MAJOR, is_major = true },
+        },
+    })
+    assertTrue(not ok, "generated job boards should reject cards outside the example contract table")
+    assertEqual(result, "Job board cards must map to contracts I through King", "invalid job-board card should explain contract-table range")
+end
+
+local function checkCityPhaseRestockUnderworld()
+    local cityEventsTable = {
+        [12] = { value = 12, title = "Old Star-Daughter Rumor" },
+    }
+    local signsTable = {
+        [8] = { value = 8, title = "Old Mushroom Forest" },
+    }
+    local meatgrinderTable = {
+        [16] = { value = 16, description = "Old ogre encounter" },
+    }
+    local resetCalled = false
+    local fakeMeatgrinder = {
+        consumed = { "global:random_encounter", "111_spiders_treasure:quest_rumor" },
+        getConsumedEvents = function(self)
+            return self.consumed
+        end,
+        resetConsumed = function(self)
+            resetCalled = true
+            self.consumed = {}
+        end,
+    }
+    local roster = {}
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on(events.EVENTS.CITY_UNDERWORLD_RESTOCKED, function(data)
+        emitted = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guildRoster = roster,
+        cityEventsTable = cityEventsTable,
+        signsAndPortentsTable = signsTable,
+        meatgrinder = fakeMeatgrinder,
+        meatgrinderTable = meatgrinderTable,
+    })
+
+    local ok, result, detail = controller:resolveRestockUnderworld({
+        cityEventReplacements = {
+            [12] = { value = 12, title = "New Star-Daughter Consequence" },
+        },
+        signsAndPortentsReplacements = {
+            { value = 8, title = "New Mushroom District Trouble" },
+        },
+        meatgrinderReplacements = {
+            [16] = { value = 16, description = "A rival guild loots the old ogre post" },
+        },
+        mapUpdates = {
+            { roomId = "111_spiders_treasure", state = "looted" },
+        },
+        factionUpdates = {
+            { faction = "tomb_spiders", response = "retreat deeper" },
+        },
+        notes = "Replace used random-table entries based on guild consequences.",
+    })
+    assertTrue(ok, "Restock the Underworld should resolve as a City Phase step")
+    assertEqual(result, "underworld_restocked", "Restock the Underworld should report completion")
+    assertEqual(detail.consumedMeatgrinder[1], "global:random_encounter", "Restock should report consumed Meatgrinder entries")
+    assertTrue(resetCalled, "Restock should clear consumed Meatgrinder markers after replacement")
+    assertEqual(#fakeMeatgrinder.consumed, 0, "Restock should reset Meatgrinder consumed state")
+    assertEqual(cityEventsTable[12].title, "New Star-Daughter Consequence", "Restock should replace used City Event entries")
+    assertEqual(signsTable[8].title, "New Mushroom District Trouble", "Restock should replace used Signs and Portents entries when provided")
+    assertEqual(meatgrinderTable[16].description, "A rival guild loots the old ogre post", "Restock should replace used Meatgrinder entries")
+    assertEqual(#detail.cityEventReplacements, 1, "Restock should report City Event replacements")
+    assertEqual(#detail.meatgrinderReplacements, 1, "Restock should report Meatgrinder replacements")
+    assertEqual(roster.mapsReviewed, true, "Restock should record that maps were reviewed")
+    assertEqual(roster.restockNotes[1].mapUpdates[1].roomId, "111_spiders_treasure", "Restock should record map updates")
+    assertEqual(roster.restockNotes[1].factionUpdates[1].faction, "tomb_spiders", "Restock should record faction updates")
+    assertTrue(emitted and emitted.result == "underworld_restocked", "Restock should emit step details")
+
+    ok, result = controller:resolveRestockUnderworld()
+    assertTrue(not ok, "Restock the Underworld should resolve only once per City Phase controller")
+    assertEqual(result, "Underworld already restocked", "repeat Restock should explain existing resolution")
+
+    local noteOnlyRoster = {}
+    local noteOnlyController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guildRoster = noteOnlyRoster,
+    })
+    ok, result, detail = noteOnlyController:resolveRestockUnderworld({
+        mapsReviewed = false,
+        notes = "No used entries this time.",
+    })
+    assertTrue(ok, "Restock should allow notes even when no random-table entries were consumed")
+    assertEqual(detail.mapsReviewed, false, "Restock should preserve explicit map-review state")
+    assertEqual(noteOnlyRoster.restockNotes[1].notes, "No used entries this time.", "Restock should record note-only maintenance")
+end
+
+local function checkOmphalicMarketCatalog()
+    local expected = {
+        animal_feed = "impoverished",
+        bedroll = "impoverished",
+        candles = "impoverished",
+        chalk = "impoverished",
+        clothes_rags = "impoverished",
+        firewood = "impoverished",
+        flint_and_tinder = "impoverished",
+        lard = "impoverished",
+        leeches = "impoverished",
+        pipeweed = "impoverished",
+        pole_10ft = "impoverished",
+        poultice = "impoverished",
+        ration = "impoverished",
+        religious_paraphernalia = "impoverished",
+        rope = "impoverished",
+        caltrops = "common",
+        chain_10ft = "common",
+        clothes_common = "common",
+        cooking_gear = "common",
+        crowbar = "common",
+        fishing_gear = "common",
+        garlic = "common",
+        grappling_hook = "common",
+        hammer = "common",
+        hatchet = "common",
+        helm = "common",
+        hermetic_bottle = "common",
+        iron_spikes = "common",
+        light_armor = "common",
+        lockpicks = "common",
+        mirror = "common",
+        musical_instrument = "common",
+        pick = "common",
+        quill_and_ink = "common",
+        shield_light = "common",
+        shovel = "common",
+        tinkers_kit = "common",
+        torch = "common",
+        wolfsbane = "common",
+        alchemy_kit = "luxurious",
+        bezoar = "luxurious",
+        booze_fancy = "luxurious",
+        clothes_finery = "luxurious",
+        falconry_gear = "luxurious",
+        hourglass = "luxurious",
+        iron_armor = "luxurious",
+        lantern = "luxurious",
+        manacles = "luxurious",
+        oil = "luxurious",
+        salt = "luxurious",
+        shield_heavy = "luxurious",
+        silver_longsword = "luxurious",
+        spyglass = "luxurious",
+        steel_armor = "luxurious",
+        tent = "luxurious",
+        wand_archwood = "luxurious",
+    }
+
+    for templateId, tier in pairs(expected) do
+        assertTrue(item_templates.hasTemplate(templateId), "Omphalic Market template should exist: " .. templateId)
+        assertEqual(city_phase.MARKET_TIERS[templateId], tier, "Omphalic Market tier should match rulebook: " .. templateId)
+    end
+
+    local lightArmor = inventory.createItemFromTemplate("light_armor")
+    assertTrue(lightArmor.isArmor, "light armor should be an armor item")
+    assertEqual(lightArmor.size, 1, "light armor should use one belt slot")
+
+    local ironArmor = inventory.createItemFromTemplate("iron_armor")
+    assertTrue(ironArmor.properties.blocksTargetedSpells, "iron armor should carry spell-blocking metadata")
+    assertEqual(ironArmor.size, 2, "iron armor should use two belt slots")
+
+    local shield = inventory.createItemFromTemplate("shield_light")
+    assertEqual(shield.properties.tags[1], "shield", "market shields should satisfy Guard shield tags")
+    assertEqual(shield.durability, 1, "light shields should absorb one Notch")
+    assertEqual(inventory.createItemFromTemplate("shield_heavy").durability, 2,
+        "heavy shields should absorb two Notches")
+
+    local spikes = inventory.createItemFromTemplate("iron_spikes")
+    assertEqual(spikes.quantity, 6, "iron spikes should instantiate six per slot")
+end
+
+local function checkCityPhaseUpkeepTiers()
+    local poor = base_entity.createEntity({
+        id = "pc_city_poor_upkeep",
+        name = "City Poor Upkeep",
+        isPC = true,
+    })
+    poor.gold = 24
+    poor.inventory = inventory.createInventory()
+
+    local common = base_entity.createEntity({
+        id = "pc_city_common_upkeep",
+        name = "City Common Upkeep",
+        isPC = true,
+    })
+    common.gold = 50
+    common.inventory = inventory.createInventory()
+    common.conditions.injured = true
+
+    local luxurious = base_entity.createEntity({
+        id = "pc_city_luxurious_upkeep",
+        name = "City Luxurious Upkeep",
+        isPC = true,
+        talents = {
+            path_lore = { mastered = true, wounded = true },
+        },
+    })
+    luxurious.gold = 100
+    luxurious.inventory = inventory.createInventory()
+    luxurious.armorNotches = 2
+    luxurious.woundedTalents = 1
+    luxurious.conditions.staggered = true
+    luxurious.conditions.injured = true
+    luxurious.conditions.deaths_door = true
+    luxurious.resolve = { current = 1, max = 5 }
+
+    local bus = events.createEventBus()
+    local emitted = {}
+    bus:on(events.EVENTS.CITY_UPKEEP_RESOLVED, function(data)
+        emitted[#emitted + 1] = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { poor, common, luxurious },
+    })
+
+    local ok, result = controller:resolveUpkeep(poor, { tier = "impoverished" })
+    assertTrue(not ok, "Upkeep should require the selected tier cost")
+    assertEqual(result, "Not enough gold", "failed upkeep should explain insufficient funds")
+    assertTrue(not controller:hasUpkeep(poor), "failed upkeep should not mark actor upkeep complete")
+
+    ok, result = controller:resolveUpkeep(poor, { tier = "destitute" })
+    assertTrue(ok, "destitute upkeep should cost nothing")
+    assertEqual(result, "upkeep_resolved", "destitute upkeep should report completion")
+    assertEqual(poor.gold, 24, "destitute upkeep should not spend gold")
+    assertEqual(poor.cityUpkeep.tier, "destitute", "destitute upkeep should record the selected tier")
+    assertTrue(poor.cityUpkeep.refillTier == nil, "destitute upkeep should not refill the pack")
+
+    local detail
+    ok, result, detail = controller:resolveUpkeep(common, {
+        tier = "common",
+        refillItems = {
+            { templateId = "ration", quantity = 3 },
+            "torch",
+            { templateId = "light_armor", location = inventory.LOCATIONS.BELT },
+        },
+    })
+    assertTrue(ok, "common upkeep should resolve with 50g")
+    assertEqual(common.gold, 0, "common upkeep should spend 50g")
+    assertEqual(detail.refillTier, "common", "common upkeep should allow common-or-lower gear refills")
+    assertEqual(#detail.refilledGear, 3, "common upkeep should refill selected common-or-lower gear")
+    assertEqual(detail.refilledGear[1].item.quantity, 3, "upkeep gear refill should preserve requested stack quantities")
+    assertTrue(common.inventory:findItem(detail.refilledGear[1].item.id) ~= nil, "refilled ration stack should enter inventory")
+    assertTrue(common.inventory:findItem(detail.refilledGear[2].item.id) ~= nil, "refilled torch should enter inventory")
+    assertEqual(common.inventory:findItem(detail.refilledGear[3].item.id), detail.refilledGear[3].item,
+        "refilled light armor should enter inventory")
+    local _, armorLocation = common.inventory:findItem(detail.refilledGear[3].item.id)
+    assertEqual(armorLocation, inventory.LOCATIONS.BELT, "refilled light armor should respect belt-slot placement")
+    assertTrue(detail.recoveryAllowed, "common upkeep should allow Recovery-style bond burns")
+    assertTrue(common.conditions.injured, "common upkeep should not automatically heal wounds")
+
+    ok, result, detail = controller:resolveUpkeep(luxurious, {
+        tier = "luxurious",
+        refillItems = {
+            { templateId = "steel_armor", location = inventory.LOCATIONS.BELT },
+            "bezoar",
+        },
+    })
+    assertTrue(ok, "luxurious upkeep should resolve with 100g")
+    assertEqual(luxurious.gold, 0, "luxurious upkeep should spend 100g")
+    assertEqual(detail.refillTier, "luxurious", "luxurious upkeep should allow any market gear refill")
+    assertEqual(#detail.refilledGear, 2, "luxurious upkeep should refill selected luxurious-or-lower gear")
+    assertEqual(luxurious.armorNotches, 0, "luxurious upkeep should heal armor wound slots in the current wound model")
+    assertEqual(luxurious.woundedTalents, 0, "luxurious upkeep should heal talent wounds")
+    assertTrue(not luxurious.talents.path_lore.wounded, "luxurious upkeep should clear wounded talent flags")
+    assertTrue(not luxurious.conditions.staggered, "luxurious upkeep should clear Staggered")
+    assertTrue(not luxurious.conditions.injured, "luxurious upkeep should clear Injured")
+    assertTrue(not luxurious.conditions.deaths_door, "luxurious upkeep should clear Death's Door")
+    assertEqual(luxurious.resolve.current, 5, "luxurious upkeep should refresh Resolve to maximum")
+    assertEqual(detail.healing.armorNotches, 2, "luxurious upkeep detail should report healed armor slots")
+    assertEqual(detail.resolveRefreshed, 5, "luxurious upkeep detail should report refreshed Resolve")
+    assertEqual(#emitted, 3, "successful upkeep choices should emit upkeep events")
+
+    local recoverer = base_entity.createEntity({
+        id = "pc_city_common_recoverer",
+        name = "City Common Recoverer",
+        isPC = true,
+        talents = {
+            path_lore = { mastered = true, wounded = true },
+        },
+    })
+    recoverer.gold = 50
+    recoverer.inventory = inventory.createInventory()
+    recoverer.conditions.stressed = true
+    recoverer.conditions.staggered = true
+    recoverer.conditions.injured = true
+    recoverer.woundedTalents = 1
+    recoverer.resolve = { current = 2, max = 4 }
+    recoverer.bonds = {
+        ally_a = { status = "ally", charged = true },
+        ally_b = { status = "ally", charged = true },
+        ally_c = { status = "ally", charged = true },
+        ally_d = { status = "ally", charged = true },
+    }
+    local recoveryBus = events.createEventBus()
+    local recoveryEmitted = {}
+    recoveryBus:on(events.EVENTS.CITY_UPKEEP_RECOVERY_BOND_SPENT, function(data)
+        recoveryEmitted[#recoveryEmitted + 1] = data
+    end)
+    local recoveryController = city_phase.createCityPhaseController({
+        eventBus = recoveryBus,
+        guild = { recoverer },
+    })
+    ok, result, detail = recoveryController:resolveUpkeep(recoverer, { tier = "common" })
+    assertTrue(ok, "common upkeep should allow later Recovery-style bond burns")
+    ok, result = recoveryController:spendBondForUpkeepRecovery(recoverer, "ally_a", "heal_wound")
+    assertTrue(not ok, "City Upkeep recovery should enforce the Stressed gate")
+    assertEqual(result, "Must clear stress first", "blocked City Upkeep recovery should explain stress gate")
+    assertTrue(recoverer.bonds.ally_a.charged, "blocked City Upkeep recovery should not spend the Bond")
+    ok, result = recoveryController:spendBondForUpkeepRecovery(recoverer, "ally_a", "clear_stress")
+    assertTrue(ok, "City Upkeep recovery should clear Stressed with a charged Bond")
+    assertEqual(result, "stress_cleared", "City Upkeep recovery should report stress clearing")
+    assertTrue(not recoverer.conditions.stressed, "City Upkeep recovery should clear Stressed")
+    assertTrue(not recoverer.conditions.staggered, "City Upkeep recovery should clear Staggered after Stressed is gone")
+    assertTrue(not recoverer.bonds.ally_a.charged, "City Upkeep recovery should spend the used Bond")
+    ok, result = recoveryController:spendBondForUpkeepRecovery(recoverer, "ally_b", "heal_wound")
+    assertTrue(ok, "City Upkeep recovery should heal Injured once Stressed is gone")
+    assertEqual(result, "injured_healed", "City Upkeep recovery should heal Injured before talents")
+    ok, result = recoveryController:spendBondForUpkeepRecovery(recoverer, "ally_c", "heal_wound")
+    assertTrue(ok, "City Upkeep recovery should heal wounded talents after Injured")
+    assertEqual(result, "talent_healed", "City Upkeep recovery should report healed talent")
+    assertTrue(not recoverer.talents.path_lore.wounded, "City Upkeep recovery should clear the wounded talent flag")
+    ok, result, detail = recoveryController:spendBondForUpkeepRecovery(recoverer, "ally_d", "regain_resolve")
+    assertTrue(ok, "City Upkeep recovery should regain Resolve")
+    assertEqual(recoverer.resolve.current, 3, "City Upkeep recovery should restore 1 Resolve")
+    assertEqual(#recoveryEmitted, 4, "City Upkeep recovery should emit each successful bond spend")
+    assertEqual(#recoverer.cityUpkeep.recoveryBondSpends, 4, "City Upkeep recovery should record bond spends on the upkeep detail")
+
+    local destituteRecovery = base_entity.createEntity({
+        id = "pc_city_destitute_recovery",
+        name = "City Destitute Recovery",
+        isPC = true,
+    })
+    destituteRecovery.gold = 0
+    destituteRecovery.inventory = inventory.createInventory()
+    destituteRecovery.bonds = {
+        ally = { status = "ally", charged = true },
+    }
+    local destituteRecoveryController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { destituteRecovery },
+    })
+    ok, result = destituteRecoveryController:resolveUpkeep(destituteRecovery, { tier = "destitute" })
+    assertTrue(ok, "destitute upkeep should still resolve before testing recovery block")
+    ok, result = destituteRecoveryController:spendBondForUpkeepRecovery(destituteRecovery, "ally", "regain_resolve")
+    assertTrue(not ok, "destitute upkeep should not allow Recovery-style bond burns")
+    assertEqual(result, "Upkeep tier does not allow recovery", "blocked destitute recovery should explain tier restriction")
+    assertTrue(destituteRecovery.bonds.ally.charged, "blocked destitute recovery should not spend the Bond")
+
+    ok, result = controller:resolveUpkeep(common, { tier = "common" })
+    assertTrue(not ok, "upkeep should only resolve once per actor")
+    assertEqual(result, "Upkeep already paid", "repeat upkeep should explain existing resolution")
+
+    local destituteBuyer = base_entity.createEntity({
+        id = "pc_city_destitute_buyer",
+        name = "City Destitute Buyer",
+        isPC = true,
+    })
+    destituteBuyer.gold = 10
+    destituteBuyer.inventory = inventory.createInventory()
+    local destituteBuyerController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { destituteBuyer },
+    })
+    ok, result = destituteBuyerController:resolveUpkeep(destituteBuyer, {
+        tier = "destitute",
+        refillItems = { "ration" },
+    })
+    assertTrue(not ok, "destitute upkeep should not allow gear refills")
+    assertEqual(result, "Upkeep tier cannot refill gear", "destitute gear refill should explain restriction")
+    assertEqual(destituteBuyer.gold, 10, "failed destitute gear refill should not spend gold")
+    assertTrue(not destituteBuyerController:hasUpkeep(destituteBuyer), "failed destitute gear refill should not mark upkeep complete")
+
+    local underTier = base_entity.createEntity({
+        id = "pc_city_under_tier_upkeep",
+        name = "City Under Tier Upkeep",
+        isPC = true,
+    })
+    underTier.gold = 50
+    underTier.inventory = inventory.createInventory()
+    local underTierController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { underTier },
+    })
+    ok, result = underTierController:resolveUpkeep(underTier, {
+        tier = "common",
+        refillItems = { "alchemy_kit" },
+    })
+    assertTrue(not ok, "common upkeep should reject luxurious gear")
+    assertEqual(result, "Gear tier not covered by upkeep", "upkeep gear tier failure should explain restriction")
+    assertEqual(underTier.gold, 50, "failed high-tier gear refill should not spend gold")
+    assertTrue(not underTierController:hasUpkeep(underTier), "failed high-tier gear refill should not mark upkeep complete")
+
+    local fullPack = base_entity.createEntity({
+        id = "pc_city_full_pack_upkeep",
+        name = "City Full Pack Upkeep",
+        isPC = true,
+    })
+    fullPack.gold = 25
+    fullPack.inventory = inventory.createInventory()
+    for i = 1, 21 do
+        fullPack.inventory:addItem(inventory.createItem({
+            id = "upkeep_pack_filler_" .. tostring(i),
+            name = "Upkeep Pack Filler " .. tostring(i),
+        }), inventory.LOCATIONS.PACK)
+    end
+    local fullPackController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { fullPack },
+    })
+    ok, result = fullPackController:resolveUpkeep(fullPack, {
+        tier = "impoverished",
+        refillItems = { "ration" },
+    })
+    assertTrue(not ok, "upkeep gear refill should preflight pack capacity")
+    assertEqual(result, "insufficient_slots", "full pack upkeep refill should explain capacity failure")
+    assertEqual(fullPack.gold, 25, "failed full-pack refill should not spend upkeep gold")
+    assertTrue(not fullPackController:hasUpkeep(fullPack), "failed full-pack refill should not mark upkeep complete")
+
+    local commonRepair = base_entity.createEntity({
+        id = "pc_city_common_repair",
+        name = "City Common Repair",
+        isPC = true,
+    })
+    commonRepair.gold = 50
+    commonRepair.inventory = inventory.createInventory()
+    local notchedArmor = inventory.createItemFromTemplate("light_armor")
+    notchedArmor.notches = 1
+    commonRepair.inventory:addItem(notchedArmor, inventory.LOCATIONS.BELT)
+    local commonRepairController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { commonRepair },
+    })
+    ok, result, detail = commonRepairController:resolveUpkeep(commonRepair, {
+        tier = "common",
+        repairItems = { notchedArmor.id },
+    })
+    assertTrue(ok, "common upkeep should repair damaged common-tier gear")
+    assertEqual(notchedArmor.notches, 0, "City Upkeep repair should clear item notches")
+    assertTrue(not notchedArmor.destroyed, "City Upkeep repair should leave repaired item usable")
+    assertEqual(detail.repairedGear[1].previousNotches, 1, "City Upkeep repair should report previous notches")
+    assertTrue(commonRepairController:hasUpkeep(commonRepair), "successful City repair should mark upkeep complete")
+
+    local silverCommon = base_entity.createEntity({
+        id = "pc_city_common_silver_repair",
+        name = "City Common Silver Repair",
+        isPC = true,
+    })
+    silverCommon.gold = 50
+    silverCommon.inventory = inventory.createInventory()
+    local brokenSilver = inventory.createItemFromTemplate("silver_longsword")
+    brokenSilver.destroyed = true
+    brokenSilver.notches = brokenSilver.durability
+    silverCommon.inventory:addItem(brokenSilver, inventory.LOCATIONS.PACK)
+    local silverCommonController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { silverCommon },
+    })
+    ok, result = silverCommonController:resolveUpkeep(silverCommon, {
+        tier = "common",
+        repairItems = { brokenSilver.id },
+    })
+    assertTrue(not ok, "common upkeep should not repair luxurious silver weaponry")
+    assertEqual(result, "Repair tier not covered by upkeep", "under-tier City repair should explain tier restriction")
+    assertEqual(silverCommon.gold, 50, "failed under-tier City repair should not spend upkeep gold")
+    assertTrue(brokenSilver.destroyed, "failed under-tier City repair should leave item destroyed")
+    assertTrue(not silverCommonController:hasUpkeep(silverCommon), "failed under-tier City repair should not mark upkeep complete")
+
+    local silverLuxury = base_entity.createEntity({
+        id = "pc_city_luxury_silver_repair",
+        name = "City Luxury Silver Repair",
+        isPC = true,
+    })
+    silverLuxury.gold = 100
+    silverLuxury.inventory = inventory.createInventory()
+    local luxurySilver = inventory.createItemFromTemplate("silver_longsword")
+    luxurySilver.destroyed = true
+    luxurySilver.notches = luxurySilver.durability
+    silverLuxury.inventory:addItem(luxurySilver, inventory.LOCATIONS.PACK)
+    local silverLuxuryController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { silverLuxury },
+    })
+    ok, result, detail = silverLuxuryController:resolveUpkeep(silverLuxury, {
+        tier = "luxurious",
+        repairItems = { luxurySilver.id },
+    })
+    assertTrue(ok, "luxurious upkeep should repair destroyed luxurious gear")
+    assertEqual(luxurySilver.notches, 0, "luxurious City repair should clear all notches")
+    assertTrue(not luxurySilver.destroyed, "luxurious City repair should restore destroyed gear")
+    assertTrue(detail.repairedGear[1].wasDestroyed, "City repair detail should record destroyed source state")
+    assertEqual(silverLuxury.gold, 0, "successful luxurious City repair should spend upkeep gold")
+
+    local unknown = base_entity.createEntity({
+        id = "pc_city_unknown_upkeep",
+        name = "City Unknown Upkeep",
+        isPC = true,
+    })
+    unknown.gold = 100
+    unknown.inventory = inventory.createInventory()
+    local unknownController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { unknown },
+    })
+    ok, result = unknownController:resolveUpkeep(unknown, { tier = "royal" })
+    assertTrue(not ok, "unknown upkeep tiers should fail")
+    assertEqual(result, "Unknown upkeep tier", "unknown upkeep should explain invalid tier")
+    assertTrue(not unknownController:hasUpkeep(unknown), "unknown upkeep should not mark actor upkeep complete")
+end
+
+local function checkCityPhaseBegAndBuskAction()
+    local busker = base_entity.createEntity({
+        id = "pc_city_busker",
+        name = "City Busker",
+        isPC = true,
+        wands = 3,
+    })
+    busker.gold = 1
+    busker.inventory = inventory.createInventory()
+
+    local foolBusker = base_entity.createEntity({
+        id = "pc_city_fool_busker",
+        name = "City Fool Busker",
+        isPC = true,
+        wands = 4,
+    })
+    foolBusker.gold = 0
+    foolBusker.inventory = inventory.createInventory()
+
+    local drawnCard = {
+        name = "Seven of Cups",
+        value = 7,
+        suit = constants.SUITS.CUPS,
+    }
+    local discardedCard = nil
+    local fakeDeck = {
+        draw = function()
+            return drawnCard
+        end,
+        discard = function(_, card)
+            discardedCard = card
+        end,
+    }
+
+    local bus = events.createEventBus()
+    local resolved = {}
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved[#resolved + 1] = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        playerDeck = fakeDeck,
+        guild = { busker, foolBusker },
+    })
+
+    local ok, result, detail = controller:resolveAction(busker, {
+        type = "beg_and_busk",
+    })
+    assertTrue(ok, "Beg and Busk should resolve through the City Action facade")
+    assertEqual(result, "beg_and_busk_resolved", "Beg and Busk should report its canonical action result")
+    assertEqual(detail.gold, 10, "Beg and Busk should earn draw value plus Wands")
+    assertEqual(busker.gold, 11, "Beg and Busk should add earned gold to the actor")
+    assertEqual(discardedCard, drawnCard, "Beg and Busk should discard an automatically drawn card")
+    assertTrue(controller:hasActed(busker), "Beg and Busk should consume a successful City Action")
+    assertEqual(#resolved, 1, "Beg and Busk should emit a city action event")
+    assertEqual(resolved[1].action, city_phase.ACTIONS.BEG_AND_BUSK, "Beg and Busk should emit normalized action id")
+
+    ok, result, detail = controller:resolveAction(foolBusker, {
+        type = "beg",
+        card = {
+            name = "The Fool",
+            value = 0,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Beg and Busk should accept an explicitly drawn minor-deck card")
+    assertEqual(detail.gold, 4, "Beg and Busk should treat the Fool's numerical value as zero plus Wands")
+    assertEqual(foolBusker.gold, 4, "Beg and Busk should pay actor Wands on a zero-value draw")
+    assertTrue(controller:canAdvance(), "Beg and Busk should count toward all actors taking City Actions")
+
+    local noDeckBusker = base_entity.createEntity({
+        id = "pc_city_no_deck_busker",
+        name = "City No Deck Busker",
+        isPC = true,
+        wands = 2,
+    })
+    noDeckBusker.gold = 0
+    noDeckBusker.inventory = inventory.createInventory()
+    local noDeckController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noDeckBusker },
+    })
+    ok, result = noDeckController:resolveAction(noDeckBusker, {
+        type = "beg_and_busk",
+    })
+    assertTrue(not ok, "Beg and Busk should require a card draw")
+    assertEqual(result, "Requires minor arcana draw", "missing Beg and Busk draw should explain failure")
+    assertEqual(noDeckBusker.gold, 0, "failed Beg and Busk should not pay gold")
+    assertTrue(not noDeckController:hasActed(noDeckBusker), "failed Beg and Busk should not consume the City Action")
+end
+
+local function checkCityPhaseBankingAction()
+    local banker = base_entity.createEntity({
+        id = "pc_city_banker",
+        name = "City Banker",
+        isPC = true,
+    })
+    banker.gold = 100
+    banker.inventory = inventory.createInventory()
+    local amulet = inventory.createItemFromTemplate("golden_amulet")
+    banker.inventory:addItem(amulet, inventory.LOCATIONS.PACK)
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { banker },
+    })
+
+    local ok, result, detail = controller:resolveAction(banker, {
+        type = "banking",
+        depositGold = 50,
+        itemIds = { amulet.id },
+    })
+    assertTrue(ok, "Banking should resolve through the City Action facade")
+    assertEqual(result, "banking_complete", "Banking should report completion")
+    assertEqual(banker.gold, 50, "Banking should remove deposited gold from carried liquid assets")
+    assertEqual(detail.bankedGold, 50, "Banking should store deposited gold")
+    assertEqual(#detail.itemsDeposited, 1, "Banking should store deposited items")
+    assertTrue(banker.inventory:findItem(amulet.id) == nil, "Banked gear should leave carried inventory")
+    assertEqual(banker.bank.items[1], amulet, "Banked gear should be held in safe bank storage")
+    assertTrue(controller:hasActed(banker), "Banking should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.BANKING, "Banking should emit city action details")
+
+    ok, result, detail = controller:applyBankingReturns(banker)
+    assertTrue(ok, "Banking returns should apply during a City Phase")
+    assertEqual(result, "banking_returns_applied", "Banking returns should report application")
+    assertEqual(detail[1].interest, 1, "Banking returns should add 2% rounded down")
+    assertEqual(banker.bank.gold, 51, "Banking returns should increase banked gold")
+
+    ok, result, detail = controller:applyBankingReturns(banker)
+    assertTrue(ok, "Banking returns should tolerate duplicate calls")
+    assertEqual(detail[1].interest, 0, "Banking returns should apply only once per controller phase")
+    assertEqual(banker.bank.gold, 51, "duplicate Banking returns should not add more gold")
+
+    local withdrawer = base_entity.createEntity({
+        id = "pc_city_bank_withdrawer",
+        name = "City Bank Withdrawer",
+        isPC = true,
+    })
+    withdrawer.gold = 0
+    withdrawer.inventory = inventory.createInventory()
+    local bankedSword = inventory.createItem({
+        id = "banked_sword",
+        name = "Banked Sword",
+        weaponType = "sword",
+    })
+    withdrawer.bank = {
+        gold = 75,
+        items = { bankedSword },
+    }
+    local withdrawController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { withdrawer },
+    })
+    ok, result, detail = withdrawController:resolveAction(withdrawer, {
+        type = "banking",
+        operation = "withdraw",
+        gold = 25,
+        itemIds = { bankedSword.id },
+    })
+    assertTrue(ok, "Banking should withdraw banked coin and gear through the City Action facade")
+    assertEqual(result, "banking_complete", "Banking withdrawal should report completion")
+    assertEqual(withdrawer.gold, 25, "Banking withdrawal should move banked gold to carried liquid assets")
+    assertEqual(withdrawer.bank.gold, 50, "Banking withdrawal should reduce banked gold")
+    assertEqual(#detail.itemsWithdrawn, 1, "Banking should report withdrawn gear")
+    assertTrue(withdrawer.inventory:findItem(bankedSword.id) == bankedSword, "withdrawn gear should return to carried inventory")
+    assertEqual(#withdrawer.bank.items, 0, "withdrawn gear should leave bank storage")
+    assertTrue(withdrawController:hasActed(withdrawer), "successful Banking withdrawal should consume the City Action")
+
+    local overdrawn = base_entity.createEntity({
+        id = "pc_city_bank_overdrawn",
+        name = "City Bank Overdrawn",
+        isPC = true,
+    })
+    overdrawn.inventory = inventory.createInventory()
+    overdrawn.bank = { gold = 5, items = {} }
+    local overdrawnController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { overdrawn },
+    })
+    ok, result = overdrawnController:resolveAction(overdrawn, {
+        type = "banking",
+        operation = "withdraw",
+        gold = 6,
+    })
+    assertTrue(not ok, "Banking should require enough banked gold to withdraw")
+    assertEqual(result, "Not enough banked gold", "insufficient banked gold should explain failure")
+    assertEqual(overdrawn.bank.gold, 5, "failed withdrawal should not alter banked gold")
+    assertTrue(not overdrawnController:hasActed(overdrawn), "failed withdrawal should not consume the City Action")
+
+    local fullPack = base_entity.createEntity({
+        id = "pc_city_full_pack_bank",
+        name = "City Full Pack Bank",
+        isPC = true,
+    })
+    fullPack.inventory = inventory.createInventory()
+    for i = 1, 21 do
+        fullPack.inventory:addItem(inventory.createItem({
+            id = "pack_filler_" .. tostring(i),
+            name = "Pack Filler " .. tostring(i),
+        }), inventory.LOCATIONS.PACK)
+    end
+    local bankedGem = inventory.createItem({
+        id = "banked_gem",
+        name = "Banked Gem",
+    })
+    fullPack.bank = { gold = 0, items = { bankedGem } }
+    local fullPackController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { fullPack },
+    })
+    ok, result = fullPackController:resolveAction(fullPack, {
+        type = "banking",
+        operation = "withdraw",
+        itemIds = { bankedGem.id },
+    })
+    assertTrue(not ok, "Banking should preflight inventory capacity before withdrawing gear")
+    assertEqual(result, "insufficient_slots", "full carried inventory should explain failed bank withdrawal")
+    assertEqual(fullPack.bank.items[1], bankedGem, "failed withdrawal should leave gear in safe bank storage")
+    assertTrue(not fullPackController:hasActed(fullPack), "failed bank item withdrawal should not consume the City Action")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_poor_banker",
+        name = "City Poor Banker",
+        isPC = true,
+    })
+    poor.gold = 10
+    poor.inventory = inventory.createInventory()
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "bank",
+        depositGold = 11,
+    })
+    assertTrue(not ok, "Banking should require enough gold to deposit")
+    assertEqual(result, "Not enough gold", "insufficient Banking gold should explain failure")
+    assertEqual(poor.gold, 10, "failed Banking should not spend gold")
+    assertTrue(not poorController:hasActed(poor), "failed Banking should not consume City Action")
+
+    local missingItem = base_entity.createEntity({
+        id = "pc_city_missing_item_banker",
+        name = "City Missing Item Banker",
+        isPC = true,
+    })
+    missingItem.gold = 20
+    missingItem.inventory = inventory.createInventory()
+    local missingController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { missingItem },
+    })
+    ok, result = missingController:resolveAction(missingItem, {
+        type = "banking",
+        depositGold = 10,
+        itemIds = { "not_carried" },
+    })
+    assertTrue(not ok, "Banking should preflight carried items")
+    assertEqual(result, "Banking item not found", "missing Banking item should explain failure")
+    assertEqual(missingItem.gold, 20, "failed Banking item preflight should not spend gold")
+    assertTrue(not missingController:hasActed(missingItem), "failed Banking item preflight should not consume City Action")
+
+    local empty = base_entity.createEntity({
+        id = "pc_city_empty_banker",
+        name = "City Empty Banker",
+        isPC = true,
+    })
+    empty.gold = 20
+    empty.inventory = inventory.createInventory()
+    local emptyController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { empty },
+    })
+    ok, result = emptyController:resolveAction(empty, {
+        type = "banking",
+    })
+    assertTrue(not ok, "Banking should require something to store")
+    assertEqual(result, "Nothing to bank", "empty Banking should explain missing deposit")
+    assertTrue(not emptyController:hasActed(empty), "empty Banking should not consume City Action")
+end
+
+local function checkCityPhaseBuildAction()
+    local builder = base_entity.createEntity({
+        id = "pc_city_builder",
+        name = "City Builder",
+        isPC = true,
+    })
+    builder.gold = 400
+    builder.inventory = inventory.createInventory()
+
+    local buildings = {}
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { builder },
+        buildings = buildings,
+    })
+
+    local ok, result, detail = controller:resolveAction(builder, {
+        type = "build",
+        description = "statue in a busy square",
+        artisan = "Rook Mason",
+    })
+    assertTrue(ok, "Build should resolve through the City Action facade")
+    assertEqual(result, "building_complete", "Build should report completion")
+    assertEqual(detail.syllables, 7, "Build should count syllables in the project description")
+    assertEqual(detail.cost, 350, "Build should cost 50g per syllable")
+    assertEqual(builder.gold, 50, "Build should spend the project gold")
+    assertTrue(buildings.statue_in_a_busy_square ~= nil, "Build should persist the completed building record")
+    assertEqual(buildings.statue_in_a_busy_square.artisan, "Rook Mason", "Build should record the artisan/designer")
+    assertTrue(controller:hasActed(builder), "Build should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.BUILD, "Build should emit city action details")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_build_poor",
+        name = "City Build Poor",
+        isPC = true,
+    })
+    poor.gold = 99
+    poor.inventory = inventory.createInventory()
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+        buildings = {},
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "build",
+        description = "church bell",
+    })
+    assertTrue(not ok, "Build should require enough gold for the syllable price")
+    assertEqual(result, "Not enough gold", "insufficient Build gold should explain failure")
+    assertEqual(poor.gold, 99, "failed Build should not spend gold")
+    assertTrue(not poorController:hasActed(poor), "failed Build should not consume City Action")
+
+    local rejected = base_entity.createEntity({
+        id = "pc_city_build_rejected",
+        name = "City Build Rejected",
+        isPC = true,
+    })
+    rejected.gold = 500
+    rejected.inventory = inventory.createInventory()
+    local rejectedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { rejected },
+        buildings = {},
+    })
+    ok, result = rejectedController:resolveAction(rejected, {
+        type = "build",
+        description = "impossible brass tower",
+        approved = false,
+    })
+    assertTrue(not ok, "Build should allow GM reasonableness rejection")
+    assertEqual(result, "Building project not approved", "rejected Build should explain GM approval failure")
+    assertEqual(rejected.gold, 500, "rejected Build should not spend gold")
+    assertTrue(not rejectedController:hasActed(rejected), "rejected Build should not consume City Action")
+end
+
+local function checkCityPhaseCommissionCraftAction()
+    local patron = base_entity.createEntity({
+        id = "pc_city_commission_patron",
+        name = "City Commission Patron",
+        isPC = true,
+    })
+    patron.gold = 50
+    patron.inventory = inventory.createInventory()
+
+    local commissions = {}
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { patron },
+        commissions = commissions,
+    })
+
+    local ok, result, detail = controller:resolveAction(patron, {
+        type = "commission_craft",
+        description = "imp trap",
+        scale = "adventurer",
+        merchant = "Pawnbroker Jassa",
+    })
+    assertTrue(ok, "Commission Craft should resolve through the City Action facade")
+    assertEqual(result, "commission_complete", "Commission Craft should report completion")
+    assertEqual(detail.syllables, 2, "Commission Craft should count syllables in the commissioned item")
+    assertEqual(detail.ratePerSyllable, 5, "adventurer-scale Commission Craft should cost 5g per syllable")
+    assertEqual(detail.cost, 10, "Commission Craft should multiply syllables by the selected rate")
+    assertEqual(patron.gold, 40, "Commission Craft should spend gold")
+    assertTrue(commissions.imp_trap ~= nil, "Commission Craft should persist the commissioned craft record")
+    assertEqual(commissions.imp_trap.merchant, "Pawnbroker Jassa", "Commission Craft should record the merchant/crafter")
+    assertTrue(controller:hasActed(patron), "Commission Craft should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.COMMISSION_CRAFT, "Commission Craft should emit city action details")
+
+    local noble = base_entity.createEntity({
+        id = "pc_city_commission_noble",
+        name = "City Commission Noble",
+        isPC = true,
+    })
+    noble.gold = 59
+    noble.inventory = inventory.createInventory()
+    local nobleController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noble },
+        commissions = {},
+    })
+    ok, result = nobleController:resolveAction(noble, {
+        type = "commission",
+        description = "mirror masquerade mask",
+        scale = "noble",
+    })
+    assertTrue(not ok, "Commission Craft should require enough gold for the syllable band")
+    assertEqual(result, "Not enough gold", "insufficient Commission Craft gold should explain failure")
+    assertEqual(noble.gold, 59, "failed Commission Craft should not spend gold")
+    assertTrue(not nobleController:hasActed(noble), "failed Commission Craft should not consume City Action")
+
+    local missingScale = base_entity.createEntity({
+        id = "pc_city_commission_missing_scale",
+        name = "City Commission Missing Scale",
+        isPC = true,
+    })
+    missingScale.gold = 100
+    missingScale.inventory = inventory.createInventory()
+    local missingScaleController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { missingScale },
+        commissions = {},
+    })
+    ok, result = missingScaleController:resolveAction(missingScale, {
+        type = "commission_craft",
+        description = "silver thread bug net",
+    })
+    assertTrue(not ok, "Commission Craft should require the rulebook price band")
+    assertEqual(result, "Commission scale required", "missing Commission Craft scale should explain failure")
+    assertEqual(missingScale.gold, 100, "missing Commission Craft scale should not spend gold")
+    assertTrue(not missingScaleController:hasActed(missingScale), "missing Commission Craft scale should not consume City Action")
+end
+
+local function checkCityPhaseHoldFuneralAction()
+    local heir = base_entity.createEntity({
+        id = "pc_city_funeral_heir",
+        name = "City Funeral Heir",
+        isPC = true,
+    })
+    heir.gold = 300
+    heir.xp = 0
+    heir.inventory = inventory.createInventory()
+
+    local deceased = base_entity.createEntity({
+        id = "pc_city_funeral_deceased",
+        name = "City Funeral Deceased",
+        isPC = true,
+    })
+    deceased.xp = 5
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local funerals = {}
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { heir },
+        funerals = funerals,
+    })
+
+    local ok, result, detail = controller:resolveAction(heir, {
+        type = "hold_funeral",
+        deceased = deceased,
+        xpReclaimed = 2,
+    })
+    assertTrue(ok, "Hold a Funeral should resolve through the City Action facade")
+    assertEqual(result, "funeral_held", "Hold a Funeral should report completion")
+    assertEqual(detail.cost, 200, "Hold a Funeral should cost 100g per reclaimed XP")
+    assertEqual(heir.gold, 100, "Hold a Funeral should spend funeral expenses")
+    assertEqual(heir.xp, 2, "Hold a Funeral should grant reclaimed XP to the new adventurer")
+    assertEqual(heir.inheritedXP, 2, "Hold a Funeral should record inherited XP separately")
+    assertEqual(#funerals, 1, "Hold a Funeral should persist a funeral record")
+    assertEqual(funerals[1].deceasedId, "pc_city_funeral_deceased", "Hold a Funeral should record the deceased adventurer")
+    assertTrue(controller:hasActed(heir), "Hold a Funeral should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.HOLD_FUNERAL, "Hold a Funeral should emit city action details")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_funeral_poor",
+        name = "City Funeral Poor",
+        isPC = true,
+    })
+    poor.gold = 99
+    poor.xp = 0
+    poor.inventory = inventory.createInventory()
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+        funerals = {},
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "funeral",
+        previousXP = 1,
+        xp = 1,
+    })
+    assertTrue(not ok, "Hold a Funeral should require enough gold per reclaimed XP")
+    assertEqual(result, "Not enough gold", "insufficient funeral gold should explain failure")
+    assertEqual(poor.xp, 0, "failed Hold a Funeral should not grant XP")
+    assertEqual(poor.gold, 99, "failed Hold a Funeral should not spend gold")
+    assertTrue(not poorController:hasActed(poor), "failed Hold a Funeral should not consume City Action")
+
+    local overreach = base_entity.createEntity({
+        id = "pc_city_funeral_overreach",
+        name = "City Funeral Overreach",
+        isPC = true,
+    })
+    overreach.gold = 500
+    overreach.xp = 0
+    overreach.inventory = inventory.createInventory()
+    local overreachController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { overreach },
+        funerals = {},
+    })
+    ok, result = overreachController:resolveAction(overreach, {
+        type = "hold_funeral",
+        previousXP = 1,
+        xpReclaimed = 2,
+    })
+    assertTrue(not ok, "Hold a Funeral should cap reclaimed XP at the deceased adventurer's XP")
+    assertEqual(result, "Cannot reclaim more XP than the deceased had", "over-reclaimed funeral XP should explain failure")
+    assertEqual(overreach.xp, 0, "over-reclaimed funeral XP should not be granted")
+    assertEqual(overreach.gold, 500, "over-reclaimed funeral XP should not spend gold")
+    assertTrue(not overreachController:hasActed(overreach), "over-reclaimed funeral XP should not consume City Action")
+end
+
+local function checkCityPhaseCampActionFacade()
+    local fletcher = base_entity.createEntity({
+        id = "pc_city_camp_fletcher",
+        name = "City Camp Fletcher",
+        isPC = true,
+    })
+    fletcher.inventory = inventory.createInventory()
+    fletcher.inventory:addItem(inventory.createItemFromTemplate("bow"), inventory.LOCATIONS.PACK)
+    fletcher.ammo = 3
+
+    local bus = events.createEventBus()
+    local cityResolved = nil
+    local campResolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        cityResolved = data
+    end)
+    bus:on("camp_action_resolved", function(data)
+        campResolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { fletcher },
+    })
+
+    local ok, result, detail = controller:resolveAction(fletcher, {
+        type = "camp_action",
+        campAction = "fletch_arrows",
+    })
+    assertTrue(ok, "City Camp Action should resolve through the City Action facade")
+    assertEqual(result, "camp_action_complete", "City Camp Action should report facade completion")
+    assertEqual(detail.campAction, "fletch_arrows", "City Camp Action should record the delegated Camp Action")
+    assertEqual(detail.campResult, "ammo_refilled", "City Camp Action should preserve the Camp Action result")
+    assertEqual(fletcher.ammo, 12, "City Camp Action should apply Camp Action effects")
+    assertTrue(controller:hasActed(fletcher), "City Camp Action should consume the actor's City Action")
+    assertTrue(cityResolved and cityResolved.action == city_phase.ACTIONS.CAMP_ACTION, "City Camp Action should emit city action details")
+    assertTrue(campResolved and campResolved.action == "fletch_arrows", "City Camp Action should reuse camp action event emission")
+
+    local trainee = base_entity.createEntity({
+        id = "pc_city_camp_trainee",
+        name = "City Camp Trainee",
+        isPC = true,
+    })
+    trainee.xp = 2
+    trainee.talents = {}
+    trainee.inventory = inventory.createInventory()
+    local trainer = base_entity.createEntity({
+        id = "pc_city_camp_trainer",
+        name = "City Camp Trainer",
+        isPC = true,
+        talents = {
+            war_stories = { mastered = true },
+        },
+    })
+    trainer.inventory = inventory.createInventory()
+
+    local trainController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { trainee, trainer },
+    })
+    ok, result, detail = trainController:resolveAction(trainee, {
+        type = "camp",
+        campAction = "train",
+        target = trainer,
+        talentId = "war_stories",
+        xp = 1,
+    })
+    assertTrue(ok, "City Camp Action should allow guild-mate Train as a Camp Action")
+    assertEqual(result, "camp_action_complete", "guild-mate City Camp Train should report facade completion")
+    assertEqual(detail.campResult, "training_complete", "guild-mate City Camp Train should preserve training result")
+    assertEqual(trainee.xp, 1, "guild-mate City Camp Train should spend trainee XP")
+    assertTrue(trainee.talents.war_stories ~= nil, "guild-mate City Camp Train should create the mentored talent")
+    assertTrue(trainController:hasActed(trainee), "guild-mate City Camp Train should consume trainee City Action")
+    assertTrue(trainController:hasActed(trainer), "guild-mate City Camp Train should consume trainer City Action")
+    assertTrue(trainController:canAdvance(), "guild-mate City Camp Train should count both actors toward City Action completion")
+
+    ok, result = trainController:resolveAction(trainer, {
+        type = "camp_action",
+        campAction = "rest",
+    })
+    assertTrue(not ok, "mentor should not take a second City Action after guild-mate Camp Train")
+    assertEqual(result, "City Action already taken", "spent mentor City Action should explain duplicate action failure")
+
+    local noBow = base_entity.createEntity({
+        id = "pc_city_camp_no_bow",
+        name = "City Camp No Bow",
+        isPC = true,
+    })
+    noBow.inventory = inventory.createInventory()
+    local noBowController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noBow },
+    })
+    ok, result = noBowController:resolveAction(noBow, {
+        type = "camp_action",
+        campAction = "fletch_arrows",
+    })
+    assertTrue(not ok, "failed City Camp Action should preserve Camp Action validation")
+    assertEqual(result, "Requires a bow or crossbow", "failed City Camp Action should return Camp Action failure reason")
+    assertTrue(not noBowController:hasActed(noBow), "failed City Camp Action should not consume City Action")
+
+    local unknown = base_entity.createEntity({
+        id = "pc_city_camp_unknown",
+        name = "City Camp Unknown",
+        isPC = true,
+    })
+    unknown.inventory = inventory.createInventory()
+    local unknownController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { unknown },
+    })
+    ok, result = unknownController:resolveAction(unknown, {
+        type = "camp_action",
+        campAction = "invent_new_camp_action",
+    })
+    assertTrue(not ok, "City Camp Action should reject unknown Camp Actions")
+    assertEqual(result, "Unknown Camp Action", "unknown City Camp Action should explain failure")
+    assertTrue(not unknownController:hasActed(unknown), "unknown City Camp Action should not consume City Action")
+end
+
+local function checkCityPhaseCarouseAction()
+    local carouser = base_entity.createEntity({
+        id = "pc_city_carouser",
+        name = "City Carouser",
+        isPC = true,
+    })
+    carouser.gold = 100
+    carouser.xp = 0
+    carouser.inventory = inventory.createInventory()
+
+    local hangoverCard = {
+        name = "The Hermit",
+        value = 9,
+        suit = constants.SUITS.MAJOR,
+        is_major = true,
+    }
+    local discardedMajor = nil
+    local fakeGMDeck = {
+        draw = function()
+            return hangoverCard
+        end,
+        discard = function(_, card)
+            discardedMajor = card
+        end,
+    }
+    local bracketCard = {
+        name = "Six of Cups",
+        value = 6,
+        suit = constants.SUITS.CUPS,
+    }
+    local fakeMinorDeck = {
+        peekDiscard = function()
+            return bracketCard
+        end,
+    }
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { carouser },
+        gmDeck = fakeGMDeck,
+        playerDeck = fakeMinorDeck,
+    })
+
+    local ok, result, detail = controller:resolveAction(carouser, {
+        type = "carouse",
+        spend = "half",
+    })
+    assertTrue(ok, "Carouse should resolve through the City Action facade")
+    assertEqual(result, "carouse_resolved", "Carouse should report completion")
+    assertEqual(detail.goldSpent, 50, "half Carouse should spend 50% of brought-back gold")
+    assertEqual(carouser.gold, 50, "Carouse should spend the selected gold")
+    assertEqual(carouser.xp, 1, "half Carouse should grant 1XP")
+    assertEqual(detail.hangover.id, "new_tattoo", "Carouse should map the major card to a hangover entry")
+    assertEqual(detail.minorDiscard, bracketCard, "Carouse should expose the current minor discard for bracketed hangover results")
+    assertEqual(detail.hangoverOutcome.location, "backside", "Carouse should resolve tattoo location from the minor discard suit")
+    assertEqual(detail.hangoverOutcome.quality, "cringe_misspelled", "Carouse should resolve tattoo quality from the minor discard value")
+    assertEqual(carouser.tattoos[1].location, "backside", "Carouse should record applied tattoo consequences on the actor")
+    assertEqual(discardedMajor, hangoverCard, "Carouse should discard an automatically drawn hangover card")
+    assertTrue(controller:hasActed(carouser), "Carouse should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.CAROUSE, "Carouse should emit city action details")
+
+    local allIn = base_entity.createEntity({
+        id = "pc_city_all_in_carouser",
+        name = "City All-In Carouser",
+        isPC = true,
+    })
+    allIn.gold = 80
+    allIn.xp = 2
+    allIn.inventory = inventory.createInventory()
+    local allInController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { allIn },
+    })
+    ok, result, detail = allInController:resolveAction(allIn, {
+        type = "carouse",
+        spend = "all",
+        goldBroughtBack = 80,
+        hangoverCard = {
+            name = "Death",
+            value = 13,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "all-in Carouse should accept an explicit major hangover card")
+    assertEqual(detail.goldSpent, 80, "all-in Carouse should spend all brought-back gold")
+    assertEqual(allIn.gold, 0, "all-in Carouse should empty available gold")
+    assertEqual(allIn.xp, 4, "all-in Carouse should grant 2XP")
+    assertEqual(detail.hangover.id, "wanted_poster", "all-in Carouse should record hangover table entry")
+    assertTrue(detail.hangoverOutcome.requiresMinorDiscard, "bracketed Carouse hangovers should mark missing minor discard context")
+
+    local windfall = base_entity.createEntity({
+        id = "pc_city_windfall_carouser",
+        name = "City Windfall Carouser",
+        isPC = true,
+    })
+    windfall.gold = 100
+    windfall.inventory = inventory.createInventory()
+    local windfallController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { windfall },
+    })
+    ok, result, detail = windfallController:resolveAction(windfall, {
+        type = "carouse",
+        spend = "half",
+        hangoverCard = {
+            name = "The Magician",
+            value = 1,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+        minorDiscardCard = {
+            name = "Seven of Swords",
+            value = 7,
+            suit = constants.SUITS.SWORDS,
+        },
+    })
+    assertTrue(ok, "Carouse windfall should resolve through the City Action facade")
+    assertEqual(detail.hangoverOutcome.goldGained, 7, "Carouse windfall should gain gold equal to the minor discard value")
+    assertEqual(windfall.gold, 57, "Carouse windfall should add found gold after spending")
+
+    local firebug = base_entity.createEntity({
+        id = "pc_city_firebug_carouser",
+        name = "City Firebug Carouser",
+        isPC = true,
+    })
+    firebug.gold = 100
+    firebug.inventory = inventory.createInventory()
+    local firebugController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { firebug },
+    })
+    ok, result, detail = firebugController:resolveAction(firebug, {
+        type = "carouse",
+        spend = "half",
+        hangoverCard = {
+            name = "Judgement",
+            value = 20,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+        minorDiscardCard = {
+            name = "Knight of Wands",
+            value = 12,
+            suit = constants.SUITS.WANDS,
+        },
+    })
+    assertTrue(ok, "Carouse fire incident should resolve through the City Action facade")
+    assertEqual(detail.hangoverOutcome.districtsBurned, 3, "Carouse fire incident should resolve burned districts from suit")
+    assertTrue(detail.hangoverOutcome.fireSpirit, "Wands fire incident should record the roaming fire spirit")
+    assertEqual(firebug.cityFireIncidents[1].districtsBurned, 3, "Carouse fire incident should be recorded on the actor")
+
+    local banned = base_entity.createEntity({
+        id = "pc_city_banned_carouser",
+        name = "City Banned Carouser",
+        isPC = true,
+    })
+    banned.gold = 100
+    banned.inventory = inventory.createInventory()
+    local bannedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { banned },
+    })
+    ok, result, detail = bannedController:resolveAction(banned, {
+        type = "carouse",
+        spend = "half",
+        hangoverCard = {
+            name = "Justice",
+            value = 8,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Carouse tavern-ban hangover should resolve through the City Action facade")
+    assertTrue(detail.hangoverOutcome.banned, "Carouse tavern-ban hangover should mark the ban")
+    assertTrue(banned.tavernBans[1].active, "Carouse tavern-ban hangover should record active ban state")
+
+    local cistern = base_entity.createEntity({
+        id = "pc_city_cistern_carouser",
+        name = "City Cistern Carouser",
+        isPC = true,
+    })
+    cistern.gold = 100
+    cistern.inventory = inventory.createInventory()
+    local cisternDagger = inventory.createItemFromTemplate("dagger")
+    local cisternTorch = inventory.createItemFromTemplate("torch")
+    cistern.inventory:addItem(cisternDagger, inventory.LOCATIONS.PACK)
+    cistern.inventory:addItem(cisternTorch, inventory.LOCATIONS.BELT)
+    local cisternController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { cistern },
+    })
+    ok, result, detail = cisternController:resolveAction(cistern, {
+        type = "carouse",
+        spend = "half",
+        hangoverCard = {
+            name = "The Hanged Man",
+            value = 12,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Carouse cistern hangover should resolve through the City Action facade")
+    assertEqual(detail.hangoverOutcome.itemsMissing, 2, "Carouse cistern hangover should remove carried items")
+    assertTrue(cistern.inventory:findItem(cisternDagger.id) == nil, "Carouse cistern hangover should remove pack items")
+    assertTrue(cistern.inventory:findItem(cisternTorch.id) == nil, "Carouse cistern hangover should remove belt items")
+    assertEqual(#cistern.lostCarouseItems[1].items, 2, "Carouse cistern hangover should record missing items")
+
+    local pact = base_entity.createEntity({
+        id = "pc_city_pact_carouser",
+        name = "City Pact Carouser",
+        isPC = true,
+    })
+    pact.gold = 100
+    pact.inventory = inventory.createInventory()
+    local pactController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { pact },
+    })
+    ok, result, detail = pactController:resolveAction(pact, {
+        type = "carouse",
+        spend = "half",
+        hangoverCard = {
+            name = "The Devil",
+            value = 14,
+            suit = constants.SUITS.MAJOR,
+            is_major = true,
+        },
+    })
+    assertTrue(ok, "Carouse soul-invoice hangover should resolve through the City Action facade")
+    assertEqual(pact.infernalContracts[1].price, "one_soul", "Carouse soul-invoice hangover should record the infernal contract")
+
+    local invalidSpend = base_entity.createEntity({
+        id = "pc_city_invalid_carouser",
+        name = "City Invalid Carouser",
+        isPC = true,
+    })
+    invalidSpend.gold = 100
+    invalidSpend.inventory = inventory.createInventory()
+    local invalidController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { invalidSpend },
+    })
+    ok, result = invalidController:resolveAction(invalidSpend, {
+        type = "carouse",
+        spend = "quarter",
+        hangoverCard = hangoverCard,
+    })
+    assertTrue(not ok, "Carouse should require 50% or 100% spend")
+    assertEqual(result, "Choose 50% or 100% carousing spend", "invalid Carouse spend should explain valid choices")
+    assertEqual(invalidSpend.gold, 100, "invalid Carouse spend should not spend gold")
+    assertTrue(not invalidController:hasActed(invalidSpend), "invalid Carouse spend should not consume City Action")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_poor_carouser",
+        name = "City Poor Carouser",
+        isPC = true,
+    })
+    poor.gold = 49
+    poor.inventory = inventory.createInventory()
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "carouse",
+        spend = "half",
+        goldBroughtBack = 100,
+        hangoverCard = hangoverCard,
+    })
+    assertTrue(not ok, "Carouse should require enough gold to cover the selected spend")
+    assertEqual(result, "Not enough gold", "insufficient Carouse gold should explain failure")
+    assertEqual(poor.gold, 49, "failed Carouse should not spend gold")
+    assertTrue(not poorController:hasActed(poor), "failed Carouse setup should not consume City Action")
+
+    local noCard = base_entity.createEntity({
+        id = "pc_city_no_card_carouser",
+        name = "City No Card Carouser",
+        isPC = true,
+    })
+    noCard.gold = 100
+    noCard.inventory = inventory.createInventory()
+    local noCardController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noCard },
+    })
+    ok, result = noCardController:resolveAction(noCard, {
+        type = "carouse",
+        spend = "half",
+    })
+    assertTrue(not ok, "Carouse should require a hangover draw")
+    assertEqual(result, "Requires major arcana draw", "missing Carouse hangover draw should explain failure")
+    assertEqual(noCard.gold, 100, "missing Carouse hangover draw should not spend gold")
+    assertTrue(not noCardController:hasActed(noCard), "missing Carouse hangover draw should not consume City Action")
+end
+
+local function checkCityPhasePrepareComponentsAction()
+    local sorcerer = base_entity.createEntity({
+        id = "pc_city_component_prepper",
+        name = "City Component Prepper",
+        isPC = true,
+    })
+    sorcerer.inventory = inventory.createInventory({ packSlots = 2 })
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { sorcerer },
+    })
+
+    local ok, result, detail = controller:resolveAction(sorcerer, {
+        type = "prepare_components",
+        componentIds = { "component_flare", "withering" },
+    })
+    assertTrue(ok, "Prepare Components should resolve through the City Action facade")
+    assertEqual(result, "components_prepared", "Prepare Components should report prepared components")
+    assertEqual(detail.count, 2, "Prepare Components should add every requested component")
+    assertTrue(sorcerer.inventory:findItemByPredicate(function(item)
+        return item.templateId == "component_flare"
+    end) ~= nil, "Prepare Components should add explicit component templates")
+    assertTrue(sorcerer.inventory:findItemByPredicate(function(item)
+        return item.templateId == "component_withering"
+    end) ~= nil, "Prepare Components should resolve spell ids to their components")
+    assertTrue(controller:hasActed(sorcerer), "Prepare Components should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.PREPARE_COMPONENTS, "Prepare Components should emit city action details")
+
+    local cramped = base_entity.createEntity({
+        id = "pc_city_cramped_component_prepper",
+        name = "City Cramped Component Prepper",
+        isPC = true,
+    })
+    cramped.inventory = inventory.createInventory({ packSlots = 1 })
+    local crampedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { cramped },
+    })
+    ok, result = crampedController:resolveAction(cramped, {
+        type = "prepare_spell_components",
+        componentIds = { "component_flare", "component_withering" },
+    })
+    assertTrue(not ok, "Prepare Components should require enough pack space")
+    assertEqual(result, "insufficient_slots", "full pack should explain Prepare Components failure")
+    assertEqual(#cramped.inventory.pack, 0, "failed Prepare Components should not add partial components")
+    assertTrue(not crampedController:hasActed(cramped), "failed Prepare Components should not consume City Action")
+
+    local unknown = base_entity.createEntity({
+        id = "pc_city_unknown_component_prepper",
+        name = "City Unknown Component Prepper",
+        isPC = true,
+    })
+    unknown.inventory = inventory.createInventory()
+    local unknownController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { unknown },
+    })
+    ok, result = unknownController:resolveAction(unknown, {
+        type = "prepare_components",
+        componentIds = { "component_nonexistent" },
+    })
+    assertTrue(not ok, "Prepare Components should reject unknown component requests")
+    assertEqual(result, "Unknown spell component", "unknown component should explain Prepare Components failure")
+    assertTrue(not unknownController:hasActed(unknown), "unknown component should not consume City Action")
+end
+
+local function checkCityPhaseTrainAction()
+    local trainee = base_entity.createEntity({
+        id = "pc_city_train_trainee",
+        name = "City Train Trainee",
+        isPC = true,
+    })
+    trainee.gold = 100
+    trainee.inventory = inventory.createInventory()
+    trainee.talents = {}
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { trainee },
+    })
+
+    local ok, result, detail = controller:resolveAction(trainee, {
+        type = "train",
+        talentId = "War Stories",
+        xp = 2,
+        trainerName = "Master Salia",
+    })
+    assertTrue(ok, "City Train should resolve through the City Action facade")
+    assertEqual(result, "training_complete", "City Train should report training completion")
+    assertEqual(detail.cost, 100, "City Train should cost 50g per XP invested")
+    assertEqual(trainee.gold, 0, "City Train should spend gold")
+    assertTrue(trainee.talents.war_stories ~= nil, "City Train should create the trained talent")
+    assertTrue(trainee.talents.war_stories.mentored, "City Train should mark outside-path training as mentored")
+    assertTrue(trainee.talents.war_stories.cityTrained, "City Train should record city expert training")
+    assertEqual(trainee.talents.war_stories.xp_invested, 2, "City Train should record invested XP")
+    assertEqual(trainee.talents.war_stories.uses_remaining, 2, "City Train should prepare uses equal to XP invested")
+    assertTrue(not trainee.talents.war_stories.mastered, "two City Train XP should not master the talent")
+    assertTrue(controller:hasActed(trainee), "City Train should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.TRAIN, "City Train should emit city action details")
+
+    local nearlyMastered = base_entity.createEntity({
+        id = "pc_city_train_mastery",
+        name = "City Train Mastery",
+        isPC = true,
+        talents = {
+            aegis = {
+                mastered = false,
+                wounded = false,
+                xp_invested = 6,
+                uses_remaining = 1,
+            },
+        },
+    })
+    nearlyMastered.gold = 50
+    nearlyMastered.inventory = inventory.createInventory()
+    local masteryController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { nearlyMastered },
+    })
+    ok, result, detail = masteryController:resolveAction(nearlyMastered, {
+        type = "city_train",
+        talentId = "aegis",
+        xp = 1,
+    })
+    assertTrue(ok, "City Train should allow continued training on an unmastered talent")
+    assertTrue(nearlyMastered.talents.aegis.mastered, "seven total invested XP should master a City-trained talent")
+    assertEqual(detail.totalXPInvested, 7, "City Train mastery detail should report total invested XP")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_train_poor",
+        name = "City Train Poor",
+        isPC = true,
+    })
+    poor.gold = 49
+    poor.inventory = inventory.createInventory()
+    poor.talents = {}
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "train",
+        talentId = "aegis",
+        xp = 1,
+    })
+    assertTrue(not ok, "City Train should require 50g per XP")
+    assertEqual(result, "Not enough gold", "insufficient City Train gold should explain failure")
+    assertTrue(poor.talents.aegis == nil, "failed City Train should not create a talent")
+    assertTrue(not poorController:hasActed(poor), "failed City Train should not consume City Action")
+
+    local mastered = base_entity.createEntity({
+        id = "pc_city_train_mastered",
+        name = "City Train Mastered",
+        isPC = true,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    mastered.gold = 100
+    mastered.inventory = inventory.createInventory()
+    local masteredController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { mastered },
+    })
+    ok, result = masteredController:resolveAction(mastered, {
+        type = "train",
+        talentId = "aegis",
+        xp = 1,
+    })
+    assertTrue(not ok, "City Train should reject already mastered talents")
+    assertEqual(result, "Talent already mastered", "mastered City Train should explain no-op")
+    assertEqual(mastered.gold, 100, "rejected mastered City Train should not spend gold")
+
+    local noTalent = base_entity.createEntity({
+        id = "pc_city_train_no_talent",
+        name = "City Train No Talent",
+        isPC = true,
+    })
+    noTalent.gold = 100
+    noTalent.inventory = inventory.createInventory()
+    local noTalentController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noTalent },
+    })
+    ok, result = noTalentController:resolveAction(noTalent, {
+        type = "train",
+    })
+    assertTrue(not ok, "City Train should require a talent choice")
+    assertEqual(result, "Choose a talent to train", "missing City Train talent should explain failure")
+    assertTrue(not noTalentController:hasActed(noTalent), "missing City Train talent should not consume City Action")
+end
+
+local function checkCityPhaseSupportAction()
+    local patron = base_entity.createEntity({
+        id = "pc_city_support_patron",
+        name = "City Support Patron",
+        isPC = true,
+    })
+    patron.gold = 100
+    patron.inventory = inventory.createInventory()
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local projects = {}
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { patron },
+        projects = projects,
+    })
+
+    local ok, result, detail = controller:resolveAction(patron, {
+        type = "support",
+        name = "Patch the orphanage roof",
+        complexity = 2,
+        contribution = 50,
+        description = "Buy shingles and pay roofers.",
+    })
+    assertTrue(ok, "Support should resolve through the City Action facade")
+    assertEqual(result, "project_supported", "Support should report project progress")
+    assertEqual(patron.gold, 50, "Support should spend the GM-approved contribution")
+    assertEqual(detail.projectId, "patch_the_orphanage_roof", "Support should normalize a project id from the project name")
+    assertEqual(detail.progress, 1, "Support should advance exactly one project step")
+    assertEqual(detail.complexity, 2, "Support should preserve project complexity")
+    assertTrue(not detail.complete, "Support should not complete before reaching project complexity")
+    assertTrue(controller:hasActed(patron), "Support should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.SUPPORT, "Support should emit city action details")
+
+    local followup = base_entity.createEntity({
+        id = "pc_city_support_followup",
+        name = "City Support Followup",
+        isPC = true,
+    })
+    followup.gold = 25
+    followup.inventory = inventory.createInventory()
+    local followupController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { followup },
+        projects = projects,
+    })
+    ok, result, detail = followupController:resolveAction(followup, {
+        type = "support_project",
+        projectId = "patch_the_orphanage_roof",
+        contribution = 25,
+        description = "Patch the remaining leak.",
+    })
+    assertTrue(ok, "Support should continue existing projects across City Phases")
+    assertTrue(detail.complete, "Support should complete a project when progress reaches complexity")
+    assertEqual(projects.patch_the_orphanage_roof.progress, 2, "Support should persist completed progress in the project store")
+    assertEqual(#projects.patch_the_orphanage_roof.contributions, 2, "Support should record each contribution step")
+
+    local alreadyComplete = base_entity.createEntity({
+        id = "pc_city_support_complete",
+        name = "City Support Complete",
+        isPC = true,
+    })
+    alreadyComplete.gold = 100
+    alreadyComplete.inventory = inventory.createInventory()
+    local completeController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { alreadyComplete },
+        projects = projects,
+    })
+    ok, result = completeController:resolveAction(alreadyComplete, {
+        type = "support",
+        projectId = "patch_the_orphanage_roof",
+        contribution = 25,
+    })
+    assertTrue(not ok, "Support should reject already complete projects")
+    assertEqual(result, "Project already complete", "completed Support project should explain no-op")
+    assertEqual(alreadyComplete.gold, 100, "completed Support project should not spend gold")
+    assertTrue(not completeController:hasActed(alreadyComplete), "completed Support project should not consume City Action")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_support_poor",
+        name = "City Support Poor",
+        isPC = true,
+    })
+    poor.gold = 24
+    poor.inventory = inventory.createInventory()
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+        projects = {},
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "support",
+        name = "Soup kitchen",
+        complexity = 2,
+        contribution = 25,
+    })
+    assertTrue(not ok, "Support should require the contribution gold")
+    assertEqual(result, "Not enough gold", "insufficient Support gold should explain failure")
+    assertTrue(not poorController:hasActed(poor), "failed Support should not consume City Action")
+
+    local missingComplexity = base_entity.createEntity({
+        id = "pc_city_support_missing_complexity",
+        name = "City Support Missing Complexity",
+        isPC = true,
+    })
+    missingComplexity.gold = 100
+    missingComplexity.inventory = inventory.createInventory()
+    local missingController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { missingComplexity },
+        projects = {},
+    })
+    ok, result = missingController:resolveAction(missingComplexity, {
+        type = "support",
+        projectId = "unknown_clock",
+        contribution = 25,
+    })
+    assertTrue(not ok, "new Support projects should require complexity")
+    assertEqual(result, "Project complexity required", "missing Support complexity should explain setup requirement")
+    assertTrue(not missingController:hasActed(missingComplexity), "invalid Support setup should not consume City Action")
+
+    local invalidComplexity = base_entity.createEntity({
+        id = "pc_city_support_invalid_complexity",
+        name = "City Support Invalid Complexity",
+        isPC = true,
+    })
+    invalidComplexity.gold = 100
+    invalidComplexity.inventory = inventory.createInventory()
+    local invalidController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { invalidComplexity },
+        projects = {},
+    })
+    ok, result = invalidController:resolveAction(invalidComplexity, {
+        type = "support",
+        name = "Too large",
+        complexity = 9,
+        contribution = 25,
+    })
+    assertTrue(not ok, "Support should keep project complexity in the rulebook range")
+    assertEqual(result, "Project complexity must be 2-8", "invalid Support complexity should explain rulebook range")
+end
+
+local function checkCityPhaseResearchAction()
+    local researcher = base_entity.createEntity({
+        id = "pc_city_researcher",
+        name = "City Researcher",
+        isPC = true,
+        cups = 4,
+    })
+    researcher.gold = 50
+    researcher.inventory = inventory.createInventory()
+
+    local successCard = {
+        name = "Ten of Swords",
+        value = 10,
+        suit = constants.SUITS.SWORDS,
+    }
+    local discardedCard = nil
+    local fakeDeck = {
+        draw = function()
+            return successCard
+        end,
+        discard = function(_, card)
+            discardedCard = card
+        end,
+    }
+
+    local bus = events.createEventBus()
+    local resolved = nil
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { researcher },
+        playerDeck = fakeDeck,
+    })
+
+    local ok, result, detail = controller:resolveAction(researcher, {
+        type = "research",
+        topic = "The star-daughter beneath the tomb",
+    })
+    assertTrue(ok, "Research should resolve through the City Action facade")
+    assertEqual(result, "research_complete", "Research should report completion")
+    assertEqual(researcher.gold, 0, "Research should spend 50g")
+    assertEqual(detail.questions, 1, "successful Research should allow one question")
+    assertEqual(detail.testResult.result, "success", "Research should run a Cups test")
+    assertEqual(discardedCard, successCard, "Research should discard an automatically drawn test card")
+    assertTrue(controller:hasActed(researcher), "Research should consume a successful City Action")
+    assertTrue(resolved and resolved.action == city_phase.ACTIONS.RESEARCH, "Research should emit city action details")
+
+    local greatResearcher = base_entity.createEntity({
+        id = "pc_city_great_researcher",
+        name = "City Great Researcher",
+        isPC = true,
+        cups = 4,
+    })
+    greatResearcher.gold = 50
+    greatResearcher.inventory = inventory.createInventory()
+    local greatController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { greatResearcher },
+    })
+    ok, result, detail = greatController:resolveAction(greatResearcher, {
+        type = "research",
+        topic = "Lost routes through the Underworld",
+        card = {
+            name = "Ten of Cups",
+            value = 10,
+            suit = constants.SUITS.CUPS,
+        },
+    })
+    assertTrue(ok, "Research should accept an explicit Cups test card")
+    assertEqual(detail.testResult.result, "great_success", "matching-suit Research success should be great")
+    assertEqual(detail.questions, 3, "great-success Research should allow three questions")
+
+    local failedResearcher = base_entity.createEntity({
+        id = "pc_city_failed_researcher",
+        name = "City Failed Researcher",
+        isPC = true,
+        cups = 1,
+    })
+    failedResearcher.gold = 50
+    failedResearcher.inventory = inventory.createInventory()
+    local failedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { failedResearcher },
+    })
+    ok, result, detail = failedController:resolveAction(failedResearcher, {
+        type = "research",
+        topic = "Unreliable tavern gossip",
+        card = {
+            name = "Five of Wands",
+            value = 5,
+            suit = constants.SUITS.WANDS,
+        },
+    })
+    assertTrue(ok, "failed Research test should still resolve the City Action")
+    assertEqual(detail.testResult.result, "failure", "low Research test should fail")
+    assertEqual(detail.questions, 0, "failed Research should allow no questions")
+    assertEqual(failedResearcher.gold, 0, "failed Research should still spend its bribe money")
+    assertTrue(failedController:hasActed(failedResearcher), "failed Research test should still consume City Action")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_poor_researcher",
+        name = "City Poor Researcher",
+        isPC = true,
+        cups = 4,
+    })
+    poor.gold = 49
+    poor.inventory = inventory.createInventory()
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+    })
+    ok, result = poorController:resolveAction(poor, {
+        type = "research",
+        topic = "An expensive rumor",
+        card = {
+            name = "Ten of Cups",
+            value = 10,
+            suit = constants.SUITS.CUPS,
+        },
+    })
+    assertTrue(not ok, "Research should require 50g")
+    assertEqual(result, "Not enough gold", "insufficient Research gold should explain failure")
+    assertEqual(poor.gold, 49, "failed Research setup should not spend gold")
+    assertTrue(not poorController:hasActed(poor), "failed Research setup should not consume City Action")
+
+    local noTopic = base_entity.createEntity({
+        id = "pc_city_no_topic_researcher",
+        name = "City No Topic Researcher",
+        isPC = true,
+    })
+    noTopic.gold = 50
+    noTopic.inventory = inventory.createInventory()
+    local noTopicController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noTopic },
+    })
+    ok, result = noTopicController:resolveAction(noTopic, {
+        type = "research",
+        card = {
+            name = "Ten of Cups",
+            value = 10,
+            suit = constants.SUITS.CUPS,
+        },
+    })
+    assertTrue(not ok, "Research should require a topic")
+    assertEqual(result, "Research topic required", "missing Research topic should explain failure")
+    assertTrue(not noTopicController:hasActed(noTopic), "missing Research topic should not consume City Action")
+
+    local noDeck = base_entity.createEntity({
+        id = "pc_city_no_deck_researcher",
+        name = "City No Deck Researcher",
+        isPC = true,
+    })
+    noDeck.gold = 50
+    noDeck.inventory = inventory.createInventory()
+    local noDeckController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noDeck },
+    })
+    ok, result = noDeckController:resolveAction(noDeck, {
+        type = "research",
+        topic = "A topic with no draw",
+    })
+    assertTrue(not ok, "Research should require a card draw")
+    assertEqual(result, "Requires minor arcana draw", "missing Research draw should explain failure")
+    assertEqual(noDeck.gold, 50, "missing Research draw should not spend gold")
+    assertTrue(not noDeckController:hasActed(noDeck), "missing Research draw should not consume City Action")
+end
+
+local function checkCityPhaseAlchemyActionFacade()
+    local buyer = base_entity.createEntity({
+        id = "pc_city_menagerie_buyer",
+        name = "City Menagerie Buyer",
+        isPC = true,
+    })
+    buyer.gold = 25
+    buyer.inventory = inventory.createInventory()
+
+    local seller = base_entity.createEntity({
+        id = "pc_city_reagent_seller",
+        name = "City Reagent Seller",
+        isPC = true,
+    })
+    seller.gold = 0
+    seller.inventory = inventory.createInventory()
+    local reagent = inventory.createItemFromTemplate("slime_reagent")
+    seller.inventory:addItem(reagent, inventory.LOCATIONS.PACK)
+
+    local bus = events.createEventBus()
+    local resolved = {}
+    bus:on(events.EVENTS.CITY_ACTION_RESOLVED, function(data)
+        resolved[#resolved + 1] = data
+    end)
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = bus,
+        guild = { buyer, seller },
+    })
+
+    local ok, result, detail = controller:resolveAction(buyer, {
+        type = "harvest_alchemical_reagents",
+        source = "brain_spider",
+    })
+    assertTrue(ok, "City Phase should dispatch Menagerie reagent purchases")
+    assertEqual(result, "reagent_purchased", "City Phase Menagerie action should report reagent purchase")
+    assertEqual(detail.cost, 25, "City Phase Menagerie action should spend one reagent cost")
+    assertEqual(buyer.gold, 0, "City Phase Menagerie action should spend actor gold")
+    assertTrue(controller:hasActed(buyer), "successful City Action should mark actor as acted")
+    assertTrue(not controller:canAdvance(), "City Phase should wait for every active adventurer")
+    assertEqual(#resolved, 1, "successful City Action should emit a city resolution event")
+    assertEqual(resolved[1].action, city_phase.ACTIONS.MENAGERIE_REAGENT_PURCHASE, "Menagerie alias should emit normalized City Action")
+    assertTrue(not resolved[1].canAdvance, "city event should report incomplete City Phase while actors remain")
+    assertTrue(buyer.inventory:findItemByPredicate(function(item)
+        return item.templateId == "brain_spider_reagent"
+    end) ~= nil, "City Phase Menagerie action should add the selected reagent")
+
+    ok, result = controller:resolveAction(buyer, {
+        type = "sell_reagents",
+        source = "brain_spider",
+    })
+    assertTrue(not ok, "City Phase should reject a second action by the same adventurer")
+    assertEqual(result, "City Action already taken", "repeat City Action should explain turn accounting")
+    assertEqual(#resolved, 1, "rejected repeat City Action should not emit a city event")
+
+    ok, result, detail = controller:resolveAction(seller, {
+        type = "sell_reagents",
+        source = "slime",
+        price = 37,
+    })
+    assertTrue(ok, "City Phase should dispatch Alchemists' Hall reagent sales")
+    assertEqual(result, "reagent_sold", "City Phase sale action should report reagent sale")
+    assertEqual(detail.value, 37, "City Phase sale should pass through GM-adjudicated price")
+    assertEqual(seller.gold, 37, "City Phase sale should pay the seller")
+    assertTrue(seller.inventory:findItem(reagent.id) == nil, "City Phase sale should remove sold reagent")
+    assertTrue(controller:canAdvance(), "City Phase should advance after all active adventurers act")
+    assertEqual(#resolved, 2, "second successful City Action should emit a city event")
+    assertEqual(resolved[2].action, city_phase.ACTIONS.SELL_REAGENT, "sale alias should emit normalized City Action")
+    assertTrue(resolved[2].canAdvance, "city event should report when all active actors have acted")
+
+    local poor = base_entity.createEntity({
+        id = "pc_city_poor_buyer",
+        name = "City Poor Buyer",
+        isPC = true,
+    })
+    poor.gold = 0
+    poor.inventory = inventory.createInventory()
+    local retryController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poor },
+    })
+    ok, result = retryController:resolveAction(poor, {
+        type = "harvest_alchemical_reagents",
+        source = "slime",
+    })
+    assertTrue(not ok, "failed City Action should bubble up action failure")
+    assertEqual(result, "Not enough gold", "failed Menagerie City Action should explain insufficient funds")
+    assertTrue(not retryController:hasActed(poor), "failed City Action should not consume the actor action")
+
+    poor.gold = 25
+    ok, result = retryController:resolveAction(poor, {
+        type = "harvest_alchemical_reagents",
+        source = "slime",
+    })
+    assertTrue(ok, "actor should be able to retry after a failed City Action")
+    assertEqual(result, "reagent_purchased", "retried City Action should resolve normally")
+    assertTrue(retryController:canAdvance(), "single-actor City Phase should advance after successful retry")
+
+    local dead = base_entity.createEntity({
+        id = "pc_city_dead",
+        name = "City Dead",
+        isPC = true,
+    })
+    dead.conditions.dead = true
+    dead.inventory = inventory.createInventory()
+    local deadController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { dead },
+    })
+    ok, result = deadController:resolveAction(dead, {
+        type = "harvest_alchemical_reagents",
+        source = "slime",
+    })
+    assertTrue(not ok, "dead adventurers should not perform City Actions")
+    assertEqual(result, "No active adventurer", "dead adventurer City Action should explain inactive actor")
+    assertTrue(deadController:canAdvance(), "dead adventurers should not block City Phase advancement")
+
+    local unknown = base_entity.createEntity({
+        id = "pc_city_unknown",
+        name = "City Unknown",
+        isPC = true,
+    })
+    unknown.inventory = inventory.createInventory()
+    local unknownController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { unknown },
+    })
+    ok, result = unknownController:resolveAction(unknown, {
+        type = "hold_a_parade",
+    })
+    assertTrue(not ok, "unknown City Action should fail")
+    assertEqual(result, "Unknown City Action", "unknown City Action should explain unsupported action")
+    assertTrue(not unknownController:hasActed(unknown), "unknown City Action should not consume the actor action")
+end
+
+local function checkCampReadBookAction()
+    local actor = base_entity.createEntity({
+        id = "pc_reader",
+        name = "Reader",
+        isPC = true,
+    })
+    actor.loreBids = 2
+    actor.inventory = inventory.createInventory()
+
+    local available = camp_actions.getAvailableActions(actor, { actor })
+    local sawReadBook = false
+    for _, action in ipairs(available) do
+        if action.id == "read_book" then
+            sawReadBook = true
+            break
+        end
+    end
+    assertTrue(not sawReadBook, "Read a Book should require a readable carried book")
+
+    local blank = inventory.createItemFromTemplate("blank_book")
+    actor.inventory:addItem(blank, inventory.LOCATIONS.PACK)
+    assertTrue(not camp_actions.hasReadableBook(actor), "blank books should not satisfy Read a Book")
+
+    local book = inventory.createItemFromTemplate("tomb_lore_book")
+    actor.inventory:addItem(book, inventory.LOCATIONS.PACK)
+    assertTrue(camp_actions.hasReadableBook(actor), "authored lore books should satisfy Read a Book")
+
+    available = camp_actions.getAvailableActions(actor, { actor })
+    sawReadBook = false
+    for _, action in ipairs(available) do
+        if action.id == "read_book" and action.name == "Read a Book" then
+            sawReadBook = true
+            break
+        end
+    end
+    assertTrue(sawReadBook, "Read a Book should be available when a readable book is carried")
+
+    local bus = events.createEventBus()
+    local prompted = nil
+    bus:on("camp_action_resolved", function(data)
+        if data.action == "read_book" then
+            prompted = data
+        end
+    end)
+
+    local ok, result = camp_actions.resolveReadBook(actor, book, nil, {}, bus)
+    assertTrue(ok, "Read a Book without a question should open the question prompt")
+    assertEqual(result, "book_question_required", "Read a Book should request one question")
+    assertTrue(prompted and prompted.requiresQuestion, "Read a Book prompt should advertise question requirement")
+    assertEqual(prompted.subjectId, "location_guardian_shrine", "Read a Book prompt should expose book subject")
+
+    local response
+    ok, result, response = camp_actions.resolveAction({
+        type = "read_book",
+        actor = actor,
+        target = book,
+        request = {
+            questionType = "identity_or_origin",
+        },
+    }, { eventBus = events.createEventBus() })
+    assertTrue(ok, "Read a Book should answer an available book-scoped question")
+    assertEqual(result, "book_answered", "Read a Book should report an answered question")
+    assertTrue(response.summary:find("astronomer") ~= nil, "Read a Book should return the authored lore answer")
+    assertEqual(actor.loreBids, 2, "Read a Book should not spend ordinary lore bid uses")
+    assertEqual(actor.lastBookLoreResult.loreSpend, false, "Read a Book should record no lore spend")
+
+    ok, result = camp_actions.resolveReadBook(actor, book, {
+        questionType = "vulnerability",
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Read a Book should reject unsupported questions for the book subject")
+    assertEqual(result, "book_rephrase_needed", "unsupported book questions should request a rephrase")
+    assertEqual(actor.loreBids, 2, "rephrased book questions should not spend lore bid uses")
+
+    local outsideBook = inventory.createItemFromTemplate("tomb_lore_book")
+    ok, result = camp_actions.resolveReadBook(actor, outsideBook, {
+        questionType = "identity_or_origin",
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Read a Book should require the target book to be carried")
+    assertEqual(result, "Book must be carried", "uncarried book should explain Read a Book failure")
+end
+
+local function checkCampScoutAheadAction()
+    local actor = base_entity.createEntity({
+        id = "pc_scout",
+        name = "Scout",
+        isPC = true,
+    })
+
+    local available = camp_actions.getAvailableActions(actor, { actor })
+    local sawScoutAhead = false
+    for _, action in ipairs(available) do
+        if action.id == "scout" and action.name == "Scout Ahead" then
+            sawScoutAhead = true
+            break
+        end
+    end
+    assertTrue(sawScoutAhead, "Scout Ahead should be available as the canonical Scout camp action")
+
+    local bus = events.createEventBus()
+    local initiated = nil
+    bus:on("camp_action_resolved", function(data)
+        if data.action == "scout" and data.result == "scout_initiated" then
+            initiated = data
+        end
+    end)
+
+    local ok, result = camp_actions.resolveScout(actor, {}, bus)
+    assertTrue(ok, "Scout Ahead should initiate cleanly")
+    assertEqual(result, "scout_initiated", "Scout Ahead should report test initiation")
+    assertTrue(initiated and initiated.requiresTest, "Scout Ahead should request a test")
+    assertEqual(initiated.testSuit, "pentacles", "Scout Ahead should test Pentacles")
+
+    local scoutInfo = {
+        "Goblin tracks cross the eastern threshold.",
+        "A warm draft carries incense from the stairs.",
+    }
+    local outcomeBus = events.createEventBus()
+    local emitted = nil
+    outcomeBus:on("camp_action_resolved", function(data)
+        if data.action == "scout" then
+            emitted = data
+        end
+    end)
+
+    local information
+    ok, result, information = camp_actions.resolveScoutOutcome(actor, "success", {
+        scoutInfo = scoutInfo,
+    }, outcomeBus)
+    assertTrue(ok, "successful Scout Ahead should reveal a hint")
+    assertEqual(result, "scout_hint", "successful Scout Ahead should report a hint")
+    assertEqual(information, scoutInfo[1], "successful Scout Ahead should reveal one nearby hint")
+    assertEqual(actor.lastScoutResult.outcome, "success", "Scout Ahead should record normalized success")
+    assertEqual(emitted.information, scoutInfo[1], "Scout Ahead should emit the revealed hint")
+
+    local fullInfo = {
+        rooms = { "Collapsed shrine", "Ghoul nest" },
+        creatures = "Hungry dead and tomb mites",
+    }
+    ok, result, information = camp_actions.resolveScoutOutcome(actor, { degree = "great success" }, {
+        greatSuccessInfo = fullInfo,
+    }, events.createEventBus())
+    assertTrue(ok, "great-success Scout Ahead should reveal a full report")
+    assertEqual(result, "full_scout_report", "great-success Scout Ahead should report full information")
+    assertEqual(information, fullInfo, "great-success Scout Ahead should preserve structured nearby info")
+    assertEqual(actor.lastScoutResult.information, fullInfo, "great-success Scout Ahead should cache the full report")
+
+    local dungeon = dungeon_graph.loadFromData(tomb_data.data)
+    local scoutRoomManager = room_manager.createRoomManager({ eventBus = events.createEventBus() })
+    for _, roomData in ipairs(tomb_data.data.rooms or {}) do
+        scoutRoomManager:registerRoom(room_manager.createRoomInstance(roomData, roomData.id))
+    end
+
+    ok, result, information = camp_actions.resolveScoutOutcome(actor, "success", {
+        currentRoomId = "101_entrance",
+        dungeon = dungeon,
+        roomManager = scoutRoomManager,
+    }, events.createEventBus())
+    assertTrue(ok, "successful Scout Ahead should derive adjacent-room hints from map data")
+    assertEqual(result, "scout_hint", "derived Scout Ahead should still report a hint")
+    assertEqual(information.roomId, "102_scriptorium",
+        "derived Scout Ahead success should reveal one adjacent room")
+    assertTrue(information.summary:find("Scriptorium") ~= nil,
+        "derived Scout Ahead hint should identify the nearby room")
+    assertEqual(information.secret, nil,
+        "derived Scout Ahead hints should omit undiscovered secret exits by default")
+
+    ok, result, information = camp_actions.resolveScoutOutcome(actor, "great_success", {
+        currentRoomId = "101_entrance",
+        dungeon = dungeon,
+        roomManager = scoutRoomManager,
+    }, events.createEventBus())
+    assertTrue(ok, "great-success Scout Ahead should derive a full adjacent-room report")
+    assertEqual(result, "full_scout_report", "derived great-success Scout Ahead should report full information")
+    assertEqual(#information, 2,
+        "derived great-success Scout Ahead should report each non-secret adjacent room")
+    assertEqual(information[1].roomId, "102_scriptorium",
+        "derived Scout Ahead report should preserve connection order")
+    assertTrue(information[2].features[1] ~= nil,
+        "derived Scout Ahead report should include visible notable nearby features")
+
+    ok, result = camp_actions.resolveScoutOutcome(actor, "failure", {}, events.createEventBus())
+    assertTrue(not ok, "failed Scout Ahead should not reveal information")
+    assertEqual(result, "nothing_learned", "failed Scout Ahead should report no new information")
+    assertEqual(actor.lastScoutResult.result, "nothing_learned", "failed Scout Ahead should cache the failure")
+
+    local context = {}
+    ok, result = camp_actions.resolveScoutOutcome(actor, "great_failure", context, events.createEventBus())
+    assertTrue(not ok, "great-failure Scout Ahead should fail the camp action")
+    assertEqual(result, "challenge_triggered", "great-failure Scout Ahead should trigger a Challenge")
+    assertTrue(context.challengeTriggered, "great-failure Scout Ahead should mark Challenge trigger context")
+end
+
+local function checkCampUpdateMapsAction()
+    local actor = base_entity.createEntity({
+        id = "pc_mapper",
+        name = "Mapper",
+        isPC = true,
+    })
+
+    local available = camp_actions.getAvailableActions(actor, { actor })
+    local sawUpdateMaps = false
+    for _, action in ipairs(available) do
+        if action.id == "update_maps" and action.name == "Update Maps" then
+            sawUpdateMaps = true
+            break
+        end
+    end
+    assertTrue(sawUpdateMaps, "Update Maps should be available as a Camp Action")
+
+    local graph = dungeon_graph.createGraph()
+    graph:createRoom({ id = "A", name = "Entry" })
+    graph:createRoom({ id = "B", name = "Hall" })
+    graph:createRoom({ id = "C", name = "Shrine" })
+    graph:addConnection("A", "B", { direction = "east" })
+    graph:addConnection("B", "C", { direction = "east" })
+
+    local manager = watch_manager.createWatchManager({
+        dungeon = graph,
+        startingRoom = "A",
+        guild = { actor },
+        eventBus = events.createEventBus(),
+    })
+    local mapState = {}
+    local bus = events.createEventBus()
+    local emitted = nil
+    bus:on("camp_action_resolved", function(data)
+        if data.action == "update_maps" then
+            emitted = data
+        end
+    end)
+
+    local ok, result, rooms = camp_actions.resolveUpdateMaps(actor, {
+        watchManager = manager,
+        guildMap = mapState,
+        traveledRooms = { "A", "B", "C" },
+    }, bus)
+    assertTrue(ok, "Update Maps should resolve with travelled rooms")
+    assertEqual(result, "maps_updated", "Update Maps should report map update")
+    assertEqual(#rooms, 3, "Update Maps should record travelled rooms")
+    assertTrue(emitted and emitted.mappedRoomTravelPerWatch == 2, "Update Maps should emit mapped travel pace")
+    assertTrue(mapState.mappedRooms.A and mapState.mappedRooms.B and mapState.mappedRooms.C,
+        "Update Maps should record rooms in guild map state")
+    assertTrue(manager:isMappedRoom("A") and manager:isMappedRoom("B") and manager:isMappedRoom("C"),
+        "Update Maps should push mapped rooms into WatchManager")
+    assertEqual(manager.mappedRoomTravelPerWatch, 2, "Update Maps should set mapped travel to two rooms per watch")
+
+    ok, result = manager:moveParty("B")
+    assertTrue(ok, "first mapped-room move should succeed")
+    assertTrue(not result.watchSpent, "first mapped-room transition should not spend a watch")
+    assertEqual(manager:getWatchCount(), 0, "first mapped transition should not trigger Meatgrinder")
+
+    ok, result = manager:moveParty("C")
+    assertTrue(ok, "second mapped-room move should succeed")
+    assertTrue(result.watchSpent, "second mapped-room transition should spend a watch")
+    assertEqual(manager:getWatchCount(), 1, "two mapped-room transitions should cost one watch")
+end
+
+local function checkLoudNoiseMeatgrinderThreshold()
+    local function deckFor(values)
+        local index = 0
+        local discarded = {}
+        return {
+            discarded = discarded,
+            draw = function()
+                index = index + 1
+                local value = values[index]
+                if not value then
+                    return nil
+                end
+                return {
+                    name = "Major " .. tostring(value),
+                    value = value,
+                    is_major = true,
+                }
+            end,
+            discard = function(_, card)
+                discarded[#discarded + 1] = card
+            end,
+        }
+    end
+
+    local function checkValue(value)
+        local bus = events.createEventBus()
+        local randomEncounters = 0
+        bus:on(events.EVENTS.RANDOM_ENCOUNTER, function(data)
+            randomEncounters = randomEncounters + 1
+            assertEqual(data.category, watch_manager.MEATGRINDER.RANDOM_ENCOUNTER,
+                "loud-noise random encounter event should report random_encounter")
+        end)
+
+        local gmDeck = deckFor({ value })
+        local manager = watch_manager.createWatchManager({
+            gmDeck = gmDeck,
+            eventBus = bus,
+        })
+
+        local result = manager:checkLoudNoise()
+        return result, randomEncounters, gmDeck.discarded
+    end
+
+    local fifteenth, fifteenthEncounters, fifteenthDiscarded = checkValue(15)
+    assertTrue(fifteenth.triggered, "loud noise should trigger an encounter on XV")
+    assertEqual(fifteenth.result.category, watch_manager.MEATGRINDER.RANDOM_ENCOUNTER,
+        "loud noise should treat XV as a random encounter")
+    assertEqual(fifteenth.result.normalCategory, watch_manager.MEATGRINDER.TRAVEL_EVENT,
+        "loud noise should preserve the normal XV Meatgrinder category")
+    assertEqual(fifteenthEncounters, 1, "loud noise XV should emit a random encounter")
+    assertEqual(#fifteenthDiscarded, 1, "loud noise draws should still discard the major card")
+
+    local fourteenth, fourteenthEncounters = checkValue(14)
+    assertTrue(not fourteenth.triggered, "loud noise should not trigger an encounter on XIV")
+    assertEqual(fourteenth.result.category, watch_manager.MEATGRINDER.TRAVEL_EVENT,
+        "ordinary XIV loud-noise draws should retain the travel-event category")
+    assertEqual(fourteenthEncounters, 0, "loud noise XIV should not emit a random encounter")
+
+    local twentieth, twentiethEncounters = checkValue(20)
+    assertTrue(twentieth.triggered, "loud noise should trigger an encounter on XX")
+    assertEqual(twentieth.result.category, watch_manager.MEATGRINDER.RANDOM_ENCOUNTER,
+        "loud noise XX should remain a random encounter")
+    assertEqual(twentiethEncounters, 1, "loud noise XX should emit one random encounter")
+end
+
+local function checkMeatgrinderTorchesGutterNotConsumed()
+    local room = { id = "torch_test_room", name = "Torch Test Room" }
+    local grinder = meatgrinder.createMeatgrinder({
+        eventBus = events.createEventBus(),
+    })
+
+    local firstGutter = grinder:resolveByValue(1, room, {})
+    local secondGutter = grinder:resolveByValue(1, room, {})
+    assertEqual(firstGutter.category, meatgrinder.CATEGORIES.TORCHES_GUTTER,
+        "I should resolve as torches gutter")
+    assertEqual(secondGutter.category, meatgrinder.CATEGORIES.TORCHES_GUTTER,
+        "repeated torches gutter should still resolve as torches gutter")
+    assertTrue(not firstGutter.consumed and not secondGutter.consumed,
+        "torches gutter results should not be marked consumed")
+    assertTrue(not grinder:isConsumed(meatgrinder.CATEGORIES.TORCHES_GUTTER, room.id),
+        "torches gutter should not be marked off on the Meatgrinder")
+    assertEqual(#grinder:getConsumedEvents(), 0,
+        "torches gutter should not appear in consumed Meatgrinder events")
+    assertTrue(not hasValue((secondGutter.effects or {}), "respite"),
+        "repeated torches gutter should not turn into respite")
+
+    local curiosity = grinder:resolveByValue(6, room, {})
+    local differentCuriosity = grinder:resolveByValue(7, room, {})
+    local repeatedCuriosity = grinder:resolveByValue(6, room, {})
+    assertTrue(curiosity.consumed, "non-gutter Meatgrinder entries should be marked consumed")
+    assertTrue(grinder:isConsumed(meatgrinder.CATEGORIES.CURIOSITY, room.id),
+        "curiosity should be marked off on the Meatgrinder")
+    assertTrue(grinder:isConsumed(meatgrinder.CATEGORIES.CURIOSITY, room.id, 6),
+        "specific curiosity entries should be marked off by card value")
+    assertTrue(not grinder:isConsumed(meatgrinder.CATEGORIES.CURIOSITY, room.id, 8),
+        "other curiosity entries should remain available until their own card is drawn")
+    assertTrue(differentCuriosity.consumed,
+        "a different card in the same category should resolve as its own Meatgrinder entry")
+    assertEqual(differentCuriosity.category, meatgrinder.CATEGORIES.CURIOSITY,
+        "different same-category cards should not be converted to respite")
+    assertTrue(differentCuriosity.effects[1] == nil or differentCuriosity.effects[1].type ~= "respite",
+        "different same-category cards should not produce respite")
+    assertTrue(repeatedCuriosity.consumed, "repeated non-gutter entries should report consumed respite")
+    assertEqual(repeatedCuriosity.effects[1].type, "respite",
+        "repeated non-gutter entries should produce a watch of respite")
+end
+
+local function checkCampHuntAction()
+    local actor = base_entity.createEntity({
+        id = "pc_hunter",
+        name = "Hunter",
+        isPC = true,
+    })
+    actor.inventory = inventory.createInventory()
+    actor.inventory:addItem(inventory.createItemFromTemplate("bow"), inventory.LOCATIONS.PACK)
+
+    local available = camp_actions.getAvailableActions(actor, { actor })
+    local sawHunt = false
+    for _, action in ipairs(available) do
+        if action.id == "hunt" then
+            sawHunt = true
+            break
+        end
+    end
+    assertTrue(sawHunt, "Hunt should be available to a PC carrying a missile weapon")
+
+    local bus = events.createEventBus()
+    local initiated = nil
+    bus:on("camp_action_resolved", function(data)
+        if data.action == "hunt" and data.result == "hunt_initiated" then
+            initiated = data
+        end
+    end)
+
+    local ok, result = camp_actions.resolveHunt(actor, {}, bus)
+    assertTrue(ok, "Hunt should start for a missile-weapon user")
+    assertEqual(result, "hunt_initiated", "Hunt should report test initiation")
+    assertTrue(initiated and initiated.requiresTest, "Hunt should request a test")
+    assertEqual(initiated.testSuit, "swords", "Hunt should test Swords")
+
+    ok, result = camp_actions.resolveHuntOutcome(actor, "success", {}, events.createEventBus())
+    assertTrue(ok, "successful Hunt should produce fresh game")
+    assertEqual(result, "fresh_game_found", "successful Hunt should report fresh game")
+    local freshGame = actor.inventory:findItemByPredicate(function(item)
+        return item.properties and item.properties.freshGame
+    end)
+    assertTrue(freshGame ~= nil, "successful Hunt should add fresh game to inventory")
+    assertTrue(not freshGame.isRation, "fresh game should not be treated as an automatic ration")
+    assertTrue(freshGame.properties.requiresCookingGear, "fresh game should require cooking gear to eat")
+    assertTrue(freshGame.properties.preservableWithSalt, "fresh game should record salt preservation requirement")
+
+    local salt = inventory.createItemFromTemplate("salt", { quantity = 2 })
+    actor.inventory:addItem(salt, inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolvePreserveHuntedGame(actor, freshGame, {}, events.createEventBus())
+    assertTrue(ok, "salt should preserve fresh game into rations")
+    assertEqual(result, "game_preserved", "preserving hunted game should report preserved result")
+    assertEqual(salt.quantity, 1, "preserving hunted game should consume one salt")
+    assertTrue(actor.inventory:findItem(freshGame.id) == nil, "preserved fresh game should be removed")
+    local preservedRation = actor.inventory:findItemByPredicate(function(item)
+        return item.isRation
+    end)
+    assertTrue(preservedRation ~= nil, "preserved fresh game should add rations")
+    assertEqual(preservedRation.quantity, 1, "ordinary fresh game should preserve into one ration")
+
+    local rawGamePC = base_entity.createEntity({
+        id = "pc_raw_game",
+        name = "Raw Game",
+        isPC = true,
+    })
+    rawGamePC.inventory = inventory.createInventory()
+    local rawGame = inventory.createItemFromTemplate("fresh_game")
+    rawGamePC.inventory:addItem(rawGame, inventory.LOCATIONS.PACK)
+    local rawGameCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { rawGamePC },
+    })
+    rawGameCamp:transitionTo(camp_controller.STATES.BREAK_BREAD)
+    ok, result = rawGameCamp:consumeRation(rawGamePC)
+    assertTrue(not ok, "uncooked fresh game should not satisfy Break Bread")
+    assertEqual(result, "no_ration", "uncooked fresh game should not count as a meal")
+    assertTrue(rawGamePC.inventory:findItem(rawGame.id) ~= nil, "uncooked fresh game should remain after failed meal")
+
+    local cookActor = base_entity.createEntity({
+        id = "pc_cook_hunter",
+        name = "Cook Hunter",
+        isPC = true,
+    })
+    cookActor.inventory = inventory.createInventory()
+    local cookGame = inventory.createItemFromTemplate("fresh_game")
+    cookActor.inventory:addItem(cookGame, inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveCookHuntedGame(cookActor, cookGame, {}, events.createEventBus())
+    assertTrue(not ok, "cooking hunted game should require cooking gear")
+    assertEqual(result, "Requires cooking gear", "missing cooking gear should explain cooking failure")
+    cookActor.inventory:addItem(inventory.createItemFromTemplate("cooking_gear"), inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveCookHuntedGame(cookActor, cookGame, {}, events.createEventBus())
+    assertTrue(ok, "cooking gear should prepare hunted game for Break Bread")
+    assertEqual(result, "game_cooked", "cooking hunted game should report cooked result")
+    assertTrue(cookActor.inventory:findItem(cookGame.id) == nil, "cooked fresh game should be removed")
+    local cookedMeal = cookActor.inventory:findItemByPredicate(function(item)
+        return item.properties and item.properties.isCampMeal
+    end)
+    assertTrue(cookedMeal ~= nil, "cooked hunted game should add a camp meal")
+    assertTrue(not cookedMeal.isRation, "cooked hunted game should not become preserved rations")
+
+    local cookedCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { cookActor },
+    })
+    cookedCamp:transitionTo(camp_controller.STATES.BREAK_BREAD)
+    ok = cookedCamp:consumeRation(cookActor)
+    assertTrue(ok, "cooked hunted game should satisfy Break Bread")
+    assertTrue(cookActor.inventory:findItem(cookedMeal.id) == nil, "eaten cooked game meal should be consumed")
+    assertTrue(not cookActor.conditions.stressed, "cooked game meal should prevent missed-meal stress")
+
+    local feastActor = base_entity.createEntity({
+        id = "pc_feast_hunter",
+        name = "Feast Hunter",
+        isPC = true,
+    })
+    feastActor.inventory = inventory.createInventory()
+    feastActor.inventory:addItem(inventory.createItemFromTemplate("crossbow"), inventory.LOCATIONS.HANDS)
+    ok, result = camp_actions.resolveHuntOutcome(feastActor, "great_success", {}, events.createEventBus())
+    assertTrue(ok, "great-success Hunt should produce large game")
+    assertEqual(result, "large_game_found", "great-success Hunt should report large game")
+    local largeGame = feastActor.inventory:findItemByPredicate(function(item)
+        return item.properties and item.properties.greatSuccess
+    end)
+    assertTrue(largeGame ~= nil, "great-success Hunt should add large fresh game")
+    assertEqual(largeGame.properties.meals, "guild", "large game should feed the guild once prepared")
+
+    local feastCookActor = base_entity.createEntity({
+        id = "pc_feast_cook",
+        name = "Feast Cook",
+        isPC = true,
+    })
+    feastCookActor.inventory = inventory.createInventory()
+    local cookFeast = inventory.createItemFromTemplate("fresh_game_feast")
+    feastCookActor.inventory:addItem(cookFeast, inventory.LOCATIONS.PACK)
+    feastCookActor.inventory:addItem(inventory.createItemFromTemplate("cooking_gear"), inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolveCookHuntedGame(feastCookActor, cookFeast, {
+        guild = { feastCookActor, actor, cookActor },
+    }, events.createEventBus())
+    assertTrue(ok, "large fresh game should cook into guild meals")
+    assertEqual(result, "game_cooked", "large game cooking should report cooked result")
+    local feastMeal = feastCookActor.inventory:findItemByPredicate(function(item)
+        return item.properties and item.properties.isCampMeal
+    end)
+    assertTrue(feastMeal ~= nil, "large fresh game should add cooked meal stack")
+    assertEqual(feastMeal.quantity, 3, "large cooked game should produce one meal per guild member")
+
+    feastActor.inventory:addItem(inventory.createItemFromTemplate("salt"), inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolvePreserveHuntedGame(feastActor, largeGame, {
+        guild = { actor, feastActor, { id = "ally_1" }, { id = "ally_2" } },
+    }, events.createEventBus())
+    assertTrue(ok, "large fresh game should be preservable with salt")
+    assertEqual(result, "game_preserved", "large game preservation should report preserved result")
+    local feastRations = feastActor.inventory:findItemByPredicate(function(item)
+        return item.isRation
+    end)
+    assertTrue(feastRations ~= nil, "large game preservation should add ration stack")
+    assertEqual(feastRations.quantity, 4, "large game should preserve into one ration per guild member")
+
+    local failedActor = base_entity.createEntity({
+        id = "pc_failed_hunter",
+        name = "Failed Hunter",
+        isPC = true,
+    })
+    failedActor.inventory = inventory.createInventory()
+    failedActor.inventory:addItem(inventory.createItemFromTemplate("bow"), inventory.LOCATIONS.HANDS)
+    ok, result = camp_actions.resolveHuntOutcome(failedActor, "failure", {}, events.createEventBus())
+    assertTrue(not ok, "failed Hunt should not produce game")
+    assertEqual(result, "no_game", "failed Hunt should report no game")
+
+    local unpreservedGame = inventory.createItemFromTemplate("fresh_game")
+    failedActor.inventory:addItem(unpreservedGame, inventory.LOCATIONS.PACK)
+    ok, result = camp_actions.resolvePreserveHuntedGame(failedActor, unpreservedGame, {}, events.createEventBus())
+    assertTrue(not ok, "preserving hunted game should require salt")
+    assertEqual(result, "Requires salt", "missing salt should explain preservation failure")
+
+    local context = {}
+    ok, result = camp_actions.resolveHuntOutcome(failedActor, "great_failure", context, events.createEventBus())
+    assertTrue(not ok, "great-failure Hunt should fail the camp action")
+    assertEqual(result, "challenge_triggered", "great-failure Hunt should trigger a Challenge")
+    assertTrue(context.challengeTriggered, "great-failure Hunt should mark Challenge trigger context")
+
+    local noBow = base_entity.createEntity({
+        id = "pc_no_hunt_weapon",
+        name = "No Hunt Weapon",
+        isPC = true,
+    })
+    noBow.inventory = inventory.createInventory()
+    ok, result = camp_actions.resolveHunt(noBow, {}, events.createEventBus())
+    assertTrue(not ok, "Hunt should require a missile weapon")
+    assertEqual(result, "Requires a missile weapon", "missing missile weapon should explain Hunt failure")
+end
+
+local function checkCampPatrolMeatgrinderChoice()
+    local function fakeMeatgrinder(draws)
+        local index = 0
+        return {
+            draw = function()
+                index = index + 1
+                return draws[index]
+            end,
+        }
+    end
+
+    local function makeController(draws)
+        local bus = events.createEventBus()
+        local emitted = {}
+        bus:on("meatgrinder_result", function(data)
+            emitted[#emitted + 1] = data
+        end)
+
+        local controller = camp_controller.createCampController({
+            eventBus = bus,
+            guild = {},
+            meatgrinder = fakeMeatgrinder(draws),
+        })
+        controller:transitionTo(camp_controller.STATES.WATCH)
+        return controller, emitted
+    end
+
+    local encounter = {
+        category = "random_encounter",
+        description = "A monster finds the camp.",
+    }
+    local curiosity = {
+        category = "curiosity",
+        description = "A strange noise passes by.",
+    }
+    local travel = {
+        category = "travel_event",
+        description = "Loose stones shift nearby.",
+    }
+
+    local controller, emitted = makeController({ encounter, curiosity })
+    local ok, watchResult = controller:resolveWatch(true)
+    assertTrue(ok, "Patrol watch should resolve")
+    assertEqual(#watchResult.draws, 2, "Patrol should draw twice from the Meatgrinder")
+    assertEqual(watchResult.selected, curiosity, "Patrol should choose a non-encounter when available")
+    assertTrue(not watchResult.challengeTriggered, "Patrol should avoid Challenge when a non-encounter is drawn")
+    assertEqual(#emitted, 1, "Patrol should emit only the selected Meatgrinder result")
+    assertEqual(emitted[1], curiosity, "Patrol should emit the selected non-encounter")
+
+    controller, emitted = makeController({ encounter, { category = "random_encounter", description = "Second encounter" } })
+    ok, watchResult = controller:resolveWatch(true)
+    assertTrue(ok, "Patrol watch should resolve when both draws are encounters")
+    assertTrue(watchResult.challengeTriggered, "Patrol should trigger Challenge only if both draws are encounters")
+    assertEqual(watchResult.selected, encounter, "Patrol should select one encounter when both draws are encounters")
+    assertEqual(#emitted, 1, "Patrol double-encounter should still emit one effective result")
+    assertEqual(emitted[1], encounter, "Patrol double-encounter should emit the selected encounter")
+
+    controller, emitted = makeController({ travel, encounter })
+    ok, watchResult = controller:resolveWatch(false)
+    assertTrue(ok, "Non-patrol watch should resolve")
+    assertEqual(#watchResult.draws, 1, "Non-patrol watch should draw once")
+    assertEqual(watchResult.selected, travel, "Non-patrol watch should use the only draw")
+    assertEqual(#emitted, 1, "Non-patrol watch should emit the only draw")
+    assertEqual(emitted[1], travel, "Non-patrol watch should emit the selected draw")
+
+    local cupsLeft = base_entity.createEntity({
+        id = "pc_cups_left",
+        name = "Cups Left",
+        isPC = true,
+        cups = 4,
+    })
+    cupsLeft.pathSuit = constants.SUITS.CUPS
+    local cupsRight = base_entity.createEntity({
+        id = "pc_cups_right",
+        name = "Cups Right",
+        isPC = true,
+        cups = 1,
+    })
+    cupsRight.pathSuit = constants.SUITS.CUPS
+
+    local bus = events.createEventBus()
+    local guardEvent = nil
+    bus:on("camp_watch_guard", function(data)
+        guardEvent = data
+    end)
+    controller = camp_controller.createCampController({
+        eventBus = bus,
+        guild = { cupsLeft, cupsRight },
+        meatgrinder = fakeMeatgrinder({ encounter }),
+    })
+    controller:transitionTo(camp_controller.STATES.WATCH)
+    ok, watchResult = controller:resolveWatch(false, {
+        guardCard = { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        guardTestCard = { name = "Ten of Cups", value = 10, suit = constants.SUITS.CUPS },
+    })
+    assertTrue(ok, "random encounter watch should resolve guard test")
+    assertEqual(watchResult.guard, cupsLeft, "odd discard should choose first matching path guard")
+    assertTrue(watchResult.alarmRaised, "successful Cups guard test should raise the alarm")
+    assertTrue(not watchResult.surprised, "successful Cups guard test should avoid surprise")
+    assertTrue(guardEvent and guardEvent.guard == cupsLeft, "watch should emit guard test result")
+
+    controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { cupsLeft, cupsRight },
+        meatgrinder = fakeMeatgrinder({ encounter }),
+    })
+    controller:transitionTo(camp_controller.STATES.WATCH)
+    ok, watchResult = controller:resolveWatch(false, {
+        guardCard = { name = "Four of Cups", value = 4, suit = constants.SUITS.CUPS },
+        guardTestCard = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+    })
+    assertTrue(ok, "random encounter watch should resolve failed guard test")
+    assertEqual(watchResult.guard, cupsRight, "even discard should choose last matching path guard")
+    assertTrue(watchResult.surprised, "failed Cups guard test should mark the guild surprised")
+    assertTrue(not watchResult.alarmRaised, "failed Cups guard test should not raise the alarm")
+end
+
+local function checkCampComfortRequirements()
+    local bedrollOnlyPC = base_entity.createEntity({
+        id = "pc_bedroll_only",
+        name = "Bedroll Only",
+        isPC = true,
+    })
+    local bedrollOnlyCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { bedrollOnlyPC },
+    })
+    assertTrue(bedrollOnlyCamp:startCamp({ hasBedrolls = true }), "camp should start with bedroll config")
+    bedrollOnlyCamp:endCamp()
+    assertTrue(bedrollOnlyPC.conditions.stressed, "bedroll alone should not satisfy camp comfort")
+
+    local bedrollFirePC = base_entity.createEntity({
+        id = "pc_bedroll_fire",
+        name = "Bedroll Fire",
+        isPC = true,
+    })
+    local bedrollFireCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { bedrollFirePC },
+    })
+    assertTrue(bedrollFireCamp:startCamp({ hasBedrolls = true, hasFire = true }),
+        "camp should start with bedroll and fire config")
+    bedrollFireCamp:endCamp()
+    assertTrue(not bedrollFirePC.conditions.stressed, "two comfort elements should prevent end-camp stress")
+
+    local shelteredPC = base_entity.createEntity({
+        id = "pc_sheltered_camp",
+        name = "Sheltered Camp",
+        isPC = true,
+    })
+    local shelteredCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { shelteredPC },
+    })
+    assertTrue(shelteredCamp:startCamp({ hasShelter = true }), "camp should start with explicit shelter")
+    shelteredCamp:endCamp()
+    assertTrue(not shelteredPC.conditions.stressed, "explicit shelter should satisfy camp comfort")
+
+    local inventoryComfortPC = base_entity.createEntity({
+        id = "pc_inventory_comfort",
+        name = "Inventory Comfort",
+        isPC = true,
+    })
+    inventoryComfortPC.inventory = inventory.createInventory()
+    local bedroll = inventory.createItemFromTemplate("bedroll")
+    local firewood = inventory.createItemFromTemplate("firewood")
+    inventoryComfortPC.inventory:addItem(bedroll, inventory.LOCATIONS.PACK)
+    inventoryComfortPC.inventory:addItem(firewood, inventory.LOCATIONS.PACK)
+    local inventoryComfortCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { inventoryComfortPC },
+    })
+    assertTrue(inventoryComfortCamp:startCamp(), "camp should start without explicit comfort flags")
+    assertTrue(inventoryComfortCamp.hasBedrolls, "camp should derive bedroll comfort from inventory")
+    assertTrue(inventoryComfortCamp.hasFire, "camp should derive fire comfort from carried firewood")
+    inventoryComfortCamp:endCamp()
+    assertTrue(not inventoryComfortPC.conditions.stressed, "inventory-derived bedroll and fire should prevent stress")
+
+    local explicitOverridePC = base_entity.createEntity({
+        id = "pc_explicit_camp_override",
+        name = "Explicit Camp Override",
+        isPC = true,
+    })
+    explicitOverridePC.inventory = inventory.createInventory()
+    explicitOverridePC.inventory:addItem(inventory.createItemFromTemplate("bedroll"), inventory.LOCATIONS.PACK)
+    explicitOverridePC.inventory:addItem(inventory.createItemFromTemplate("firewood"), inventory.LOCATIONS.PACK)
+    local explicitOverrideCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { explicitOverridePC },
+    })
+    assertTrue(explicitOverrideCamp:startCamp({ hasBedrolls = false, hasFire = false }),
+        "explicit camp flags should override inventory-derived comfort")
+    explicitOverrideCamp:endCamp()
+    assertTrue(explicitOverridePC.conditions.stressed, "explicitly denied comfort should still stress the PC")
+
+    local nightmarePC = base_entity.createEntity({
+        id = "pc_bad_dreams",
+        name = "Bad Dreams",
+        isPC = true,
+    })
+    nightmarePC.malediction = {
+        active = true,
+        curse = {
+            flags = { badDreams = true },
+            metadata = { wakeStressedChance = 0.5 },
+        },
+    }
+    local nightmareEvents = 0
+    local nightmareBus = events.createEventBus()
+    nightmareBus:on(camp_controller.EVENTS.NIGHTMARE, function(data)
+        nightmareEvents = nightmareEvents + 1
+        assertEqual(data.entity, nightmarePC, "bad dreams event should identify the cursed sleeper")
+        assertEqual(data.result, "stressed", "bad dreams event should report Stressed")
+    end)
+    local nightmareCamp = camp_controller.createCampController({
+        eventBus = nightmareBus,
+        guild = { nightmarePC },
+    })
+    assertTrue(nightmareCamp:startCamp({ hasShelter = true }),
+        "nightmare camp should start with shelter")
+    nightmareCamp:endCamp({ badDreams = true })
+    assertTrue(nightmarePC.conditions.stressed, "Malediction bad dreams should wake the sleeper Stressed")
+    assertEqual(nightmareEvents, 1, "bad dreams should emit one nightmare event")
+
+    local quietNightPC = base_entity.createEntity({
+        id = "pc_quiet_bad_dreams",
+        name = "Quiet Bad Dreams",
+        isPC = true,
+    })
+    quietNightPC.badDreams = true
+    local quietNightCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { quietNightPC },
+    })
+    assertTrue(quietNightCamp:startCamp({ hasShelter = true }),
+        "quiet nightmare camp should start with shelter")
+    quietNightCamp:endCamp({ badDreams = false })
+    assertTrue(not quietNightPC.conditions.stressed,
+        "bad dreams should not stress the sleeper when the curse chance does not hit")
+
+    local verminPC = base_entity.createEntity({
+        id = "pc_vermin_beloved",
+        name = "Vermin Beloved",
+        isPC = true,
+    })
+    verminPC.inventory = inventory.createInventory()
+    local wantedTorch = inventory.createItemFromTemplate("torch")
+    local stolenWand = inventory.createItemFromTemplate("wand_archwood")
+    verminPC.inventory:addItem(wantedTorch, inventory.LOCATIONS.PACK)
+    verminPC.inventory:addItem(stolenWand, inventory.LOCATIONS.PACK)
+    verminPC.malediction = {
+        active = true,
+        curse = {
+            flags = { verminFollow = true },
+            metadata = { nightlyPackSwapChance = 0.5 },
+        },
+    }
+    local theftEvent = nil
+    local verminBus = events.createEventBus()
+    verminBus:on(camp_controller.EVENTS.VERMIN_THEFT, function(data)
+        theftEvent = data
+    end)
+    local verminCamp = camp_controller.createCampController({
+        eventBus = verminBus,
+        guild = { verminPC },
+    })
+    assertTrue(verminCamp:startCamp({ hasShelter = true }), "vermin camp should start with shelter")
+    verminCamp:endCamp({
+        verminTheft = true,
+        verminTheftItemId = stolenWand.id,
+    })
+    assertTrue(verminPC.inventory:findItem(stolenWand.id) == nil,
+        "vermin curse should remove the stolen pack item")
+    assertTrue(verminPC.inventory:findItem(wantedTorch.id) ~= nil,
+        "vermin curse should leave unselected pack items")
+    local garbage = verminPC.inventory:findItemByPredicate(function(item)
+        return item.properties and item.properties.verminReplacement
+    end)
+    assertTrue(garbage ~= nil, "vermin curse should replace the stolen item with garbage")
+    assertTrue(theftEvent and theftEvent.stolenItem == stolenWand,
+        "vermin theft should emit the stolen item")
+    assertTrue(verminPC.verminThefts and verminPC.verminThefts[1] == theftEvent,
+        "vermin theft should be recorded on the cursed adventurer")
+
+    local sparedPC = base_entity.createEntity({
+        id = "pc_vermin_spared",
+        name = "Vermin Spared",
+        isPC = true,
+    })
+    sparedPC.verminFollow = true
+    sparedPC.inventory = inventory.createInventory()
+    local sparedItem = inventory.createItemFromTemplate("dagger")
+    sparedPC.inventory:addItem(sparedItem, inventory.LOCATIONS.PACK)
+    local sparedCamp = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { sparedPC },
+    })
+    assertTrue(sparedCamp:startCamp({ hasShelter = true }), "spared vermin camp should start with shelter")
+    sparedCamp:endCamp({ verminTheft = false })
+    assertTrue(sparedPC.inventory:findItem(sparedItem.id) ~= nil,
+        "vermin curse should not steal from the pack when the nightly chance does not hit")
+end
+
+local function checkCampRationConsumption()
+    local rationedPC = base_entity.createEntity({
+        id = "pc_ration_stack",
+        name = "Ration Stack",
+        isPC = true,
+    })
+    rationedPC.inventory = inventory.createInventory()
+    local rationStack = inventory.createItemFromTemplate("rations_3")
+    rationedPC.inventory:addItem(rationStack, inventory.LOCATIONS.PACK)
+
+    local controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { rationedPC },
+    })
+    controller:transitionTo(camp_controller.STATES.BREAK_BREAD)
+
+    local ok, result = controller:consumeRation(rationedPC)
+    assertTrue(ok, "Break Bread should consume a ration from a stack")
+    assertEqual(result, "ration_consumed", "ration consumption should report the canonical result")
+    assertEqual(rationStack.quantity, 2, "stacked rations should decrement by one")
+    assertTrue(not rationedPC.conditions.stressed, "eating a ration should not mark Stressed")
+
+    ok = controller:consumeRation(rationedPC)
+    assertTrue(ok, "second ration should be consumable from the same stack")
+    assertEqual(rationStack.quantity, 1, "second ration should leave one ration in the stack")
+
+    ok = controller:consumeRation(rationedPC)
+    assertTrue(ok, "final ration in a stack should be consumable")
+    assertTrue(rationedPC.inventory:findItem(rationStack.id) == nil, "empty ration stack should be removed")
+
+    ok, result = controller:consumeRation(rationedPC)
+    assertTrue(not ok, "missing ration should fail Break Bread consumption")
+    assertEqual(result, "no_ration", "missing ration should report no_ration")
+    assertTrue(rationedPC.conditions.stressed, "missing ration should mark Stressed")
+    assertEqual(rationedPC.starvationCount, 1, "first missed meal should increment starvation count")
+
+    ok = controller:consumeRation(rationedPC)
+    assertTrue(not ok, "second missed ration should still fail consumption")
+    assertTrue(rationedPC.conditions.starving, "second consecutive missed meal should mark Starving")
+    assertEqual(rationedPC.starvationCount, 2, "second missed meal should increment starvation count again")
+
+    local singlePC = base_entity.createEntity({
+        id = "pc_single_ration",
+        name = "Single Ration",
+        isPC = true,
+    })
+    singlePC.inventory = inventory.createInventory()
+    local singleRation = inventory.createItemFromTemplate("ration")
+    singlePC.inventory:addItem(singleRation, inventory.LOCATIONS.PACK)
+    local singleController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { singlePC },
+    })
+    singleController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+
+    ok = singleController:consumeRation(singlePC)
+    assertTrue(ok, "single ration item should be consumed")
+    assertTrue(singlePC.inventory:findItem(singleRation.id) == nil, "single ration should be removed after consumption")
+
+    local skipPC = base_entity.createEntity({
+        id = "pc_skip_ration",
+        name = "Skip Ration",
+        isPC = true,
+    })
+    skipPC.inventory = inventory.createInventory()
+    local skippedRations = inventory.createItemFromTemplate("rations_3")
+    skipPC.inventory:addItem(skippedRations, inventory.LOCATIONS.PACK)
+    local skipController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { skipPC },
+    })
+    skipController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+
+    ok, result = skipController:skipRation(skipPC)
+    assertTrue(not ok, "explicitly skipping rations should count as a missed meal")
+    assertEqual(result, "no_ration", "skipping rations should report no_ration")
+    assertEqual(skippedRations.quantity, 3, "skipping rations should not consume carried food")
+    assertTrue(skipPC.conditions.stressed, "skipping rations should mark Stressed")
+    assertTrue(skipController:canAdvanceFromBreakBread(), "skipped ration should resolve Break Bread")
+
+    local ashedPC = base_entity.createEntity({
+        id = "pc_ash_food_curse",
+        name = "Ash Food Curse",
+        isPC = true,
+    })
+    ashedPC.foodMayTurnToAsh = true
+    ashedPC.rationAshChance = 0.5
+    ashedPC.inventory = inventory.createInventory()
+    local ashedRation = inventory.createItemFromTemplate("ration")
+    ashedPC.inventory:addItem(ashedRation, inventory.LOCATIONS.PACK)
+    local ashedEvents = 0
+    local ashBus = events.createEventBus()
+    ashBus:on(camp_controller.EVENTS.RATION_ASHED, function(data)
+        ashedEvents = ashedEvents + 1
+        assertEqual(data.entity, ashedPC, "ash curse event should identify the cursed eater")
+        assertEqual(data.count, 1, "one ashed ration should be reported")
+    end)
+    local ashedController = camp_controller.createCampController({
+        eventBus = ashBus,
+        guild = { ashedPC },
+    })
+    ashedController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+    ok, result = ashedController:consumeRation(ashedPC, { rationAsh = true })
+    assertTrue(not ok, "Malediction ash-food curse should waste the ration instead of feeding")
+    assertEqual(result, "ration_ashed", "ashed food should report the Malediction rider")
+    assertTrue(ashedPC.inventory:findItem(ashedRation.id) == nil, "ashed ration should be consumed")
+    assertTrue(ashedPC.conditions.stressed, "ashed-only meal should leave the adventurer hungry")
+    assertEqual(ashedPC.starvationCount, 1, "ashed-only meal should increment starvation")
+    assertEqual(ashedEvents, 1, "ashed ration should emit exactly one ash event")
+    assertTrue(ashedController:canAdvanceFromBreakBread(), "ashed ration should resolve Break Bread")
+
+    local retryPC = base_entity.createEntity({
+        id = "pc_ash_food_retry",
+        name = "Ash Food Retry",
+        isPC = true,
+    })
+    retryPC.foodMayTurnToAsh = true
+    retryPC.inventory = inventory.createInventory()
+    local retryRations = inventory.createItemFromTemplate("rations_3")
+    retryPC.inventory:addItem(retryRations, inventory.LOCATIONS.PACK)
+    local retryController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { retryPC },
+    })
+    retryController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+    ok, result = retryController:consumeRation(retryPC, { rationAsh = { true, false } })
+    assertTrue(ok, "ash-food curse should allow another ration to feed the adventurer")
+    assertEqual(result, "ration_consumed", "eventual nourishment should report ration consumption")
+    assertEqual(retryRations.quantity, 1, "one ashed ration and one eaten ration should both leave the stack")
+    assertTrue(not retryPC.conditions.stressed, "eventual nourishment should prevent missed-meal stress")
+
+    local halePC = base_entity.createEntity({
+        id = "pc_hale_and_hearty",
+        name = "Hale and Hearty",
+        isPC = true,
+        talents = {
+            hale_and_hearty = { mastered = true },
+        },
+    })
+    halePC.inventory = inventory.createInventory()
+    local haleRations = inventory.createItemFromTemplate("rations_3")
+    halePC.inventory:addItem(haleRations, inventory.LOCATIONS.PACK)
+    halePC.bonds = {
+        ally = { charged = false },
+    }
+    local haleController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { halePC },
+    })
+    haleController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+
+    ok, result = haleController:consumeRation(halePC, { chargeBondTargetId = "ally" })
+    assertTrue(ok, "Hale and Hearty should be able to eat a second ration")
+    assertEqual(result, "ration_consumed_bond_charged", "Hale and Hearty should report bond charging")
+    assertEqual(haleRations.quantity, 1, "Hale and Hearty should consume two rations")
+    assertTrue(halePC.bonds.ally.charged, "Hale and Hearty should charge the selected uncharged bond")
+end
+
+local function checkCampAnimalFeedConsumption()
+    local owner = base_entity.createEntity({
+        id = "pc_companion_owner",
+        name = "Companion Owner",
+        isPC = true,
+    })
+    owner.inventory = inventory.createInventory()
+    owner.inventory:addItem(inventory.createItemFromTemplate("ration"), inventory.LOCATIONS.PACK)
+    local feed = inventory.createItemFromTemplate("animal_feed", { quantity = 2 })
+    owner.inventory:addItem(feed, inventory.LOCATIONS.PACK)
+    local hound = {
+        id = "hound_feed",
+        name = "Hound",
+        species = "hound",
+        conditions = {
+            staggered = true,
+            weak = true,
+            starving = true,
+        },
+        weak = true,
+        starving = true,
+        starvationCount = 1,
+    }
+    owner.animalCompanions = { hound }
+
+    local controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { owner },
+    })
+    controller:transitionTo(camp_controller.STATES.BREAK_BREAD)
+    controller.rationsConsumed[owner.id] = true
+    assertTrue(not controller:canAdvanceFromBreakBread(),
+        "Break Bread should wait for unresolved animal companion feed")
+    controller.rationsConsumed[owner.id] = nil
+
+    local ok = controller:consumeRation(owner)
+    assertTrue(ok, "owner should consume their ration while feeding companions")
+    assertEqual(feed.quantity, 1, "animal feed stack should decrement by one")
+    assertTrue(not hound.conditions.staggered, "fed animal companion should clear Staggered")
+    assertTrue(not hound.conditions.weak and not hound.weak, "fed animal companion should clear Weak")
+    assertTrue(not hound.conditions.starving and not hound.starving, "fed animal companion should clear Starving")
+    assertEqual(hound.starvationCount, 0, "fed animal companion should reset starvation count")
+    assertTrue(controller:canAdvanceFromBreakBread(), "fed animal companion should allow Break Bread to advance")
+
+    local unfedOwner = base_entity.createEntity({
+        id = "pc_unfed_companion_owner",
+        name = "Unfed Companion Owner",
+        isPC = true,
+    })
+    unfedOwner.inventory = inventory.createInventory()
+    unfedOwner.inventory:addItem(inventory.createItemFromTemplate("ration"), inventory.LOCATIONS.PACK)
+    local unfedHound = {
+        id = "hound_unfed",
+        name = "Unfed Hound",
+        conditions = {},
+    }
+    unfedOwner.animalCompanions = { unfedHound }
+    local unfedController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { unfedOwner },
+    })
+    unfedController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+
+    ok = unfedController:consumeRation(unfedOwner)
+    assertTrue(ok, "owner ration consumption should still resolve when animal feed is missing")
+    assertTrue(unfedHound.conditions.weak and unfedHound.weak,
+        "unfed animal companion should become Weak")
+    assertEqual(unfedHound.starvationCount, 1, "unfed animal companion should track missed feed")
+    assertTrue(unfedController:canAdvanceFromBreakBread(),
+        "unfed animal companion should be marked resolved for Break Bread")
+
+    local starvingOwner = base_entity.createEntity({
+        id = "pc_starving_companion_owner",
+        name = "Starving Companion Owner",
+        isPC = true,
+    })
+    starvingOwner.inventory = inventory.createInventory()
+    starvingOwner.inventory:addItem(inventory.createItemFromTemplate("ration"), inventory.LOCATIONS.PACK)
+    local starvingHound = {
+        id = "hound_starving",
+        name = "Starving Hound",
+        conditions = { weak = true },
+        weak = true,
+        starvationCount = 1,
+    }
+    starvingOwner.animalCompanions = { starvingHound }
+    local starvingController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { starvingOwner },
+    })
+    starvingController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+
+    ok = starvingController:consumeRation(starvingOwner)
+    assertTrue(ok, "second missed companion feed should still resolve owner ration")
+    assertTrue(starvingHound.conditions.starving and starvingHound.starving,
+        "second missed animal feed should mark Starving")
+    assertEqual(starvingHound.starvationCount, 2, "second missed animal feed should increment starvation")
+end
+
+local function checkCampRecoveryEndClearsStaggered()
+    local pc = base_entity.createEntity({
+        id = "pc_recovery_staggered",
+        name = "Recovery Staggered",
+        isPC = true,
+    })
+    pc.conditions.stressed = true
+    pc.conditions.staggered = true
+    pc.loreBids = 0
+    pc.bonds = {
+        ally = { charged = true },
+    }
+
+    local controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { pc },
+    })
+    controller:transitionTo(camp_controller.STATES.RECOVERY)
+    assertEqual(pc.loreBids, 4, "recovery should refill lore bids")
+    assertTrue(pc.conditions.staggered, "Stressed PC should not clear Staggered at recovery start")
+
+    local ok = controller:spendBondForRecovery(pc, "ally", "clear_stress")
+    assertTrue(ok, "bond spend should clear Stressed during recovery")
+    assertTrue(not pc.conditions.stressed, "clear_stress recovery spend should remove Stressed")
+    assertTrue(pc.conditions.staggered, "Staggered should remain until recovery step ends")
+
+    assertTrue(controller:advanceStep(), "advancing from recovery should finalize recovery")
+    assertTrue(not pc.conditions.staggered, "non-Stressed PC should clear Staggered at recovery end")
+end
+
+local function checkCampCompleteConditionDurations()
+    local pc = base_entity.createEntity({
+        id = "pc_next_camp_condition",
+        name = "Next Camp Condition",
+        isPC = true,
+    })
+    pc.conditions.rhymebound = true
+    pc.conditions.silenced = true
+    pc.conditionDurations = {
+        rhymebound = { ["until"] = "next_camp_complete" },
+        silenced = { ["until"] = "fool_reshuffle" },
+    }
+
+    local expired = {}
+    local bus = events.createEventBus()
+    bus:on(camp_controller.EVENTS.CONDITION_EXPIRED, function(data)
+        expired[#expired + 1] = data
+    end)
+    local controller = camp_controller.createCampController({
+        eventBus = bus,
+        guild = { pc },
+    })
+    controller.hasShelter = true
+
+    controller:endCamp()
+
+    assertTrue(not pc.conditions.rhymebound,
+        "next-camp-complete maleficence conditions should clear at Camp end")
+    assertTrue(pc.conditions.silenced,
+        "other duration conditions should remain after Camp end")
+    assertTrue(pc.conditionDurations and pc.conditionDurations.silenced and not pc.conditionDurations.rhymebound,
+        "Camp end should remove only next-camp-complete duration metadata")
+    assertEqual(#expired, 1, "Camp end should emit one condition-expired event")
+    assertEqual(expired[1].condition, "rhymebound", "condition-expired event should name the cleared condition")
+end
+
+local function checkMaledictionExtraBondRecoveryCost()
+    local campPC = base_entity.createEntity({
+        id = "pc_malediction_extra_bond_camp",
+        name = "Camp Infirm Curse",
+        isPC = true,
+    })
+    campPC.conditions.injured = true
+    campPC.malediction = {
+        active = true,
+        curse = {
+            flags = { maledictionExtraBondRecoveryCost = true },
+        },
+    }
+    campPC.bonds = {
+        ally_a = { charged = true },
+    }
+    local campEvent = nil
+    local campBus = events.createEventBus()
+    campBus:on(camp_controller.EVENTS.BOND_SPENT, function(data)
+        campEvent = data
+    end)
+    local camp = camp_controller.createCampController({
+        eventBus = campBus,
+        guild = { campPC },
+    })
+    camp:transitionTo(camp_controller.STATES.RECOVERY)
+
+    local ok, result = camp:spendBondForRecovery(campPC, "ally_a", "heal_wound")
+    assertTrue(not ok, "Malediction Page should require two charged Bonds to clear Injured at Camp")
+    assertEqual(result, "Requires two charged Bonds", "missing second Bond should explain Malediction recovery cost")
+    assertTrue(campPC.conditions.injured, "failed extra-cost recovery should not clear Injured")
+    assertTrue(campPC.bonds.ally_a.charged, "failed extra-cost recovery should not spend the first Bond")
+
+    campPC.bonds.ally_b = { charged = true }
+    ok, result = camp:spendBondForRecovery(campPC, "ally_a", "heal_wound", {
+        extraBondTargetId = "ally_b",
+    })
+    assertTrue(ok, "Malediction Page should clear Injured when two charged Bonds are burned")
+    assertEqual(result, "injured_healed", "extra-cost Camp recovery should still report the healed wound")
+    assertTrue(not campPC.conditions.injured, "two-Bond Camp recovery should clear Injured")
+    assertTrue(not campPC.bonds.ally_a.charged and not campPC.bonds.ally_b.charged,
+        "two-Bond Camp recovery should burn both charged Bonds")
+    assertTrue(campEvent and campEvent.bondCost == 2 and campEvent.extraBondTargetId == "ally_b",
+        "Camp recovery event should report the second Malediction recovery Bond")
+
+    local cityPC = base_entity.createEntity({
+        id = "pc_malediction_extra_bond_city",
+        name = "City Infirm Curse",
+        isPC = true,
+        talents = {
+            path_lore = { mastered = true, wounded = true },
+        },
+    })
+    cityPC.gold = 50
+    cityPC.inventory = inventory.createInventory()
+    cityPC.woundedTalents = 1
+    cityPC.maledictionExtraBondRecoveryCost = true
+    cityPC.bonds = {
+        ally_a = { charged = true },
+    }
+    local cityBus = events.createEventBus()
+    local cityEvent = nil
+    cityBus:on(events.EVENTS.CITY_UPKEEP_RECOVERY_BOND_SPENT, function(data)
+        cityEvent = data
+    end)
+    local city = city_phase.createCityPhaseController({
+        eventBus = cityBus,
+        guild = { cityPC },
+    })
+    assertTrue(city:resolveUpkeep(cityPC, { tier = "common" }),
+        "common City upkeep should enable Recovery-style bond burns")
+
+    ok, result = city:spendBondForUpkeepRecovery(cityPC, "ally_a", "heal_wound")
+    assertTrue(not ok, "Malediction Page should require two charged Bonds to clear wounded talents in City")
+    assertEqual(result, "Requires two charged Bonds", "City missing second Bond should explain Malediction recovery cost")
+    assertTrue(cityPC.talents.path_lore.wounded, "failed City extra-cost recovery should not heal the talent")
+    assertTrue(cityPC.bonds.ally_a.charged, "failed City extra-cost recovery should not spend the first Bond")
+
+    cityPC.bonds.ally_b = { charged = true }
+    ok, result = city:spendBondForUpkeepRecovery(cityPC, "ally_a", "heal_wound", {
+        extraBondTargetId = "ally_b",
+    })
+    assertTrue(ok, "Malediction Page should heal a wounded talent when two charged Bonds are burned in City")
+    assertEqual(result, "talent_healed", "extra-cost City recovery should report the healed talent")
+    assertTrue(not cityPC.talents.path_lore.wounded, "two-Bond City recovery should clear the wounded talent")
+    assertTrue(not cityPC.bonds.ally_a.charged and not cityPC.bonds.ally_b.charged,
+        "two-Bond City recovery should burn both charged Bonds")
+    assertTrue(cityEvent and cityEvent.bondCost == 2 and cityEvent.extraBondTargetId == "ally_b",
+        "City recovery event should report the second Malediction recovery Bond")
+end
+
+local function checkCampStarvingSkipsRecovery()
+    local pc = base_entity.createEntity({
+        id = "pc_starving_recovery",
+        name = "Starving Recovery",
+        isPC = true,
+    })
+    pc.conditions.stressed = true
+    pc.conditions.staggered = true
+    pc.conditions.starving = true
+    pc.loreBids = 1
+    pc.bonds = {
+        ally = { charged = true },
+    }
+
+    local controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { pc },
+    })
+    controller:transitionTo(camp_controller.STATES.RECOVERY)
+    assertEqual(pc.loreBids, 1, "Starving PC should not refill lore bids during Recovery")
+    assertTrue(pc.conditions.staggered, "Starving PC should not clear Staggered during Recovery")
+
+    local ok, result = controller:spendBondForRecovery(pc, "ally", "clear_stress")
+    assertTrue(not ok, "Starving PC should not burn Bonds during Recovery")
+    assertEqual(result, "Starving adventurers cannot recover", "starving recovery block should be explicit")
+    assertTrue(pc.bonds.ally.charged, "blocked Starving recovery should not spend the Bond")
+    assertTrue(pc.conditions.stressed, "blocked Starving recovery should not clear Stressed")
+
+    assertTrue(controller:advanceStep(), "advancing from Recovery should tolerate a Starving PC")
+    assertTrue(pc.conditions.staggered, "Starving PC should still not clear Staggered at Recovery end")
+
+    local comfortPC = base_entity.createEntity({
+        id = "pc_starving_comfort",
+        name = "Starving Comfort",
+        isPC = true,
+    })
+    comfortPC.conditions.starving = true
+    comfortPC.conditions.stressed = false
+    local comfortController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { comfortPC },
+    })
+    comfortController:processEndOfCampEffects(comfortPC)
+    assertTrue(not comfortPC.conditions.stressed,
+        "Starving PC should skip end-of-camp comfort stress checks")
+end
+
+local function checkCampAfflictionRecoveryCharges()
+    local restAction = camp_actions.getAction("rest")
+    assertEqual(restAction.name, "Rest and Recover", "Rest action should use the canonical camp action name")
+
+    local pc = base_entity.createEntity({
+        id = "pc_afflicted_recovery",
+        name = "Afflicted Recovery",
+        isPC = true,
+    })
+    pc.conditions.stressed = true
+    pc.bonds = {
+        ally_a = { charged = true },
+        ally_b = { charged = true },
+        ally_c = { charged = true },
+        ally_d = { charged = true },
+    }
+    pc.afflictions = {
+        goblin_rot = {
+            stage = 2,
+            maxStage = 3,
+            chargesRequired = {
+                [1] = 1,
+                [2] = 1,
+                [3] = 2,
+            },
+        },
+    }
+
+    local controller = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { pc },
+    })
+    controller:transitionTo(camp_controller.STATES.RECOVERY)
+
+    local ok, result = controller:spendBondForRecovery(pc, "ally_a", "cure_affliction", {
+        affliction = "goblin_rot",
+    })
+    assertTrue(not ok, "Stressed adventurers should clear stress before curing afflictions")
+    assertEqual(result, "Must clear stress first", "affliction cure should obey recovery stress gate")
+    assertTrue(pc.bonds.ally_a.charged, "blocked affliction cure should not spend the Bond")
+
+    pc.conditions.stressed = false
+    ok, result = controller:spendBondForRecovery(pc, "ally_a", "cure_affliction", {
+        affliction = "goblin_rot",
+    })
+    assertTrue(ok, "first affliction charge should be accepted")
+    assertEqual(result, "affliction_charged", "partial affliction charges should be recorded")
+    assertEqual(pc.afflictions.goblin_rot.cureCharges, 1, "partial charge should accumulate")
+    assertTrue(not pc.afflictions.goblin_rot.curedStages[3], "insufficient charges should not cure final stage")
+
+    ok, result = controller:spendBondForRecovery(pc, "ally_b", "cure_affliction", {
+        affliction = "goblin_rot",
+    })
+    assertTrue(ok, "second affliction charge should be accepted")
+    assertEqual(result, "affliction_charged", "curing a future stage should keep affliction active")
+    assertTrue(pc.afflictions.goblin_rot.curedStages[3], "charges should cure the most severe stage first")
+    assertEqual(pc.afflictions.goblin_rot.stage, 2, "curing a future stage should not regress current stage")
+
+    ok, result = controller:spendBondForRecovery(pc, "ally_c", "cure_affliction", {
+        affliction = "goblin_rot",
+    })
+    assertTrue(ok, "current-stage affliction charge should be accepted")
+    assertEqual(result, "affliction_charged", "current-stage cure should keep affliction active if lower stages remain")
+    assertTrue(pc.afflictions.goblin_rot.curedStages[2], "current stage should be cured")
+    assertEqual(pc.afflictions.goblin_rot.stage, 1, "curing the current stage should regress the affliction")
+
+    ok, result = controller:spendBondForRecovery(pc, "ally_d", "cure_affliction", {
+        affliction = "goblin_rot",
+    })
+    assertTrue(ok, "last affliction charge should be accepted")
+    assertEqual(result, "affliction_cured", "all cured stages should fully heal the affliction")
+    assertTrue(pc.afflictions.goblin_rot == nil, "fully cured affliction should be removed")
+
+    local held = base_entity.createEntity({
+        id = "pc_affliction_held",
+        name = "Affliction Held",
+        isPC = true,
+    })
+    held.afflictions = {
+        red_welts = {
+            stage = 1,
+            maxStage = 3,
+            curedStages = { [2] = true },
+        },
+    }
+    local heldController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { held },
+    })
+    heldController.hasShelter = true
+    heldController:processEndOfCampEffects(held)
+    assertEqual(held.afflictions.red_welts.stage, 1,
+        "afflictions should not advance into an already-cured next stage")
+
+    local bezoarPatient = base_entity.createEntity({
+        id = "pc_bezoar_patient",
+        name = "Bezoar Patient",
+        isPC = true,
+    })
+    bezoarPatient.inventory = inventory.createInventory()
+    local bezoar = inventory.createItemFromTemplate("bezoar")
+    bezoarPatient.inventory:addItem(bezoar, inventory.LOCATIONS.PACK)
+    bezoarPatient.afflictions = {
+        basilisk_bile = {
+            stage = 3,
+            maxStage = 3,
+            chargesRequired = {
+                [1] = 2,
+                [2] = 3,
+                [3] = 3,
+            },
+        },
+    }
+    local bezoarController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { bezoarPatient },
+    })
+    bezoarController:transitionTo(camp_controller.STATES.RECOVERY)
+    ok, result, detail = bezoarController:spendHealthfulItemForRecovery(bezoarPatient, bezoar.id, {
+        affliction = "basilisk_bile",
+    })
+    assertTrue(ok, "bezoar should provide healthful affliction recovery charges")
+    assertEqual(result, "affliction_cured", "bezoar's 8 charges should be able to cure a full affliction clock")
+    assertEqual(detail.charges, 8, "bezoar should count as 8 burned charges")
+    assertTrue(bezoarPatient.afflictions.basilisk_bile == nil, "fully cured affliction should be removed after bezoar")
+    assertTrue(not bezoarPatient.inventory:findItem(bezoar.id), "bezoar should be consumed when swallowed")
+
+    local stressedPatient = base_entity.createEntity({
+        id = "pc_stressed_bezoar",
+        name = "Stressed Bezoar Patient",
+        isPC = true,
+    })
+    stressedPatient.conditions.stressed = true
+    stressedPatient.inventory = inventory.createInventory()
+    local blockedBezoar = inventory.createItemFromTemplate("bezoar")
+    stressedPatient.inventory:addItem(blockedBezoar, inventory.LOCATIONS.PACK)
+    stressedPatient.afflictions = {
+        red_welts = { stage = 1, maxStage = 1 },
+    }
+    local stressedController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { stressedPatient },
+    })
+    stressedController:transitionTo(camp_controller.STATES.RECOVERY)
+    ok, result = stressedController:spendHealthfulItemForRecovery(stressedPatient, blockedBezoar.id, {
+        affliction = "red_welts",
+    })
+    assertTrue(not ok, "healthful item recovery should still obey the recovery stress gate")
+    assertEqual(result, "Must clear stress first", "blocked healthful item should explain the stress gate")
+    assertTrue(stressedPatient.inventory:findItem(blockedBezoar.id), "blocked healthful item recovery should not consume the item")
+
+    stressedPatient.conditions.stressed = false
+    local torch = inventory.createItemFromTemplate("torch")
+    stressedPatient.inventory:addItem(torch, inventory.LOCATIONS.PACK)
+    ok, result = stressedController:spendHealthfulItemForRecovery(stressedPatient, torch.id, {
+        affliction = "red_welts",
+    })
+    assertTrue(not ok, "ordinary gear should not count as a healthful affliction item")
+    assertEqual(result, "Item is not healthful for afflictions", "ordinary gear should explain failed healthful recovery")
+    assertTrue(stressedPatient.inventory:findItem(torch.id), "rejected healthful item should not be consumed")
+
+    local leechDoctor = base_entity.createEntity({
+        id = "pc_leech_doctor",
+        name = "Leech Doctor",
+        isPC = true,
+    })
+    leechDoctor.inventory = inventory.createInventory()
+    local leeches = inventory.createItemFromTemplate("leeches")
+    leechDoctor.inventory:addItem(leeches, inventory.LOCATIONS.PACK)
+    local leechPatient = base_entity.createEntity({
+        id = "pc_leech_patient",
+        name = "Leech Patient",
+        isPC = true,
+    })
+    leechPatient.afflictions = {
+        red_welts = {
+            stage = 2,
+            maxStage = 2,
+            chargesRequired = {
+                [1] = 1,
+                [2] = 2,
+            },
+        },
+    }
+    local leechController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { leechDoctor, leechPatient },
+    })
+    leechController:startCamp({ hasShelter = true })
+    ok, result = leechController:submitAction(leechDoctor, {
+        type = "use_item",
+        target = leechPatient,
+        itemId = leeches.id,
+        affliction = "red_welts",
+        card = { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+    })
+    assertTrue(ok, "leeches should be usable as a Camp item")
+    assertEqual(result, "affliction_charged", "Cups leech draw should burn 2 affliction charges")
+    assertTrue(leechPatient.afflictions.red_welts.curedStages[2],
+        "leeches should cure the most severe stage first")
+    assertEqual(leechPatient.afflictions.red_welts.stage, 1,
+        "curing the current leech-treated stage should regress the affliction")
+    assertTrue(not leechDoctor.inventory:findItem(leeches.id), "leeches should be consumed on application")
+
+    local badLeechDoctor = base_entity.createEntity({
+        id = "pc_bad_leech_doctor",
+        name = "Bad Leech Doctor",
+        isPC = true,
+    })
+    badLeechDoctor.inventory = inventory.createInventory()
+    local failedLeeches = inventory.createItemFromTemplate("leeches")
+    badLeechDoctor.inventory:addItem(failedLeeches, inventory.LOCATIONS.PACK)
+    local badLeechPatient = base_entity.createEntity({
+        id = "pc_bad_leech_patient",
+        name = "Bad Leech Patient",
+        isPC = true,
+    })
+    badLeechPatient.afflictions = {
+        goblin_rot = { stage = 1, maxStage = 2, chargesRequired = 2 },
+    }
+    local failedLeechController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { badLeechDoctor, badLeechPatient },
+    })
+    failedLeechController:startCamp({ hasShelter = true })
+    ok, result = failedLeechController:submitAction(badLeechDoctor, {
+        type = "use_item",
+        target = badLeechPatient,
+        itemId = failedLeeches.id,
+        affliction = "goblin_rot",
+        card = { name = "Four of Swords", value = 4, suit = constants.SUITS.SWORDS },
+    })
+    assertTrue(ok, "Swords leech draw should still resolve the Camp item action")
+    assertEqual(result, "leeches_no_effect", "Swords or Pentacles leech draw should provide no charges")
+    assertTrue(not badLeechPatient.afflictions.goblin_rot.curedStages,
+        "failed leech suit should not add affliction cure progress")
+    assertTrue(not badLeechDoctor.inventory:findItem(failedLeeches.id),
+        "leeches should be consumed even when the draw gives no healing")
+end
+
+local function checkReloadCrossbowAction()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_crossbow",
+        name = "Crossbow User",
+        isPC = true,
+        pentacles = 3,
+    })
+    actor.ammo = 2
+    actor.inventory = inventory.createInventory()
+    local crossbow = inventory.createItemFromTemplate("crossbow")
+    actor.inventory:addItem(crossbow, inventory.LOCATIONS.HANDS)
+
+    local target = base_entity.createEntity({
+        id = "npc_crossbow_target",
+        name = "Target",
+        isPC = false,
+        health = 3,
+        defense = 0,
+    })
+
+    local firstShot = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        weapon = crossbow,
+        targetInitiative = 5,
+    })
+    assertTrue(firstShot.success, "loaded crossbow should fire")
+    assertTrue(not crossbow.isLoaded, "firing a crossbow should unload it")
+    assertEqual(actor.ammo, 1, "firing a crossbow should spend ammo")
+    assertTrue(hasValue(firstShot.effects, "crossbow_fired"), "crossbow shot should record fired effect")
+
+    local unloadedShot = resolver:resolve({
+        actor = actor,
+        target = target,
+        card = { name = "Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        weapon = crossbow,
+        targetInitiative = 5,
+    })
+    assertTrue(not unloadedShot.success, "unloaded crossbow should not fire")
+    assertTrue(hasValue(unloadedShot.effects, "not_loaded"), "unloaded crossbow should report reload requirement")
+    assertEqual(actor.ammo, 1, "unloaded crossbow attempt should not spend ammo")
+
+    local reload = resolver:resolve({
+        actor = actor,
+        card = { name = "Any", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.RELOAD,
+    })
+    assertTrue(reload.success, "Reload Crossbow should load equipped crossbow")
+    assertTrue(crossbow.isLoaded, "Reload Crossbow should mark weapon loaded")
+    assertTrue(hasValue(reload.effects, "reloaded"), "Reload Crossbow should record reload effect")
+
+    local alreadyLoaded = resolver:resolve({
+        actor = actor,
+        card = { name = "Any", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.RELOAD,
+    })
+    assertTrue(not alreadyLoaded.success, "loaded crossbow should not reload again")
+    assertEqual(alreadyLoaded.description, "Crossbow is already loaded!", "reload should explain already-loaded state")
+end
+
+local function checkTestFateActionDrawsSeparateCard()
+    local bus = events.createEventBus()
+    local request = nil
+    bus:on(events.EVENTS.REQUEST_TEST_OF_FATE, function(data)
+        request = data
+    end)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_test_fate",
+        name = "Risk Taker",
+        isPC = true,
+        pentacles = 1,
+        wands = 3,
+    })
+    actor.resolve = 2
+    local actionCard = { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS }
+    local action = {
+        actor = actor,
+        card = actionCard,
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        testAttribute = "wands",
+        targetSuit = constants.SUITS.WANDS,
+        spendResolveForFavor = true,
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    }
+
+    local pending = resolver:resolve(action)
+    assertTrue(pending.pendingTestOfFate, "Test Fate action should open the async test flow")
+    assertTrue(request ~= nil, "Test Fate action should emit a test request")
+    assertEqual(request.attribute, "wands", "Test Fate should use explicit GM/action attribute")
+    assertEqual(request.targetSuit, constants.SUITS.WANDS, "Test Fate should use explicit GM/action target suit")
+    assertEqual(request.favor, true, "Test Fate should pass Resolve-spent favor to the modal")
+    assertEqual(actor.resolve, 1, "Test Fate favor should spend one Resolve")
+    assertTrue(hasValue(pending.effects, "resolve_spent_for_favor"), "Test Fate should record Resolve favor spend")
+    assertTrue(request.actionCard == actionCard, "Test Fate request should retain the spent action card as context")
+
+    local drawCount = 0
+    local fakeDeck = {
+        draw = function()
+            drawCount = drawCount + 1
+            return { name = "King of Swords", value = 14, suit = constants.SUITS.SWORDS }
+        end,
+        discard = function() end,
+    }
+
+    local modal = test_of_fate_modal.createTestOfFateModal({
+        eventBus = events.createEventBus(),
+        deck = fakeDeck,
+    })
+    modal:startTest({
+        entity = actor,
+        attribute = "pentacles",
+    })
+    assertEqual(drawCount, 1, "Test Fate modal should draw a separate card for the test")
+    assertTrue(modal.result.success, "high drawn card should pass the test")
+    assertTrue(not modal.result.isGreat, "untyped Test Fate should not make every success great")
+    modal:hide()
+
+    modal:startTest({
+        entity = actor,
+        attribute = "pentacles",
+        targetSuit = constants.SUITS.SWORDS,
+    })
+    assertEqual(drawCount, 2, "Second Test Fate should draw a fresh card")
+    assertTrue(modal.result.isGreat, "explicit target suit should allow Great Success on matching draw")
+    modal:hide()
+
+    local favorDeck = {
+        draw = function()
+            return { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS }
+        end,
+        discard = function() end,
+    }
+    local favorModal = test_of_fate_modal.createTestOfFateModal({
+        eventBus = events.createEventBus(),
+        deck = favorDeck,
+    })
+    favorModal:startTest({
+        entity = actor,
+        attribute = "pentacles",
+        favor = request.favor,
+    })
+    assertEqual(favorModal.result.total, 14, "Resolve-spent favor should add +3 to Test Fate")
+    assertTrue(favorModal.result.success, "Resolve-spent favor should be enough to pass this test")
+    favorModal:hide()
+
+    local cancelRequest = nil
+    bus:on(events.EVENTS.REQUEST_TEST_OF_FATE, function(data)
+        cancelRequest = data
+    end)
+    local cancel = resolver:resolve({
+        actor = actor,
+        card = { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        disfavor = true,
+        spendResolveForFavor = true,
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(cancel.pendingTestOfFate, "Test Fate should still proceed when Resolve favor cancels disfavor")
+    assertEqual(actor.resolve, 0, "Canceling disfavor with Resolve should spend one Resolve")
+    assertEqual(cancelRequest.favor, nil, "Favor and disfavor should cancel to a neutral Test Fate")
+
+    local autoEvent = nil
+    bus:on("test_of_fate_auto_success", function(data)
+        autoEvent = data
+    end)
+    local ironBeard = base_entity.createEntity({
+        id = "pc_iron_beards",
+        name = "Iron Beards",
+        isPC = true,
+        talents = {
+            iron_beards = { mastered = true },
+        },
+    })
+    ironBeard.resolve = 1
+    local ironResult = resolver:resolve({
+        actor = ironBeard,
+        card = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        useAreteAutoSuccess = true,
+        areteTalent = "iron_beards",
+        testContext = "force a stuck portcullis through stubborn endurance",
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(ironResult.success, "Iron Beards should auto-succeed on matching Tests of Fate")
+    assertTrue(ironResult.areteAutoSuccess, "Iron Beards should mark arête auto-success")
+    assertEqual(ironBeard.resolve, 0, "Iron Beards should spend one Resolve")
+    assertTrue(hasValue(ironResult.effects, "arete_iron_beards"),
+        "Iron Beards auto-success should report the talent")
+    assertTrue(autoEvent and autoEvent.talentId == "iron_beards",
+        "arête auto-success should emit talent details")
+
+    local underfoot = base_entity.createEntity({
+        id = "pc_underfoot",
+        name = "Underfoot",
+        isPC = true,
+        talents = {
+            underfoot = { mastered = true },
+        },
+    })
+    underfoot.resolve = 1
+    local underfootResult = resolver:resolve({
+        actor = underfoot,
+        card = { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        useAreteAutoSuccess = true,
+        areteTalent = "underfoot",
+        testContext = "move quietly and stay subtle",
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(underfootResult.success, "Underfoot should auto-succeed on quiet or subtle Tests of Fate")
+    assertEqual(underfoot.resolve, 0, "Underfoot should spend one Resolve")
+    assertTrue(hasValue(underfootResult.effects, "arete_underfoot"),
+        "Underfoot auto-success should report the talent")
+
+    local colossal = base_entity.createEntity({
+        id = "pc_colossal",
+        name = "Colossal",
+        isPC = true,
+        talents = {
+            colossal = { mastered = true },
+        },
+    })
+    colossal.resolve = 1
+    local colossalResult = resolver:resolve({
+        actor = colossal,
+        card = { name = "Two of Wands", value = 2, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        useAreteAutoSuccess = true,
+        areteTalent = "colossal",
+        testContext = "smash down a door and change the battlefield",
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(colossalResult.success, "Colossal should auto-succeed on feats of impressive destruction")
+    assertTrue(colossalResult.battlefieldChanged, "Colossal should mark battlefield-changing feats")
+    assertEqual(colossal.resolve, 0, "Colossal should spend one Resolve")
+    assertTrue(hasValue(colossalResult.effects, "colossal_battlefield_change"),
+        "Colossal auto-success should report battlefield change")
+
+    local mismatch = base_entity.createEntity({
+        id = "pc_iron_beards_mismatch",
+        name = "Iron Beards Mismatch",
+        isPC = true,
+        talents = {
+            iron_beards = { mastered = true },
+        },
+    })
+    mismatch.resolve = 1
+    local mismatchResult = resolver:resolve({
+        actor = mismatch,
+        card = { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        useAreteAutoSuccess = true,
+        areteTalent = "iron_beards",
+        testContext = "quietly sneak past guards",
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(not mismatchResult.success, "arête auto-success should reject mismatched contexts")
+    assertEqual(mismatch.resolve, 1, "mismatched arête auto-success should not spend Resolve")
+    assertTrue(hasValue(mismatchResult.effects, "arete_auto_success_blocked"),
+        "mismatched arête auto-success should report a block")
+
+    local noResolve = base_entity.createEntity({
+        id = "pc_underfoot_no_resolve",
+        name = "Underfoot No Resolve",
+        isPC = true,
+        talents = {
+            underfoot = { mastered = true },
+        },
+    })
+    noResolve.resolve = 0
+    local noResolveResult = resolver:resolve({
+        actor = noResolve,
+        card = { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        useAreteAutoSuccess = true,
+        areteTalent = "underfoot",
+        testContext = "quiet subtle sneaking",
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(not noResolveResult.success, "arête auto-success should require Resolve")
+    assertTrue(hasValue(noResolveResult.effects, "resolve_missing"),
+        "missing arête Resolve should report missing Resolve")
+end
+
+local function checkGuardInitiativeReplacement()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_guard",
+        name = "Shieldbearer",
+        isPC = true,
+    })
+    actor.inventory = inventory.createInventory()
+    actor.inventory:addItem(inventory.createItem({
+        name = "Shield",
+        size = 1,
+        properties = { tags = { "shield" } },
+    }), inventory.LOCATIONS.HANDS)
+
+    local oldCard = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS }
+    local newCard = { name = "Knight of Cups", value = 12, suit = constants.SUITS.CUPS }
+    local slot = {
+        card = oldCard,
+        value = oldCard.value,
+        revealed = false,
+    }
+    local controller = {
+        getInitiativeSlot = function(_, entityId)
+            if entityId == actor.id then
+                return slot
+            end
+            return nil
+        end,
+    }
+
+    local guard = resolver:resolve({
+        actor = actor,
+        card = newCard,
+        type = action_resolver.ACTION_TYPES.GUARD,
+        challengeController = controller,
+    })
+    assertTrue(guard.success, "Guard should succeed for a shield-bearing actor")
+    assertTrue(hasValue(guard.effects, "guarded"), "Guard should record guarded effect")
+    assertTrue(slot.card == newCard, "Guard should replace the initiative card")
+    assertEqual(slot.value, 12, "Guard should replace initiative value with the played card")
+    assertTrue(slot.revealed, "Guard should reveal the replacement initiative")
+
+    local unshielded = base_entity.createEntity({
+        id = "pc_no_shield",
+        name = "No Shield",
+        isPC = true,
+    })
+    local blocked = resolver:resolve({
+        actor = unshielded,
+        card = newCard,
+        type = action_resolver.ACTION_TYPES.GUARD,
+        challengeController = controller,
+    })
+    assertTrue(not blocked.success, "Guard should be blocked without a shield")
+    assertEqual(blocked.description, "Requires shield", "Guard should explain shield requirement")
+end
+
+local function checkFacedownDefenseReplacement()
+    local discarded = {}
+    local bus = events.createEventBus()
+    local replacementEvent = nil
+    bus:on("defense_replaced", function(data)
+        replacementEvent = data
+    end)
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+        playerDeck = {
+            discard = function(_, card)
+                discarded[#discarded + 1] = card
+            end,
+        },
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_defense_replace",
+        name = "Defense Replacer",
+        isPC = true,
+        pentacles = 1,
+        swords = 2,
+    })
+    local dodgeCard = { name = "Five of Pentacles", value = 5, suit = constants.SUITS.PENTACLES }
+    local riposteCard = { name = "Knight of Swords", value = 12, suit = constants.SUITS.SWORDS }
+
+    local dodge = resolver:resolve({
+        actor = actor,
+        card = dodgeCard,
+        type = action_resolver.ACTION_TYPES.DODGE,
+    })
+    assertTrue(dodge.success, "first facedown defense should prepare normally")
+    assertEqual(actor:getDefense().type, "dodge", "first defense should be Dodge")
+
+    local riposte = resolver:resolve({
+        actor = actor,
+        card = riposteCard,
+        type = action_resolver.ACTION_TYPES.RIPOSTE,
+    })
+    assertTrue(riposte.success, "new facedown defense should replace the old one")
+    assertTrue(hasValue(riposte.effects, "defense_replaced"),
+        "defense replacement should be reported")
+    assertEqual(#discarded, 1, "replaced facedown defense card should be discarded")
+    assertTrue(discarded[1] == dodgeCard, "discard should receive the old defense card")
+    assertEqual(actor:getDefense().type, "riposte", "new defense should become active")
+    assertTrue(actor:getDefense().card == riposteCard, "new defense should keep the new card")
+    assertTrue(replacementEvent ~= nil, "defense replacement should emit an event")
+    assertEqual(replacementEvent.oldType, "dodge", "replacement event should name the old defense")
+    assertEqual(replacementEvent.newType, "riposte", "replacement event should name the new defense")
+end
+
+local function checkFacedownDefenseTimingValues()
+    local preparedEvents = {}
+    local bus = events.createEventBus()
+    bus:on("defense_prepared", function(data)
+        preparedEvents[#preparedEvents + 1] = data
+    end)
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local mainDodger = base_entity.createEntity({
+        id = "pc_main_dodge_value",
+        name = "Main Dodge Value",
+        isPC = true,
+        pentacles = 3,
+    })
+    local dodge = resolver:resolve({
+        actor = mainDodger,
+        card = { name = "Five of Pentacles", value = 5, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DODGE,
+    })
+    assertTrue(dodge.success, "turn-action Dodge should prepare")
+    assertEqual(dodge.modifier, 3, "turn-action Dodge should add Pentacles to the prepared value")
+    assertEqual(mainDodger:getDefense().value, 8, "turn-action Dodge should store card plus attribute")
+    assertEqual(mainDodger:getDefense().faceValue, 5, "turn-action Dodge should retain face value")
+    assertEqual(preparedEvents[#preparedEvents].modifier, 3, "defense event should expose the attribute modifier")
+
+    local mainRiposter = base_entity.createEntity({
+        id = "pc_main_riposte_value",
+        name = "Main Riposte Value",
+        isPC = true,
+        swords = 4,
+    })
+    local riposte = resolver:resolve({
+        actor = mainRiposter,
+        card = { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.RIPOSTE,
+    })
+    assertTrue(riposte.success, "turn-action Riposte should prepare")
+    assertEqual(riposte.modifier, 4, "turn-action Riposte should add Swords to the prepared value")
+    assertEqual(mainRiposter:getDefense().value, 12, "turn-action Riposte should store card plus attribute")
+
+    local minorDodger = base_entity.createEntity({
+        id = "pc_minor_dodge_value",
+        name = "Minor Dodge Value",
+        isPC = true,
+        pentacles = 3,
+    })
+    local minor = resolver:resolve({
+        actor = minorDodger,
+        card = { name = "Five of Pentacles", value = 5, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DODGE,
+        isMinorAction = true,
+    })
+    assertTrue(minor.success, "minor Dodge should prepare")
+    assertEqual(minor.modifier, 0, "minor Dodge should not add the actor's attribute")
+    assertEqual(minorDodger:getDefense().value, 5, "minor Dodge should store face value only")
+    assertTrue(preparedEvents[#preparedEvents].isMinorAction, "minor defense event should mark minor timing")
+end
+
+local function checkAllyPreparedDefenseInSameZone()
+    local bus = events.createEventBus()
+    local riposteHit = nil
+    bus:on("riposte_hit", function(data)
+        riposteHit = data
+    end)
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local attacker = base_entity.createEntity({
+        id = "npc_ally_defense_attacker",
+        name = "Ally Defense Attacker",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        swords = 0,
+        zone = "near",
+    })
+    local target = base_entity.createEntity({
+        id = "pc_ally_defense_target",
+        name = "Protected Ally",
+        isPC = true,
+        zone = "near",
+    })
+    local defender = base_entity.createEntity({
+        id = "pc_ally_defender",
+        name = "Same Zone Defender",
+        isPC = true,
+        zone = "near",
+    })
+
+    local preparedOk = defender:prepareDefense("dodge",
+        { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        8)
+    assertTrue(preparedOk, "same-zone ally should be able to prepare a defense")
+
+    local dodged = resolver:resolve({
+        actor = attacker,
+        target = target,
+        card = { name = "Knight of Swords", value = 12, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        weapon = { name = "Claws", isMelee = true },
+        targetInitiative = 5,
+        allEntities = { target, defender, attacker },
+    })
+    assertTrue(not dodged.success, "same-zone ally Dodge should be able to protect the target")
+    assertTrue(hasValue(dodged.effects, "ally_defense_used"),
+        "same-zone ally defense should be reported")
+    assertTrue(hasValue(dodged.effects, "dodged"), "ally Dodge should use the normal Dodge result")
+    assertTrue(not defender:hasDefense(), "ally Dodge should be consumed when used")
+    assertEqual(target:getWoundsTaken(), 0, "protected target should not take a Wound after ally Dodge")
+
+    local riposteDefender = base_entity.createEntity({
+        id = "pc_ally_riposter",
+        name = "Same Zone Riposter",
+        isPC = true,
+        zone = "near",
+    })
+    riposteDefender.weapon = { name = "Sword", weaponType = "sword" }
+    preparedOk = riposteDefender:prepareDefense("riposte",
+        { name = "Knight of Swords", value = 12, suit = constants.SUITS.SWORDS },
+        12)
+    assertTrue(preparedOk, "same-zone ally should be able to prepare Riposte")
+
+    local riposted = resolver:resolve({
+        actor = attacker,
+        target = target,
+        card = { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        weapon = { name = "Claws", isMelee = true },
+        targetInitiative = 5,
+        allEntities = { target, riposteDefender, attacker },
+    })
+    assertTrue(riposted.success, "the original attack can still hit when ally Riposte is used")
+    assertTrue(hasValue(riposted.effects, "ally_defense_used"),
+        "same-zone ally Riposte should be reported")
+    assertTrue(riposted.riposteResult and riposted.riposteResult.success,
+        "same-zone ally Riposte should counterattack")
+    assertEqual(riposteHit.defender, riposteDefender, "Riposte event should credit the ally defender")
+    assertEqual(attacker.npcHealth, 0, "ally sword Riposte should damage the attacker")
+    assertTrue(not riposteDefender:hasDefense(), "ally Riposte should be consumed when used")
+end
+
+local function checkCommandCompanionActions()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local actor = base_entity.createEntity({
+        id = "pc_commander",
+        name = "Beast Master",
+        isPC = true,
+        cups = 3,
+    })
+    local hound = {
+        id = "hound_1",
+        name = "Hound",
+        isPC = true,
+        zone = "near",
+        damage = 1,
+        conditions = {},
+        knownCommands = { "Sic 'Em", "Fetch", "Guard" },
+    }
+    actor.companion = hound
+
+    local target = base_entity.createEntity({
+        id = "npc_target",
+        name = "Goblin",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "near",
+    })
+
+    local sicEm = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        commandName = "Sic 'Em",
+        target = target,
+        targetInitiative = 7,
+    })
+    assertTrue(sicEm.success, "known Sic 'Em command should succeed against beaten Initiative")
+    assertEqual(target.npcHealth, 1, "Sic 'Em should apply companion attack damage")
+    assertEqual(hound.lastCommand, "sic_em", "companion should record last command")
+
+    local unknown = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        commandName = "Dance",
+    })
+    assertTrue(not unknown.success, "unknown companion command should be rejected")
+
+    local rope = inventory.createItem({ name = "Rope", size = 1 })
+    local fetch = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 1, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        commandName = "Fetch",
+        item = rope,
+    })
+    assertTrue(fetch.success, "Fetch should be legal with any card value when no combatant is targeted")
+    assertTrue(fetch.fetchedItem == rope, "Fetch should expose fetched item on the result")
+
+    hound.conditions.weak = true
+    local weak = resolver:resolve({
+        actor = actor,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        commandName = "Guard",
+    })
+    assertTrue(not weak.success, "weak animal companion should not follow commands")
+
+    local registryActor = {
+        animalCompanions = { { id = "mule_1", knownCommands = { "Fetch" }, conditions = {} } },
+    }
+    local ok, reason = action_registry.checkActionRequirements(action_registry.getAction("command"), registryActor)
+    assertTrue(ok and reason == nil, "action registry should accept animalCompanions for Command")
+end
+
+local function checkCommandBoardCompanionCommandSelection()
+    local previousLove = love
+    love = {
+        graphics = {
+            getDimensions = function()
+                return 1280, 720
+            end,
+        },
+    }
+
+    local emitted = nil
+    local bus = events.createEventBus()
+    bus:on("action_selected", function(data)
+        emitted = data
+    end)
+
+    local board = command_board.createCommandBoard({ eventBus = bus })
+    local actor = {
+        id = "pc_command_ui",
+        name = "Beast Master",
+        isPC = true,
+        cups = 3,
+        conditions = {},
+        companion = {
+            id = "hound_ui",
+            name = "Hound",
+            conditions = {},
+            knownCommands = { "Sic 'Em", "Fetch", "Guard" },
+        },
+    }
+
+    board:show({ name = "Cups", suit = constants.SUITS.CUPS, value = 7 }, actor, true)
+    local commandButton = nil
+    for _, button in ipairs(board.buttons) do
+        if button.action and button.action.id == "command" then
+            commandButton = button
+            break
+        end
+    end
+    assertTrue(commandButton ~= nil, "Command button should be present for actor with companion")
+    board:mousepressed(commandButton.x + 1, commandButton.y + 1, 1)
+
+    assertEqual(board.mode, "command_option", "Command should open companion command picker")
+    assertTrue(board.commandBaseAction and board.commandBaseAction.id == "command", "command picker should retain base Command action")
+
+    local sicEmButton = nil
+    for _, button in ipairs(board.buttons) do
+        if button.action and button.action.commandName == "sic_em" then
+            sicEmButton = button
+            break
+        end
+    end
+    assertTrue(sicEmButton ~= nil, "Command picker should include Sic 'Em")
+    board:mousepressed(sicEmButton.x + 1, sicEmButton.y + 1, 1)
+
+    assertTrue(emitted ~= nil, "Command selection should emit action_selected")
+    assertEqual(emitted.action.id, "command", "emitted action should remain canonical Command")
+    assertEqual(emitted.commandName, "sic_em", "emitted command should include normalized known command")
+    assertEqual(emitted.commandCompanionId, "hound_ui", "emitted command should include selected companion id")
+    assertEqual(emitted.commandOption.commandDisplayName, "Sic 'Em", "emitted command should include display option")
+
+    local inputState = {
+        selectedCard = { name = "Cups", suit = constants.SUITS.CUPS, value = 7 },
+        selectedCardIndex = 1,
+        selectedEntity = actor,
+    }
+    local controller = challenge_input_controller.createChallengeInputController({
+        eventBus = bus,
+        inputState = inputState,
+        gameState = {
+            challengeController = {
+                npcs = {
+                    { id = "npc_command_target", name = "Target", isPC = false, zone = "near", conditions = {} },
+                },
+                pcs = { actor },
+            },
+        },
+    })
+    controller:handleActionSelected(emitted)
+    assertTrue(inputState.awaitingTarget, "Sic 'Em command should ask for an enemy target")
+    assertEqual(inputState.selectedCommandName, "sic_em", "input controller should retain selected command name")
+    assertEqual(inputState.selectedCommandCompanionId, "hound_ui", "input controller should retain selected companion id")
+
+    local weakActor = {
+        id = "pc_weak_command_ui",
+        name = "Weak Beast Master",
+        isPC = true,
+        cups = 3,
+        conditions = {},
+        companion = {
+            id = "weak_hound_ui",
+            name = "Weak Hound",
+            conditions = { weak = true },
+            knownCommands = { "Guard" },
+        },
+    }
+    board:show({ name = "Cups", suit = constants.SUITS.CUPS, value = 7 }, weakActor, true)
+    commandButton = nil
+    for _, button in ipairs(board.buttons) do
+        if button.action and button.action.id == "command" then
+            commandButton = button
+            break
+        end
+    end
+    assertTrue(commandButton ~= nil, "Command button should remain present for weak companion owner")
+    board:mousepressed(commandButton.x + 1, commandButton.y + 1, 1)
+    local weakCommandButton = board.buttons[1]
+    assertTrue(weakCommandButton and not weakCommandButton.enabled, "weak companion command option should be disabled")
+    assertEqual(weakCommandButton.disabledReason, "Companion is weak", "weak companion command option should explain why")
+
+    love = previousLove
+end
+
+local function checkVigilanceTriggerTemplates()
+    local controller = challenge_controller.createChallengeController({
+        eventBus = events.createEventBus(),
+    })
+
+    local sentinel = { id = "pc_1", name = "Sentinel", isPC = true, zone = "near", conditions = {} }
+    local ally = { id = "pc_2", name = "Ally", isPC = true, zone = "near", conditions = {} }
+    local enemy = { id = "npc_1", name = "Enemy", isPC = false, zone = "far", conditions = {} }
+    controller.pcs = { sentinel, ally }
+    controller.npcs = { enemy }
+    controller.allCombatants = { sentinel, ally, enemy }
+
+    local allyTargeted = controller:doesVigilanceTrigger(sentinel, {
+        trigger = { template = "hostile_targets_ally" },
+    }, {
+        actor = enemy,
+        target = ally,
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(allyTargeted, "hostile_targets_ally should trigger when an enemy targets an ally")
+
+    local enemyTargeted = controller:doesVigilanceTrigger(sentinel, {
+        trigger = { template = "hostile_targets_ally" },
+    }, {
+        actor = ally,
+        target = enemy,
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(not enemyTargeted, "hostile_targets_ally should ignore ally actions against enemies")
+
+    local selfTargeted = controller:doesVigilanceTrigger(sentinel, {
+        trigger = { template = "hostile_targets_ally" },
+    }, {
+        actor = enemy,
+        target = sentinel,
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(not selfTargeted, "hostile_targets_ally should not duplicate the target-self trigger")
+
+    local enemyMoves = controller:doesVigilanceTrigger(sentinel, {
+        trigger = "enemy_moves",
+    }, {
+        actor = enemy,
+        type = action_resolver.ACTION_TYPES.DASH,
+    })
+    assertTrue(enemyMoves, "enemy_moves template should trigger from hostile Move/Dash/Avoid actions")
+
+    local allyMoves = controller:doesVigilanceTrigger(sentinel, {
+        trigger = "enemy_moves",
+    }, {
+        actor = ally,
+        type = action_resolver.ACTION_TYPES.DASH,
+    })
+    assertTrue(not allyMoves, "enemy_moves template should ignore ally movement")
+end
+
+local function checkRoughhouseCommandBoardEffectSelection()
+    local previousLove = love
+    love = {
+        graphics = {
+            getDimensions = function()
+                return 1280, 720
+            end,
+        },
+    }
+
+    local pentaclesActions = action_registry.getActionsForSuit(action_registry.SUITS.PENTACLES, {
+        challengeOnly = true,
+        commandBoardOnly = true,
+    })
+    local sawRoughhouse = false
+    local sawSplitShortcut = false
+    for _, action in ipairs(pentaclesActions) do
+        if action.id == "roughhouse" then
+            sawRoughhouse = true
+        elseif action.id == "trip" or action.id == "disarm" or action.id == "displace" or action.id == "grapple" then
+            sawSplitShortcut = true
+        end
+    end
+    assertTrue(sawRoughhouse, "Command Board should expose canonical Roughhouse")
+    assertTrue(not sawSplitShortcut, "Command Board should hide split Roughhouse shortcuts")
+
+    local emitted = nil
+    local bus = events.createEventBus()
+    bus:on("action_selected", function(data)
+        emitted = data
+    end)
+
+    local board = command_board.createCommandBoard({ eventBus = bus })
+    local actor = { id = "pc_roughhouse_ui", name = "Roughhouser", isPC = true, pentacles = 3, conditions = {} }
+
+    board:show({ name = "Pentacles", suit = constants.SUITS.PENTACLES, value = 7 }, actor, true)
+    local roughhouseButton = nil
+    for _, button in ipairs(board.buttons) do
+        if button.action and button.action.id == "roughhouse" then
+            roughhouseButton = button
+            break
+        end
+    end
+    assertTrue(roughhouseButton ~= nil, "Roughhouse button should be present")
+    board:mousepressed(roughhouseButton.x + 1, roughhouseButton.y + 1, 1)
+
+    assertEqual(board.mode, "roughhouse_effect", "Roughhouse should open effect picker")
+    assertTrue(board.roughhouseBaseAction and board.roughhouseBaseAction.id == "roughhouse", "effect picker should retain base Roughhouse action")
+
+    local rootButton = nil
+    for _, button in ipairs(board.buttons) do
+        if button.action and button.action.roughhouseEffect == "root" then
+            rootButton = button
+            break
+        end
+    end
+    assertTrue(rootButton ~= nil, "Roughhouse effect picker should include Root")
+    board:mousepressed(rootButton.x + 1, rootButton.y + 1, 1)
+
+    assertTrue(emitted ~= nil, "Roughhouse effect selection should emit action_selected")
+    assertEqual(emitted.action.id, "roughhouse", "emitted action should remain canonical Roughhouse")
+    assertEqual(emitted.roughhouseEffect, "root", "emitted action should include chosen Roughhouse effect")
+    assertEqual(emitted.roughhouseEffectOption.name, "Root", "emitted action should include chosen effect option")
+
+    love = previousLove
+end
+
+local function checkVigilanceCommandBoardTriggerSelection()
+    local previousLove = love
+    love = {
+        graphics = {
+            getDimensions = function()
+                return 1280, 720
+            end,
+        },
+    }
+
+    local emitted = nil
+    local bus = events.createEventBus()
+    bus:on("action_selected", function(data)
+        emitted = data
+    end)
+
+    local board = command_board.createCommandBoard({ eventBus = bus })
+    local actor = { id = "pc_1", name = "Sentinel", isPC = true, swords = 2, conditions = {} }
+
+    board:show({ name = "Swords", suit = constants.SUITS.SWORDS, value = 7 }, actor, true)
+    assertTrue(board:showVigilanceFollowUp(action_registry.getAction("vigilance")), "Vigilance should open follow-up picker")
+    assertTrue(board.vigilanceBaseAction and board.vigilanceBaseAction.id == "vigilance", "board should retain base Vigilance action")
+
+    board:showVigilanceTriggers(action_registry.getAction("melee"))
+    assertEqual(board.mode, "vigilance_trigger", "board should enter trigger selection mode")
+
+    local firstTriggerButton = board.buttons[1]
+    assertTrue(firstTriggerButton and firstTriggerButton.action.id == "hostile_targets_self", "first trigger option should be target-self")
+    board:mousepressed(firstTriggerButton.x + 1, firstTriggerButton.y + 1, 1)
+
+    assertTrue(emitted ~= nil, "trigger selection should emit action_selected")
+    assertEqual(emitted.action.id, "vigilance", "emitted action should remain Vigilance")
+    assertEqual(emitted.followUpAction.id, "melee", "emitted follow-up should be selected action")
+    assertEqual(emitted.vigilanceTriggerOption.id, "hostile_targets_self", "emitted trigger should include selected template")
+    assertEqual(emitted.vigilanceTrigger.target, "self", "emitted trigger payload should be concrete template data")
+
+    love = previousLove
+end
+
+local function checkFlareSpellParity(resolver)
+    local function makeFlareCaster(id, resolve)
+        local caster = base_entity.createEntity({
+            id = id,
+            name = "Flare Mage",
+            isPC = true,
+            health = 4,
+            defense = 0,
+            wands = 4,
+            zone = "camp",
+            talents = {
+                magic_of_the_weald = { mastered = true },
+            },
+        })
+        caster.resolve = resolve or 2
+        caster.inventory = inventory.createInventory()
+        caster.inventory:addItem(inventory.createItemFromTemplate("component_flare"), inventory.LOCATIONS.HANDS)
+        return caster
+    end
+
+    local flareCaster = makeFlareCaster("pc_flare", 2)
+    local torch = inventory.createItemFromTemplate("torch")
+    flareCaster.inventory:addItem(torch, inventory.LOCATIONS.HANDS)
+
+    local flare = resolver:resolve({
+        actor = flareCaster,
+        card = { name = "Wands", value = 1, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "flare",
+        target = torch,
+    })
+    assertTrue(flare.success, "Flare should manifest against a held light source without Initiative contest")
+    assertTrue(not torch.properties.isLit, "Flare should extinguish the light source")
+    assertTrue(torch.destroyed and torch.properties.unrelightable, "Flare should spend torches permanently")
+    assertTrue(flareCaster.conditions.burning and flareCaster.conditions.onFire,
+        "Flare should catch a torch bearer on fire")
+    assertEqual(flare.damageDealt, 1, "Flare should Wound a torch bearer")
+    assertEqual(flareCaster.resolve, 1, "Flare should spend Resolve")
+
+    local candleCaster = makeFlareCaster("pc_flare_candle", 2)
+    local candle = inventory.createItemFromTemplate("candles")
+    candle.properties.isLit = true
+    candle.properties.is_lit = true
+    candleCaster.inventory:addItem(candle, inventory.LOCATIONS.HANDS)
+    local candleFlare = resolver:resolve({
+        actor = candleCaster,
+        card = { name = "Wands", value = 4, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "flare",
+        target = candle,
+    })
+    assertTrue(candleFlare.success, "Flare should work on candles")
+    assertTrue(not candle.destroyed and candle.properties.relightable,
+        "Flared candles should go out but remain relightable")
+    assertTrue(not candleCaster.conditions.burning,
+        "Flared candles should not Wound or ignite the bearer")
+
+    local lanternCaster = makeFlareCaster("pc_flare_lantern", 2)
+    local lantern = inventory.createItemFromTemplate("lantern")
+    lanternCaster.inventory:addItem(lantern, inventory.LOCATIONS.BELT)
+    local lanternFlare = resolver:resolve({
+        actor = lanternCaster,
+        card = { name = "Wands", value = 4, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "flare",
+        target = lantern,
+    })
+    assertTrue(lanternFlare.success, "Flare should work on lanterns")
+    assertTrue(not lantern.destroyed and lantern.properties.relightable,
+        "Flared lanterns should go out but remain relightable")
+    assertTrue(lanternCaster.conditions.burning and lanternCaster.conditions.onFire,
+        "Flared lanterns should ignite the bearer")
+    assertEqual(lanternFlare.damageDealt, 1, "Flare should Wound a lantern bearer")
+
+    local campfireCaster = makeFlareCaster("pc_flare_campfire", 2)
+    local flashTarget = base_entity.createEntity({
+        id = "npc_flare_blinded",
+        name = "Flash Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "camp",
+    })
+    local bracedTarget = base_entity.createEntity({
+        id = "npc_flare_braced",
+        name = "Braced Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "camp",
+    })
+    local farTarget = base_entity.createEntity({
+        id = "npc_flare_far",
+        name = "Far Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "yard",
+    })
+    local campfire = {
+        id = "campfire",
+        name = "Campfire",
+        zone = "camp",
+        properties = {
+            campfire = true,
+            isLit = true,
+            light_source = true,
+        },
+    }
+    local campfireFlare = resolver:resolve({
+        actor = campfireCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "flare",
+        target = campfire,
+        zoneId = "camp",
+        allEntities = { campfireCaster, flashTarget, bracedTarget, farTarget },
+        targetInitiatives = {
+            [campfireCaster.id] = 12,
+            [flashTarget.id] = 8,
+            [bracedTarget.id] = 10,
+            [farTarget.id] = 1,
+        },
+    })
+    assertTrue(campfireFlare.success, "Flare should detonate campfires")
+    assertTrue(flashTarget.conditions.blind and flashTarget.flareBlindUntil == "next_turn_end",
+        "campfire Flare should Blind creatures whose Initiative is beaten")
+    assertTrue(not bracedTarget.conditions.blind, "campfire Flare should not Blind ties")
+    assertTrue(not farTarget.conditions.blind, "campfire Flare should only affect the target zone")
+end
+
+local function checkSpeakIncantationRegistry()
+    local bus = events.createEventBus()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local function makeWastesCaster(id, resolve)
+        local caster = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            wands = 3,
+            talents = {
+                magic_of_the_wastes = { mastered = true },
+            },
+        })
+        caster.resolve = resolve or 3
+        caster.inventory = inventory.createInventory()
+        caster.inventory:addItem(inventory.createItemFromTemplate("component_withering"), inventory.LOCATIONS.HANDS)
+        return caster
+    end
+
+    local sorcerer = base_entity.createEntity({
+        id = "pc_sorcerer",
+        name = "Sorcerer",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    sorcerer.resolve = 2
+    sorcerer.inventory = inventory.createInventory()
+    local witheringComponent = inventory.createItemFromTemplate("component_withering")
+    sorcerer.inventory:addItem(witheringComponent, inventory.LOCATIONS.HANDS)
+
+    local target = base_entity.createEntity({
+        id = "npc_living",
+        name = "Living Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+
+    local withering = resolver:resolve({
+        actor = sorcerer,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = target,
+        targetInitiative = 6,
+    })
+    assertTrue(withering.success, "Withering should cast with training, Resolve, and held component")
+    assertEqual(sorcerer.resolve, 1, "Speak Incantation should spend 1 Resolve")
+    assertEqual(target.npcHealth, 1, "Withering should deal a wound to a living target")
+    assertTrue(target.conditions.witheringAging and target.witheringAging.untilWoundHealed,
+        "Withering should mark living targets with aging signs until the Wound is healed")
+    assertTrue(sorcerer.inventory:findItem(witheringComponent.id), "spell components should not be consumed")
+
+    local agingCaster = makeWastesCaster("pc_withering_aging", 2)
+    local agingTarget = base_entity.createEntity({
+        id = "pc_withering_aging_target",
+        name = "Aging Target",
+        isPC = true,
+    })
+    local aging = resolver:resolve({
+        actor = agingCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = agingTarget,
+    })
+    assertTrue(aging.success, "Withering should be able to affect a living PC")
+    assertTrue(agingTarget.conditions.witheringAging, "living PC should carry Withering aging")
+    local healed = agingTarget:healWound()
+    assertEqual(healed, "staggered_healed", "healing the Withering Wound should heal the wound track")
+    assertTrue(not agingTarget.conditions.witheringAging and agingTarget.witheringAging.healed,
+        "Withering aging should clear when that Wound is healed")
+
+    local undeadCaster = makeWastesCaster("pc_withering_undead", 4)
+    local zombie = entity_factory.createEntity("zombie", { name = "Withered Zombie" })
+    local zombieWithering = resolver:resolve({
+        actor = undeadCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = zombie,
+        targetInitiative = 1,
+    })
+    assertTrue(zombieWithering.success, "Withering should affect undead")
+    assertEqual(zombie.undeadType, "skeleton", "Withering should transform zombies into skeletons")
+    assertTrue(hasValue(zombieWithering.effects, "zombie_transformed_skeleton"),
+        "zombie transformation should be reported")
+
+    local skeleton = entity_factory.createEntity("skeleton_brute", { name = "Withered Skeleton" })
+    local skeletonWithering = resolver:resolve({
+        actor = undeadCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = skeleton,
+        targetInitiative = 1,
+    })
+    assertTrue(skeletonWithering.success, "Withering should affect skeletons")
+    assertEqual(skeleton.undeadType, "wraith", "Withering should transform skeletons into wraiths")
+    assertTrue(skeleton.wraith and skeleton.spirit and skeleton.incorporeal,
+        "Withering-created wraiths should be marked as undead spirits")
+
+    local objectCaster = makeWastesCaster("pc_withering_object", 6)
+    local chain = inventory.createItem({
+        name = "Iron Chain",
+        durability = 2,
+        properties = { material = "iron" },
+    })
+    local chainWithering = resolver:resolve({
+        actor = objectCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = chain,
+    })
+    assertTrue(chainWithering.success, "Withering should decay objects")
+    assertEqual(chain.notches, 1, "Withering should Notch objects with 1 Resolve")
+    assertTrue(chain.rusted, "Withering should mark iron objects as rusted")
+
+    local door = inventory.createItem({
+        name = "Wooden Door",
+        durability = 3,
+        properties = { material = "wood" },
+    })
+    local doorWithering = resolver:resolve({
+        actor = objectCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = door,
+        resolveSpent = 2,
+    })
+    assertTrue(doorWithering.success, "Withering should accept 2 Resolve for object destruction")
+    assertTrue(door.destroyed and door.moldy, "Withering should Destroy objects when 2 Resolve is spent")
+    assertTrue(hasValue(doorWithering.effects, "object_destroyed"),
+        "Withering object destruction should be reported")
+
+    local stone = inventory.createItem({
+        name = "Stone Block",
+        durability = 3,
+        properties = { material = "stone" },
+    })
+    local stoneWithering = resolver:resolve({
+        actor = objectCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = stone,
+        resolveSpent = 2,
+    })
+    assertTrue(stoneWithering.success, "Withering should resolve against stone")
+    assertTrue(not stone.destroyed and stone.notches == 0,
+        "stone should be unaffected by Withering object decay")
+    assertTrue(hasValue(stoneWithering.effects, "withering_stone_unaffected"),
+        "stone immunity should be reported")
+
+    local missingComponentCaster = base_entity.createEntity({
+        id = "pc_missing_component",
+        name = "No Component",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    missingComponentCaster.resolve = 2
+    missingComponentCaster.inventory = inventory.createInventory()
+    local missingComponent = resolver:resolve({
+        actor = missingComponentCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = target,
+        targetInitiative = 6,
+    })
+    assertTrue(not missingComponent.success, "Speak Incantation should require held component")
+    assertEqual(missingComponentCaster.resolve, 2, "failed component gate should not spend Resolve")
+
+    local ironCaster = base_entity.createEntity({
+        id = "pc_iron",
+        name = "Iron-Bound",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    ironCaster.resolve = 2
+    ironCaster.inventory = inventory.createInventory()
+    ironCaster.inventory:addItem(inventory.createItemFromTemplate("component_withering"), inventory.LOCATIONS.HANDS)
+    ironCaster.inventory:addItem(inventory.createItem({
+        name = "Iron Pan",
+        size = 1,
+        properties = { material = "iron" },
+    }), inventory.LOCATIONS.PACK)
+    local ironBlocked = resolver:resolve({
+        actor = ironCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = target,
+        targetInitiative = 6,
+    })
+    assertTrue(not ironBlocked.success, "significant iron should block spellcasting")
+    assertEqual(ironCaster.resolve, 2, "iron block should not spend Resolve")
+
+    local silencedCaster = base_entity.createEntity({
+        id = "pc_silenced_spell",
+        name = "Silenced Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    silencedCaster.resolve = 2
+    silencedCaster.conditions.silenced = true
+    silencedCaster.inventory = inventory.createInventory()
+    silencedCaster.inventory:addItem(inventory.createItemFromTemplate("component_withering"), inventory.LOCATIONS.HANDS)
+    local silencedCast = resolver:resolve({
+        actor = silencedCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = base_entity.createEntity({ id = "npc_silenced_spell_target", isPC = false, health = 2, defense = 0 }),
+        targetInitiative = 6,
+    })
+    assertTrue(not silencedCast.success, "Silenced creatures should be unable to Speak Incantations")
+    assertTrue(hasValue(silencedCast.effects, "spell_speech_blocked"),
+        "silenced spellcasting should fail at the speech gate")
+    assertEqual(silencedCaster.resolve, 2, "silenced spellcasting should not spend Resolve")
+
+    local trainee = base_entity.createEntity({
+        id = "pc_trainee",
+        name = "Trainee",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = false },
+        },
+    })
+    trainee.resolve = 2
+    trainee.xp = 1
+    trainee.inventory = inventory.createInventory()
+    trainee.inventory:addItem(inventory.createItemFromTemplate("component_withering"), inventory.LOCATIONS.HANDS)
+    local trainingCast = resolver:resolve({
+        actor = trainee,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = base_entity.createEntity({ id = "npc_training_target", isPC = false, health = 2, defense = 0 }),
+        targetInitiative = 6,
+    })
+    assertTrue(trainingCast.success, "in-training Magic talent should still cast with XP")
+    assertEqual(trainee.xp, 0, "in-training spellcasting should spend 1 XP")
+    assertEqual(trainee.resolve, 1, "in-training spellcasting should also spend Resolve")
+
+    local noTarget = resolver:resolve({
+        actor = trainee,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+    })
+    assertTrue(not noTarget.success, "targeted spell should reject missing target before spending")
+    assertEqual(trainee.resolve, 1, "missing target should not spend Resolve")
+
+    do
+    local brainfeverCaster = base_entity.createEntity({
+        id = "pc_brainfever",
+        name = "Brainfever Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    brainfeverCaster.resolve = 2
+    brainfeverCaster.inventory = inventory.createInventory()
+    brainfeverCaster.inventory:addItem(inventory.createItemFromTemplate("component_brainfever"),
+        inventory.LOCATIONS.HANDS)
+    local brainfeverTarget = base_entity.createEntity({
+        id = "npc_brainfever_target",
+        name = "Raging Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        swords = 2,
+        behavior = "defensive",
+    })
+    local brainfever = resolver:resolve({
+        actor = brainfeverCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "brainfever",
+        target = brainfeverTarget,
+        targetInitiative = 6,
+    })
+    assertTrue(brainfever.success, "Brainfever should cast against a beaten Initiative")
+    assertTrue(brainfeverTarget.conditions.brainfever, "Brainfever should mark the target")
+    assertTrue(brainfeverTarget.mustPlayLowestInitiative,
+        "Brainfever target should be forced toward lowest Initiative")
+    assertEqual(brainfeverCaster.committedResolve, 1, "Brainfever should commit Resolve while concentrated")
+
+    local brainfeverVictim = base_entity.createEntity({
+        id = "pc_brainfever_victim",
+        name = "Brainfever Victim",
+        isPC = true,
+        health = 2,
+        defense = 0,
+    })
+    local feverAttack = resolver:resolve({
+        actor = brainfeverTarget,
+        card = { name = "Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        target = brainfeverVictim,
+        targetInitiative = 9,
+    })
+    assertEqual(feverAttack.favorModifier, 3, "Brainfever should grant favor on Attacks")
+    assertTrue(hasValue(feverAttack.effects, "brainfever_attack_favor"),
+        "Brainfever attack favor should be reported")
+
+    local feverAI = npc_ai.createNPCAI({})
+    feverAI.hand = {
+        { name = "High Doom", value = 12 },
+        { name = "Low Doom", value = 2 },
+        { name = "Middle Doom", value = 7 },
+    }
+    assertEqual(feverAI:chooseInitiativeCard(brainfeverTarget), 2,
+        "Brainfever should force NPC initiative to the lowest value card")
+
+    resolver:endOngoingSpell(brainfeverCaster, brainfeverCaster.activeSpells[1], "released")
+    assertTrue(not brainfeverTarget.conditions.brainfever, "ending Brainfever should clear the condition")
+    assertTrue(not brainfeverTarget.mustPlayLowestInitiative,
+        "ending Brainfever should clear the Initiative constraint")
+    assertEqual(brainfeverCaster.committedResolve, 0, "ending Brainfever should release committed Resolve")
+
+    local emotionlessBrainfeverCaster = base_entity.createEntity({
+        id = "pc_emotionless_brainfever",
+        name = "Emotionless Brainfever Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    emotionlessBrainfeverCaster.resolve = 2
+    emotionlessBrainfeverCaster.inventory = inventory.createInventory()
+    emotionlessBrainfeverCaster.inventory:addItem(inventory.createItemFromTemplate("component_brainfever"),
+        inventory.LOCATIONS.HANDS)
+    local emotionlessBrainfeverTarget = base_entity.createEntity({
+        id = "npc_emotionless_brainfever",
+        name = "Emotionless Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    emotionlessBrainfeverTarget.emotionless = true
+    local emotionlessBrainfever = resolver:resolve({
+        actor = emotionlessBrainfeverCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "brainfever",
+        target = emotionlessBrainfeverTarget,
+        targetInitiative = 6,
+    })
+    assertTrue(emotionlessBrainfever.success, "Brainfever cast on emotionless target should resolve")
+    assertTrue(hasValue(emotionlessBrainfever.effects, "brainfever_no_effect"),
+        "Brainfever should report no effect on emotionless targets")
+    assertTrue(not emotionlessBrainfeverTarget.conditions.brainfever,
+        "emotionless Brainfever target should not gain the condition")
+    assertEqual(emotionlessBrainfeverCaster.committedResolve or 0, 0,
+        "no-effect Brainfever should not create concentration state")
+
+    local darklightCaster = base_entity.createEntity({
+        id = "pc_darklight",
+        name = "Darklight Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    darklightCaster.resolve = 2
+    darklightCaster.inventory = inventory.createInventory()
+    darklightCaster.inventory:addItem(inventory.createItemFromTemplate("component_darklight"), inventory.LOCATIONS.HANDS)
+    local darklightCandle = inventory.createItemFromTemplate("candles")
+    darklightCandle.properties.isLit = false
+    darklightCandle.properties.is_lit = false
+    darklightCandle.properties.extinguished = true
+    local originalFlickers = darklightCandle.properties.flicker_count
+    darklightCaster.inventory:addItem(darklightCandle, inventory.LOCATIONS.HANDS)
+    local darklightViewer = base_entity.createEntity({
+        id = "pc_darklight_viewer",
+        name = "Chosen Viewer",
+        isPC = true,
+    })
+    darklightViewer.inventory = inventory.createInventory()
+    local darklightOutsider = base_entity.createEntity({
+        id = "pc_darklight_outsider",
+        name = "Unchosen Viewer",
+        isPC = true,
+    })
+    darklightOutsider.inventory = inventory.createInventory()
+
+    local darklight = resolver:resolve({
+        actor = darklightCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "darklight",
+        target = darklightCandle,
+        resolveSpent = 2,
+        darklightViewers = { darklightViewer },
+    })
+    assertTrue(darklight.success, "Darklight should cast on a held candle")
+    assertTrue(darklightCandle.properties.darklight, "Darklight should mark the candle as darklight")
+    assertTrue(darklightCandle.properties.isLit, "Darklight should keep the candle lit while active")
+    assertTrue(darklightCandle.properties.darklightVisibleTo[darklightCaster.id],
+        "Darklight should be visible to the holder")
+    assertTrue(darklightCandle.properties.darklightVisibleTo[darklightViewer.id],
+        "extra Resolve should allow another viewer to see Darklight")
+    assertEqual(darklightCaster.resolve, 0, "Darklight should spend all declared Resolve")
+    assertEqual(darklightCaster.committedResolve, 2, "Darklight should commit Resolve while concentrated")
+
+    local darklightBus = events.createEventBus()
+    local lights = light_system.createLightSystem({
+        eventBus = darklightBus,
+        guild = { darklightCaster, darklightViewer, darklightOutsider },
+    })
+    lights:init()
+    assertEqual(lights:getLightLevelForEntity(darklightCaster), light_system.LIGHT_LEVELS.BRIGHT,
+        "Darklight holder should see by the candle")
+    assertEqual(lights:getLightLevelForEntity(darklightViewer), light_system.LIGHT_LEVELS.DIM,
+        "paid Darklight viewer should see the hidden light")
+    assertEqual(lights:getLightLevelForEntity(darklightOutsider), light_system.LIGHT_LEVELS.DARK,
+        "unselected creatures should not see Darklight")
+    darklightBus:emit(events.EVENTS.TORCHES_GUTTER, { value = 1 })
+    assertEqual(darklightCandle.properties.flicker_count, originalFlickers,
+        "Darklight should ignore torches-gutter flicker loss")
+
+    resolver:endOngoingSpell(darklightCaster, darklightCaster.activeSpells[1], "released")
+    assertTrue(not darklightCandle.properties.darklight, "ending Darklight should clear magical light flags")
+    assertEqual(darklightCaster.committedResolve, 0, "ending Darklight should release committed Resolve")
+    assertEqual(lights:getLightLevelForEntity(darklightOutsider), light_system.LIGHT_LEVELS.DARK,
+        "ending Darklight should not leave visible light for outsiders")
+
+    local underpaidDarklightCaster = base_entity.createEntity({
+        id = "pc_underpaid_darklight",
+        name = "Underpaid Darklight Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    underpaidDarklightCaster.resolve = 1
+    underpaidDarklightCaster.inventory = inventory.createInventory()
+    underpaidDarklightCaster.inventory:addItem(inventory.createItemFromTemplate("component_darklight"),
+        inventory.LOCATIONS.HANDS)
+    local underpaidCandle = inventory.createItemFromTemplate("candles")
+    underpaidDarklightCaster.inventory:addItem(underpaidCandle, inventory.LOCATIONS.HANDS)
+    local underpaidDarklight = resolver:resolve({
+        actor = underpaidDarklightCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "darklight",
+        target = underpaidCandle,
+        darklightViewers = { darklightViewer },
+    })
+    assertTrue(not underpaidDarklight.success, "Darklight should require extra Resolve for extra viewers")
+    assertEqual(underpaidDarklightCaster.resolve, 1, "failed Darklight viewer gate should not spend Resolve")
+    end
+
+    local wealdCaster = base_entity.createEntity({
+        id = "pc_weald",
+        name = "Weald Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    wealdCaster.resolve = 3
+    wealdCaster.inventory = inventory.createInventory()
+    wealdCaster.inventory:addItem(inventory.createItemFromTemplate("component_control_animal"), inventory.LOCATIONS.HANDS)
+
+    local animal = base_entity.createEntity({
+        id = "wolf",
+        name = "Wolf",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    animal.animal = true
+    local controlAnimal = resolver:resolve({
+        actor = wealdCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_animal",
+        target = animal,
+        targetInitiative = 7,
+    })
+    assertTrue(controlAnimal.success, "Control Animal should cast against a beaten Initiative")
+    assertTrue(animal.conditions.controlled, "Control Animal should mark target controlled")
+    assertEqual(animal.controlWords, 4, "Control Animal command length should use caster Wands per Resolve")
+    assertEqual(wealdCaster.committedResolve, 1, "ongoing spell should commit Resolve")
+
+    checkFlareSpellParity(resolver)
+
+    local depthsCaster = base_entity.createEntity({
+        id = "pc_defy_depths",
+        name = "Depths Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    depthsCaster.resolve = 6
+    depthsCaster.inventory = inventory.createInventory()
+    depthsCaster.inventory:addItem(inventory.createItemFromTemplate("component_defy_depths"), inventory.LOCATIONS.HANDS)
+    local depthsWalker = base_entity.createEntity({
+        id = "pc_depths_walker",
+        name = "Depths Walker",
+        isPC = true,
+        health = 2,
+        defense = 0,
+    })
+    local floatingChest = {
+        id = "item_sunken_chest",
+        name = "Sunken Chest",
+        isItem = true,
+        size = 3,
+        submerged = true,
+        properties = {},
+    }
+    local defyDepths = resolver:resolve({
+        actor = depthsCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "defy_depths",
+        targets = { depthsWalker, floatingChest },
+        resolveSpent = 2,
+    })
+    assertTrue(defyDepths.success, "Defy Depths should support paid extra targets")
+    assertTrue(depthsWalker.canWalkOnWater and depthsWalker.waterWalking,
+        "Defy Depths should let human-sized creatures walk on water")
+    assertTrue(floatingChest.floatsOnWater and floatingChest.onWaterSurface and not floatingChest.submerged,
+        "Defy Depths should float chest-sized submerged objects to the surface")
+    assertEqual(depthsCaster.committedResolve, 2, "Defy Depths should commit Resolve while concentrated")
+
+    resolver:endOngoingSpell(depthsCaster, depthsCaster.activeSpells[1], "released")
+    assertTrue(not depthsWalker.canWalkOnWater and not depthsWalker.conditions.defyDepths,
+        "ending Defy Depths should clear water-walking flags")
+    assertTrue(not floatingChest.floatsOnWater and not floatingChest.onWaterSurface,
+        "ending Defy Depths should clear object flotation flags")
+    assertEqual(depthsCaster.committedResolve, 0, "ending Defy Depths should release committed Resolve")
+
+    local rowboat = {
+        id = "item_sunken_rowboat",
+        name = "Sunken Rowboat",
+        isItem = true,
+        sunken = true,
+        properties = {
+            boat = true,
+            shipSize = "small",
+        },
+    }
+    local rowboatRaise = resolver:resolve({
+        actor = depthsCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "defy_depths",
+        target = rowboat,
+        resolveSpent = 2,
+    })
+    assertTrue(rowboatRaise.success, "Defy Depths should raise a small sunken ship for +1 Resolve")
+    assertTrue(rowboat.floatsOnWater and rowboat.raisedFromDepths and not rowboat.sunken,
+        "Defy Depths should raise a sunken rowboat to the surface")
+    assertEqual(rowboatRaise.defyDepths[1].shipResolveCost, 1,
+        "Defy Depths should record small-ship Resolve surcharge")
+
+    resolver:endOngoingSpell(depthsCaster, depthsCaster.activeSpells[1], "released")
+    local depthsResolveBeforeFailure = depthsCaster.resolve
+    local largeShip = {
+        id = "item_large_sunken_ship",
+        name = "Large Sunken Ship",
+        isItem = true,
+        sunken = true,
+        properties = {
+            ship = true,
+            shipSize = "large",
+        },
+    }
+    local unpaidLargeShip = resolver:resolve({
+        actor = depthsCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "defy_depths",
+        target = largeShip,
+        resolveSpent = 3,
+    })
+    assertTrue(not unpaidLargeShip.success, "Defy Depths should require +3 Resolve for large sunken ships")
+    assertEqual(depthsCaster.resolve, depthsResolveBeforeFailure,
+        "failed Defy Depths ship validation should not spend Resolve")
+
+    local gustCaster = base_entity.createEntity({
+        id = "pc_gust",
+        name = "Gust Mage",
+        isPC = true,
+        wands = 4,
+        zone = "A",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    gustCaster.resolve = 4
+    gustCaster.inventory = inventory.createInventory()
+    gustCaster.inventory:addItem(inventory.createItemFromTemplate("component_gust_of_wind"),
+        inventory.LOCATIONS.HANDS)
+    local gustZones = {
+        { id = "A", adjacent_to = { "B" } },
+        { id = "B", adjacent_to = { "A", "C" } },
+        { id = "C", adjacent_to = { "B" } },
+    }
+    local gustTarget = base_entity.createEntity({
+        id = "npc_gust_target",
+        name = "Wind Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "A",
+    })
+    local gust = resolver:resolve({
+        actor = gustCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "gust_of_wind",
+        target = gustTarget,
+        destinationZone = "B",
+        targetInitiative = 5,
+        challengeController = { zones = gustZones },
+        allEntities = { gustCaster, gustTarget },
+    })
+    assertTrue(gust.success, "Gust of Wind should displace a human-sized target")
+    assertEqual(gustTarget.zone, "B", "Gust of Wind should move the target to the adjacent zone")
+    assertTrue(gust.gustOfWind.gentleLanding, "Gust of Wind should record a gentle landing")
+    assertEqual(gustCaster.resolve, 3, "Gust of Wind should spend Resolve")
+
+    local selfGust = resolver:resolve({
+        actor = gustCaster,
+        card = { name = "Wands", value = 1, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "gust_of_wind",
+        target = gustCaster,
+        destinationZone = "B",
+        challengeController = { zones = gustZones },
+        allEntities = { gustCaster, gustTarget },
+    })
+    assertTrue(selfGust.success, "Gust of Wind should allow the sorcerer to move themselves")
+    assertEqual(gustCaster.zone, "B", "self-targeted Gust of Wind should move the caster")
+    assertTrue(selfGust.gustOfWind.selfTarget, "self-targeted Gust of Wind should record self targeting")
+
+    local gustResolveBeforeFailure = gustCaster.resolve
+    local largeGustTarget = base_entity.createEntity({
+        id = "npc_large_gust_target",
+        name = "Too Large",
+        isPC = false,
+        health = 3,
+        defense = 0,
+        zone = "A",
+    })
+    largeGustTarget.size = "large"
+    local largeGust = resolver:resolve({
+        actor = gustCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "gust_of_wind",
+        target = largeGustTarget,
+        destinationZone = "B",
+        targetInitiative = 5,
+        challengeController = { zones = gustZones },
+    })
+    assertTrue(not largeGust.success, "Gust of Wind should reject targets larger than human-sized")
+    assertEqual(gustCaster.resolve, gustResolveBeforeFailure,
+        "failed Gust of Wind size validation should not spend Resolve")
+
+    local farGustTarget = base_entity.createEntity({
+        id = "npc_far_gust_target",
+        name = "Too Far",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "A",
+    })
+    local farGust = resolver:resolve({
+        actor = gustCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "gust_of_wind",
+        target = farGustTarget,
+        destinationZone = "C",
+        targetInitiative = 5,
+        challengeController = { zones = gustZones },
+    })
+    assertTrue(not farGust.success, "Gust of Wind should reject non-adjacent destinations")
+    assertEqual(gustCaster.resolve, gustResolveBeforeFailure,
+        "failed Gust of Wind adjacency validation should not spend Resolve")
+
+    local protectionCaster = base_entity.createEntity({
+        id = "pc_protection_elements",
+        name = "Element Warden",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    protectionCaster.resolve = 5
+    protectionCaster.inventory = inventory.createInventory()
+    protectionCaster.inventory:addItem(inventory.createItemFromTemplate("component_protection_from_elements"),
+        inventory.LOCATIONS.HANDS)
+    local fireProtected = base_entity.createEntity({
+        id = "pc_fire_protected",
+        name = "Fire Protected",
+        isPC = true,
+        health = 2,
+        defense = 0,
+    })
+    local airProtected = base_entity.createEntity({
+        id = "pc_air_protected",
+        name = "Air Protected",
+        isPC = true,
+        health = 2,
+        defense = 0,
+    })
+    local protection = resolver:resolve({
+        actor = protectionCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "protection_from_elements",
+        targets = { fireProtected, airProtected },
+        elements = { "fire", "air" },
+        resolveSpent = 3,
+    })
+    assertTrue(protection.success, "Protection from the Elements should protect paid-for targets")
+    assertTrue(fireProtected.conditions.protectionFromElements and airProtected.conditions.protectionFromElements,
+        "Protection from the Elements should mark every target protected")
+    assertTrue(fireProtected.immuneToFire and fireProtected.immuneToHeat and fireProtected.gearImmuneToFire,
+        "fire protection should prevent heat and flame damage to target and gear")
+    assertTrue(airProtected.noNeedToBreathe and airProtected.immuneToSuffocation,
+        "air protection should remove the need to breathe")
+    assertTrue(airProtected.conditions.noNeedToBreathe and airProtected.conditions.immuneToSuffocation,
+        "air protection should expose condition-level breathing immunity")
+    assertTrue(resolver:doesElementProtectionBlock(fireProtected, "heat"),
+        "element protection helper should block aliased fire damage")
+    assertTrue(resolver:doesElementProtectionBlock(airProtected, "suffocation"),
+        "element protection helper should block aliased air hazards")
+    assertTrue(not resolver:doesElementProtectionBlock(fireProtected, "falling"),
+        "Protection from the Elements should not block unselected elements")
+    assertEqual(protectionCaster.committedResolve, 3,
+        "Protection from the Elements should commit all spent Resolve while concentrated")
+
+    resolver:endOngoingSpell(protectionCaster, protectionCaster.activeSpells[1], "released")
+    assertTrue(not fireProtected.conditions.protectionFromElements and not fireProtected.immuneToFire,
+        "ending Protection from the Elements should clear elemental flags")
+    assertTrue(not airProtected.noNeedToBreathe and not airProtected.immuneToSuffocation,
+        "ending Protection from the Elements should clear breathing flags")
+    assertTrue(not airProtected.conditions.noNeedToBreathe and not airProtected.conditions.immuneToSuffocation,
+        "ending Protection from the Elements should clear condition-level breathing immunity")
+    assertEqual(protectionCaster.committedResolve, 0,
+        "ending Protection from the Elements should release committed Resolve")
+
+    local protectionResolveBeforeFailure = protectionCaster.resolve
+    local unpaidProtection = resolver:resolve({
+        actor = protectionCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "protection_from_elements",
+        targets = { fireProtected, airProtected },
+        elements = { "fire", "earth" },
+        resolveSpent = 2,
+    })
+    assertTrue(not unpaidProtection.success,
+        "Protection from the Elements should reject unpaid extra targets and elements")
+    assertEqual(protectionCaster.resolve, protectionResolveBeforeFailure,
+        "failed Protection from the Elements validation should not spend Resolve")
+
+    local missingElementProtection = resolver:resolve({
+        actor = protectionCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "protection_from_elements",
+        target = fireProtected,
+        resolveSpent = 1,
+    })
+    assertTrue(not missingElementProtection.success,
+        "Protection from the Elements should require a chosen element")
+    assertEqual(protectionCaster.resolve, protectionResolveBeforeFailure,
+        "missing Protection element should not spend Resolve")
+
+    protectionCaster.inventory:addItem(inventory.createItemFromTemplate("component_speak_to_animal"),
+        inventory.LOCATIONS.HANDS)
+    local animalSpeakerResolveBefore = protectionCaster.resolve
+    local speakToAnimal = resolver:resolve({
+        actor = protectionCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "speak_to_animal",
+    })
+    assertTrue(speakToAnimal.success, "Speak to Animal should cast on the sorcerer without an explicit target")
+    assertTrue(protectionCaster.conditions.speakToAnimal and protectionCaster.canSpeakWithAnimals,
+        "Speak to Animal should let the sorcerer talk to animals")
+    assertTrue(protectionCaster.speechGarbledBySpiderEgg,
+        "Speak to Animal should record the spider-egg speech garbling")
+    assertTrue(speakToAnimal.speakToAnimal.animalsGenerallyHelpfulTruthful,
+        "Speak to Animal should preserve the helpful/truthful animal guidance")
+    assertTrue(resolver:canSpeakWithAnimal(protectionCaster, animal),
+        "Speak to Animal helper should allow conversation with animals")
+    assertTrue(not resolver:canSpeakWithAnimal(protectionCaster, target),
+        "Speak to Animal helper should reject non-animal targets")
+    assertEqual(protectionCaster.resolve, animalSpeakerResolveBefore - 1,
+        "Speak to Animal should spend Resolve")
+    assertEqual(protectionCaster.committedResolve, 1,
+        "Speak to Animal should commit Resolve while concentrated")
+
+    resolver:endOngoingSpell(protectionCaster, protectionCaster.activeSpells[1], "released")
+    assertTrue(not protectionCaster.conditions.speakToAnimal and not protectionCaster.canSpeakWithAnimals,
+        "ending Speak to Animal should clear animal speech")
+    assertTrue(not protectionCaster.speechGarbledBySpiderEgg,
+        "ending Speak to Animal should clear speech garbling")
+    assertEqual(protectionCaster.committedResolve, 0,
+        "ending Speak to Animal should release committed Resolve")
+
+    local thunderCaster = base_entity.createEntity({
+        id = "pc_thunderclap",
+        name = "Thunder Mage",
+        isPC = true,
+        wands = 4,
+        zone = "hall",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    thunderCaster.resolve = 2
+    thunderCaster.inventory = inventory.createInventory()
+    thunderCaster.inventory:addItem(inventory.createItemFromTemplate("component_thunderclap"), inventory.LOCATIONS.HANDS)
+    local dropTarget = base_entity.createEntity({
+        id = "pc_thunderclap_drop",
+        name = "Drop Target",
+        isPC = true,
+        health = 2,
+        defense = 0,
+        zone = "hall",
+    })
+    dropTarget.inventory = inventory.createInventory()
+    local heldCup = inventory.createItem({ name = "Tin Cup", size = 1 })
+    dropTarget.inventory:addItem(heldCup, inventory.LOCATIONS.HANDS)
+    local stunnedTarget = base_entity.createEntity({
+        id = "npc_thunderclap_stunned",
+        name = "Stunned Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "hall",
+    })
+    local keptStunCard = { name = "Kept Doom", value = 4, is_major = true }
+    local discardedStunCard = { name = "Discarded Doom", value = 5, is_major = true }
+    stunnedTarget.challengeHand = { keptStunCard, discardedStunCard }
+    local outsideTarget = base_entity.createEntity({
+        id = "npc_thunderclap_outside",
+        name = "Outside Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "yard",
+    })
+    local fragileGlass = {
+        id = "glass_vase",
+        name = "Glass Vase",
+        zone = "hall",
+        properties = {
+            fragile = true,
+        },
+    }
+    local sturdyChest = {
+        id = "sturdy_chest",
+        name = "Sturdy Chest",
+        zone = "hall",
+        properties = {},
+    }
+    local thunderDiscarded = {}
+    local thunderDiscardDeck = {
+        discard = function(_, card)
+            thunderDiscarded[#thunderDiscarded + 1] = card
+        end,
+    }
+    local thunderclap = resolver:resolve({
+        actor = thunderCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "thunderclap",
+        zoneId = "hall",
+        allEntities = { thunderCaster, dropTarget, stunnedTarget, outsideTarget },
+        zoneObjects = { fragileGlass, sturdyChest },
+        gmDeck = thunderDiscardDeck,
+        thunderclapChoices = {
+            [dropTarget.id] = "drop",
+        },
+        stunDiscardIndexes = {
+            [stunnedTarget.id] = 2,
+        },
+    })
+    assertTrue(thunderclap.success, "Thunderclap should cast into a visible zone")
+    assertTrue(fragileGlass.destroyed and fragileGlass.shattered,
+        "Thunderclap should shatter fragile objects in the zone")
+    assertTrue(not sturdyChest.destroyed, "Thunderclap should leave non-fragile objects intact")
+    assertEqual(#dropTarget.inventory:getItems(inventory.LOCATIONS.HANDS), 0,
+        "Thunderclap drop choice should remove held items from hands")
+    assertTrue(thunderclap.droppedItems[1] == heldCup,
+        "Thunderclap should report dropped held items")
+    assertTrue(not dropTarget.conditions.stunned and not dropTarget.conditions.deaf,
+        "Thunderclap drop choice should avoid Stunned and Deafened")
+    assertTrue(stunnedTarget.conditions.stunned and stunnedTarget.conditions.deaf and stunnedTarget.conditions.deafened,
+        "Thunderclap should Stun and Deafen creatures that do not drop held items")
+    assertTrue(stunnedTarget.conditions.stunnedInstant,
+        "Stun should be recorded as an instantaneous card-discard effect")
+    assertEqual(#stunnedTarget.challengeHand, 1,
+        "Stunned creatures should immediately discard one Challenge card")
+    assertTrue(stunnedTarget.challengeHand[1] == keptStunCard,
+        "Stun should discard the selected Challenge card and leave the rest of the hand")
+    assertTrue(thunderDiscarded[1] == discardedStunCard,
+        "Stunned discarded cards should go to the appropriate Challenge discard pile")
+    assertTrue(stunnedTarget.lastStunDiscard and stunnedTarget.lastStunDiscard.card == discardedStunCard,
+        "Stun discard details should be reported on the affected entity")
+    assertTrue(not outsideTarget.conditions.stunned and not outsideTarget.conditions.deaf,
+        "Thunderclap should not affect creatures outside the zone")
+    assertTrue(not thunderCaster.conditions.stunned,
+        "Thunderclap should not Stun the sorcerer")
+
+    local bindingCaster = base_entity.createEntity({
+        id = "pc_binding",
+        name = "Binding Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    bindingCaster.resolve = 4
+    bindingCaster.inventory = inventory.createInventory()
+    bindingCaster.inventory:addItem(inventory.createItemFromTemplate("component_binding"), inventory.LOCATIONS.HANDS)
+
+    local johnA = base_entity.createEntity({
+        id = "npc_binding_john_a",
+        name = "John Doe",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local johnB = base_entity.createEntity({
+        id = "npc_binding_john_b",
+        name = "John Doe",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local hiddenJohn = base_entity.createEntity({
+        id = "npc_binding_john_hidden",
+        name = "John Doe",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    hiddenJohn.visible = false
+    local jane = base_entity.createEntity({
+        id = "npc_binding_jane",
+        name = "Jane Doe",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local binding = resolver:resolve({
+        actor = bindingCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "binding",
+        target = johnA,
+        targetInitiative = 3,
+        bindingName = "John Doe",
+        allEntities = { johnA, johnB, hiddenJohn, jane },
+    })
+    assertTrue(binding.success, "Binding should cast against a named visible creature")
+    assertTrue(johnA.conditions.rooted and johnA.conditions.bindingRooted, "Binding should root the first matching name")
+    assertTrue(johnB.conditions.rooted and johnB.conditions.bindingRooted, "Binding should root everyone by that specific name")
+    assertTrue(not hiddenJohn.conditions.rooted, "Binding should not affect unseen matching names")
+    assertTrue(not jane.conditions.rooted, "Binding should not affect other specific names")
+    assertEqual(bindingCaster.committedResolve, 1, "Binding should commit Resolve while concentrated")
+    assertTrue(bindingCaster.activeSpells and bindingCaster.activeSpells[1].spellId == "binding",
+        "Binding should be recorded as an active concentration spell")
+
+    local recoverBound = resolver:resolve({
+        actor = johnA,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+    })
+    assertTrue(not recoverBound.success, "Recover should not clear Binding-rooted targets")
+    assertTrue(johnA.conditions.rooted, "Binding-rooted target should remain Rooted after Recover")
+
+    resolver:endOngoingSpell(bindingCaster, bindingCaster.activeSpells[1], "countered")
+    assertTrue(not johnA.conditions.rooted and not johnB.conditions.rooted,
+        "Ending Binding concentration should clear its Rooted effect")
+    assertEqual(bindingCaster.committedResolve, 0, "Ending Binding should release committed Resolve")
+
+    local genericCaster = base_entity.createEntity({
+        id = "pc_binding_generic",
+        name = "Generic Binding Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    genericCaster.resolve = 2
+    genericCaster.inventory = inventory.createInventory()
+    genericCaster.inventory:addItem(inventory.createItemFromTemplate("component_binding"), inventory.LOCATIONS.HANDS)
+    local humanA = base_entity.createEntity({
+        id = "npc_binding_human_a",
+        name = "Wary Human",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    humanA.creatureType = "human"
+    local humanB = base_entity.createEntity({
+        id = "npc_binding_human_b",
+        name = "Other Human",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    humanB.tags = { "human" }
+    local elf = base_entity.createEntity({
+        id = "npc_binding_elf",
+        name = "Elf",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    elf.creatureType = "elf"
+    local genericBinding = resolver:resolve({
+        actor = genericCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "binding",
+        target = humanA,
+        targetInitiative = 3,
+        bindingName = "human",
+        nameType = "generic",
+        allEntities = { humanA, humanB, elf },
+    })
+    assertTrue(genericBinding.success, "Binding should cast against a generic creature name")
+    assertTrue(humanA.conditions.rooted and humanB.conditions.rooted,
+        "generic Binding should root every visible creature of that type")
+    assertTrue(not elf.conditions.rooted, "generic Binding should not root other creature types")
+
+    local charmCaster = base_entity.createEntity({
+        id = "pc_charm",
+        name = "Charm Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    charmCaster.resolve = 4
+    charmCaster.inventory = inventory.createInventory()
+    charmCaster.inventory:addItem(inventory.createItemFromTemplate("component_charm"), inventory.LOCATIONS.HANDS)
+    local charmTarget = base_entity.createEntity({
+        id = "npc_charm_target",
+        name = "Charm Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        disposition = "anger",
+    })
+    local cloakedFriend = base_entity.createEntity({
+        id = "pc_charm_friend",
+        name = "Cloaked Friend",
+        isPC = true,
+    })
+    local charm = resolver:resolve({
+        actor = charmCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "charm",
+        target = charmTarget,
+        targetInitiative = 3,
+        cloakedTarget = cloakedFriend,
+    })
+    assertTrue(charm.success, "Charm should cast on an emotional target")
+    assertTrue(charmTarget.conditions.charmed and charmTarget.conditions.inspiredTrust,
+        "Charm should Inspire the primary target with trust")
+    assertEqual(charmTarget.disposition, "trust", "Charm should create trust toward the cloaked target")
+    assertTrue(charmTarget.charmedRelations[cloakedFriend.id] ~= nil,
+        "Charm should record the trusted cloaked-target relationship")
+    assertEqual(charmCaster.committedResolve, 1, "Charm should commit Resolve while concentrated")
+
+    local charmBreaker = base_entity.createEntity({
+        id = "pc_charm_breaker",
+        name = "Charm Breaker",
+        isPC = true,
+        wands = 10,
+    })
+    local breakCharm = resolver:resolve({
+        actor = charmBreaker,
+        target = charmTarget,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "taunt",
+    })
+    assertTrue(breakCharm.success, "successful disposition-changing action should resolve")
+    assertTrue(charmTarget.charm == nil, "Charm should end when the target's Disposition changes")
+    assertTrue(not charmTarget.conditions.charmed, "Charm cleanup should clear Charmed condition")
+    assertEqual(charmCaster.committedResolve, 0, "ending Charm should release committed Resolve")
+    assertEqual(charmTarget.disposition, "anger", "disposition-changing action should keep its new disposition")
+
+    local emotionlessTarget = base_entity.createEntity({
+        id = "npc_charm_emotionless",
+        name = "Emotionless Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    emotionlessTarget.emotionless = true
+    local immuneCharmResolve = charmCaster.resolve
+    local immuneCharm = resolver:resolve({
+        actor = charmCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "charm",
+        target = emotionlessTarget,
+        targetInitiative = 3,
+        cloakedTarget = cloakedFriend,
+    })
+    assertTrue(immuneCharm.success, "Charm should still cast against an emotionless target")
+    assertTrue(hasValue(immuneCharm.effects, "charm_no_effect"), "Charm should record immunity/no-effect")
+    assertTrue(emotionlessTarget.charm == nil, "emotionless targets should not gain Charm state")
+    assertEqual(charmCaster.committedResolve, 0, "no-effect Charm should not create concentration state")
+    assertEqual(charmCaster.resolve, immuneCharmResolve - 1, "no-effect Charm should still spend casting Resolve")
+
+    do
+    local fearCaster = base_entity.createEntity({
+        id = "pc_fear",
+        name = "Fear Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    fearCaster.resolve = 3
+    fearCaster.inventory = inventory.createInventory()
+    fearCaster.inventory:addItem(inventory.createItemFromTemplate("component_fear"), inventory.LOCATIONS.HANDS)
+    local fearTarget = base_entity.createEntity({
+        id = "npc_fear_target",
+        name = "Fear Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+    })
+    local fearedSource = base_entity.createEntity({
+        id = "pc_feared_source",
+        name = "Feared Source",
+        isPC = true,
+    })
+    local fear = resolver:resolve({
+        actor = fearCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "fear",
+        target = fearTarget,
+        targetInitiative = 3,
+        cloakedTarget = fearedSource,
+    })
+    assertTrue(fear.success, "Fear should cast on an emotional target")
+    assertTrue(fearTarget.conditions.inspiredFear and fearTarget.conditions.fearful,
+        "Fear should Inspire the primary target with fear")
+    assertEqual(fearTarget.disposition, "fear", "Fear should set disposition to fear")
+    assertTrue(fearTarget.mustFleeFrom == fearedSource, "Fear should record the apparent fear source")
+    assertEqual(fearCaster.committedResolve, 1, "Fear should commit Resolve while concentrated")
+
+    local fearAI = npc_ai.createNPCAI({})
+    fearAI.hand = {
+        { name = "Low Doom", value = 2 },
+        { name = "High Doom", value = 12 },
+        { name = "Middle Doom", value = 7 },
+    }
+    assertEqual(fearAI:chooseInitiativeCard(fearTarget), 2,
+        "Fear should make NPCs prioritize high-value Initiative cards")
+
+    local fearBreaker = base_entity.createEntity({
+        id = "pc_fear_breaker",
+        name = "Fear Breaker",
+        isPC = true,
+        wands = 10,
+    })
+    local breakFear = resolver:resolve({
+        actor = fearBreaker,
+        target = fearTarget,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+        banterIntent = "taunt",
+    })
+    assertTrue(breakFear.success, "successful disposition-changing action should resolve against Fear")
+    assertTrue(fearTarget.emotionalIllusion == nil, "Fear should end when the target's Disposition changes")
+    assertTrue(not fearTarget.conditions.inspiredFear, "Fear cleanup should clear Inspired Fear")
+    assertEqual(fearCaster.committedResolve, 0, "ending Fear should release committed Resolve")
+    assertEqual(fearTarget.disposition, "anger", "disposition-changing action should keep its new disposition after Fear")
+
+    local fearEmotionlessCaster = base_entity.createEntity({
+        id = "pc_fear_emotionless",
+        name = "Fear No-Effect Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    fearEmotionlessCaster.resolve = 2
+    fearEmotionlessCaster.inventory = inventory.createInventory()
+    fearEmotionlessCaster.inventory:addItem(inventory.createItemFromTemplate("component_fear"), inventory.LOCATIONS.HANDS)
+    local fearEmotionlessTarget = base_entity.createEntity({
+        id = "npc_fear_emotionless",
+        name = "Fearless Construct",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    fearEmotionlessTarget.emotionless = true
+    local fearNoEffect = resolver:resolve({
+        actor = fearEmotionlessCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "fear",
+        target = fearEmotionlessTarget,
+        targetInitiative = 3,
+        cloakedTarget = fearedSource,
+    })
+    assertTrue(fearNoEffect.success, "Fear should still cast against an emotionless target")
+    assertTrue(hasValue(fearNoEffect.effects, "fear_no_effect"), "Fear should report no effect on emotionless targets")
+    assertEqual(fearEmotionlessCaster.committedResolve or 0, 0,
+        "no-effect Fear should not create concentration state")
+
+    local enrageCaster = base_entity.createEntity({
+        id = "pc_enrage",
+        name = "Enrage Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    enrageCaster.resolve = 2
+    enrageCaster.inventory = inventory.createInventory()
+    enrageCaster.inventory:addItem(inventory.createItemFromTemplate("component_enrage"), inventory.LOCATIONS.HANDS)
+    local enrageTarget = base_entity.createEntity({
+        id = "npc_enrage_target",
+        name = "Enrage Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        disposition = "distaste",
+        zone = "hall",
+    })
+    local hatedSource = base_entity.createEntity({
+        id = "pc_hated_source",
+        name = "Hated Source",
+        isPC = true,
+        zone = "hall",
+        pentacles = 5,
+    })
+    local easierTarget = base_entity.createEntity({
+        id = "pc_easier_target",
+        name = "Easier Target",
+        isPC = true,
+        zone = "hall",
+        pentacles = 0,
+    })
+    local enrage = resolver:resolve({
+        actor = enrageCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "enrage",
+        target = enrageTarget,
+        targetInitiative = 3,
+        cloakedTarget = hatedSource,
+    })
+    assertTrue(enrage.success, "Enrage should cast on an emotional target")
+    assertTrue(enrageTarget.conditions.inspiredAnger and enrageTarget.conditions.enraged,
+        "Enrage should Inspire the primary target with anger")
+    assertEqual(enrageTarget.disposition, "anger", "Enrage should set disposition to anger")
+    assertTrue(enrageTarget.recklessAttackTarget == hatedSource,
+        "Enrage should record the apparent hated foe")
+    local enrageAI = npc_ai.createNPCAI({})
+    assertTrue(enrageAI:selectTarget(enrageTarget, { easierTarget, hatedSource }, true) == hatedSource,
+        "Enrage should make NPC target selection prefer the hated foe")
+    resolver:endOngoingSpell(enrageCaster, enrageCaster.activeSpells[1], "released")
+    assertTrue(enrageTarget.emotionalIllusion == nil, "ending Enrage should clear the illusion state")
+    assertTrue(not enrageTarget.conditions.inspiredAnger, "ending Enrage should clear Inspired Anger")
+    assertEqual(enrageTarget.disposition, "distaste", "ending Enrage should restore previous disposition")
+    end
+
+    local circleCaster = base_entity.createEntity({
+        id = "pc_circle_protection",
+        name = "Circle Mage",
+        isPC = true,
+        wands = 4,
+        zone = "sanctum",
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    circleCaster.resolve = 5
+    circleCaster.inventory = inventory.createInventory()
+    circleCaster.inventory:addItem(inventory.createItemFromTemplate("component_circle_of_protection"),
+        inventory.LOCATIONS.HANDS)
+    local circle = resolver:resolve({
+        actor = circleCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "circle_of_protection",
+        circlePrepared = true,
+        circleId = "circle_sanctum",
+        roomId = "crypt",
+        zoneId = "sanctum",
+        radiusFeet = 15,
+        realms = { "wastes", "weird" },
+        resolveSpent = 2,
+    })
+    assertTrue(circle.success, "Circle of Protection should cast on a prepared circle")
+    assertEqual(circle.circleProtection.id, "circle_sanctum", "Circle of Protection should preserve supplied circle IDs")
+    assertEqual(circle.circleProtection.radiusFeet, 10, "Circle of Protection radius should cap at ten feet")
+    assertTrue(circle.circleProtection.realmSet.wastes and circle.circleProtection.realmSet.weird,
+        "Circle of Protection should record every paid-for far realm")
+    assertEqual(circleCaster.committedResolve, 2, "Circle of Protection should commit spent Resolve")
+    assertTrue(circleCaster.activeCircleProtections[1] == circle.circleProtection,
+        "Circle of Protection should be tracked on the caster")
+
+    local wastesNative = base_entity.createEntity({
+        id = "spirit_wastes_circle",
+        name = "Wastes Native",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    wastesNative.realm = "wastes"
+    local weirdNative = base_entity.createEntity({
+        id = "spirit_weird_circle",
+        name = "Weird Native",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    weirdNative.tags = { "weird_spirit" }
+    local wealdNative = base_entity.createEntity({
+        id = "spirit_weald_circle",
+        name = "Weald Native",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    wealdNative.realm = "weald"
+    assertTrue(resolver:doesCircleProtectionBlock(circle.circleProtection, wastesNative, { action = "cross" }),
+        "Circle of Protection should block protected-realm natives from crossing")
+    assertTrue(resolver:doesCircleProtectionBlock(circle.circleProtection, weirdNative, { action = "harm" }),
+        "Circle of Protection should block protected-realm natives from harming across the circle")
+    assertTrue(not resolver:doesCircleProtectionBlock(circle.circleProtection, wealdNative, { action = "cross" }),
+        "Circle of Protection should not block unselected far realms")
+    assertTrue(not resolver:doesCircleProtectionBlock(circle.circleProtection, wastesNative, { action = "cross", sameSide = true }),
+        "Circle of Protection should only block across the circle boundary")
+
+    resolver:endOngoingSpell(circleCaster, circleCaster.activeSpells[1], "interrupted")
+    assertTrue(not circle.circleProtection.active, "Ending Circle of Protection concentration should deactivate the circle")
+    assertEqual(#circleCaster.activeCircleProtections, 0, "Ending Circle of Protection should remove caster tracking")
+    assertEqual(circleCaster.committedResolve, 0, "Ending Circle of Protection should release committed Resolve")
+
+    local circleResolveBeforeFailure = circleCaster.resolve
+    local tooManyCircleRealms = resolver:resolve({
+        actor = circleCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "circle_of_protection",
+        circlePrepared = true,
+        realms = { "wastes", "weird" },
+        resolveSpent = 1,
+    })
+    assertTrue(not tooManyCircleRealms.success, "Circle of Protection should reject unpaid extra realms")
+    assertEqual(circleCaster.resolve, circleResolveBeforeFailure,
+        "failed Circle of Protection realm validation should not spend Resolve")
+    local unpreparedCircle = resolver:resolve({
+        actor = circleCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "circle_of_protection",
+        realms = { "wastes" },
+        resolveSpent = 1,
+    })
+    assertTrue(not unpreparedCircle.success, "Circle of Protection should require the watch-prepared rune circle")
+    assertEqual(circleCaster.resolve, circleResolveBeforeFailure,
+        "failed Circle of Protection preparation validation should not spend Resolve")
+
+    local featherCaster = base_entity.createEntity({
+        id = "pc_feather",
+        name = "Feather Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    featherCaster.resolve = 4
+    featherCaster.inventory = inventory.createInventory()
+    featherCaster.inventory:addItem(inventory.createItemFromTemplate("component_feather"), inventory.LOCATIONS.HANDS)
+    local fallingTarget = base_entity.createEntity({
+        id = "pc_feather_falling",
+        name = "Falling Target",
+        isPC = true,
+    })
+    fallingTarget.falling = true
+    local featherFall = resolver:resolve({
+        actor = featherCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "feather",
+        target = fallingTarget,
+    })
+    assertTrue(featherFall.success, "Feather should cast on a creature")
+    assertTrue(fallingTarget.conditions.feather and fallingTarget.conditions.floating,
+        "Feather should mark the creature as floating")
+    assertTrue(not fallingTarget.falling, "Feather should interrupt falling")
+    assertTrue(fallingTarget.immuneToFallingDamage, "Feather should prevent falling damage")
+    assertTrue(fallingTarget.immuneToHazardScenery, "Feather should prevent hazardous-scenery damage")
+    assertTrue(fallingTarget.ignorePressurePlates, "Feather should prevent pressure-plate triggering")
+    assertTrue(fallingTarget.easyToMove and fallingTarget.effectiveWeight == "feather",
+        "Feather should reduce the target's practical weight")
+    assertEqual(featherCaster.committedResolve, 1, "Feather should commit Resolve while concentrated")
+    resolver:endOngoingSpell(featherCaster, featherCaster.activeSpells[1], "dismissed")
+    assertTrue(not fallingTarget.conditions.feather and not fallingTarget.immuneToFallingDamage,
+        "Ending Feather should clear creature feather state")
+    assertEqual(featherCaster.committedResolve, 0, "Ending Feather should release committed Resolve")
+
+    local heavyStatue = inventory.createItem({
+        name = "Heavy Idol",
+        size = 4,
+        durability = 3,
+        properties = {
+            heavy = true,
+            pressurePlateTrigger = true,
+        },
+    })
+    local featherObject = resolver:resolve({
+        actor = featherCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "feather",
+        target = heavyStatue,
+    })
+    assertTrue(featherObject.success, "Feather should cast on a heavy object")
+    assertTrue(heavyStatue.properties.featherWeight and heavyStatue.properties.easyToMove,
+        "Feather should make heavy objects easy to move")
+    assertTrue(heavyStatue.properties.ignorePressurePlates,
+        "Feather-light objects should not trigger pressure-plate traps")
+    resolver:endOngoingSpell(featherCaster, featherCaster.activeSpells[1], "dismissed")
+    assertTrue(not heavyStatue.properties.featherWeight and not heavyStatue.properties.ignorePressurePlates,
+        "Ending Feather should clear object feather state")
+
+    local guardianCaster = base_entity.createEntity({
+        id = "pc_guardian_angel",
+        name = "Guardian Angel Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    guardianCaster.resolve = 6
+    guardianCaster.inventory = inventory.createInventory()
+    guardianCaster.inventory:addItem(inventory.createItemFromTemplate("component_guardian_angel"),
+        inventory.LOCATIONS.HANDS)
+
+    local alreadyProtected = base_entity.createEntity({
+        id = "pc_guardian_already",
+        name = "Already Guarded",
+        isPC = true,
+    })
+    local firstGuardian = resolver:resolve({
+        actor = guardianCaster,
+        card = { name = "Seven of Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "guardian_angel",
+        target = alreadyProtected,
+    })
+    assertTrue(firstGuardian.success, "Guardian Angel should cast on a target")
+    assertTrue(alreadyProtected.guardianAngel ~= nil, "Guardian Angel should place a held defense card on the target")
+    assertTrue(alreadyProtected.guardianAngel.doesNotCountDefenseSlot,
+        "Guardian Angel should not count against the normal facedown defense limit")
+    assertEqual(alreadyProtected.guardianAngel.value, 7, "Guardian Angel should store the Speak Incantation card value")
+    assertEqual(guardianCaster.committedResolve or 0, 0, "Guardian Angel should last until used without concentration")
+    local resolveBeforeDuplicateGuardian = guardianCaster.resolve
+    local duplicateGuardian = resolver:resolve({
+        actor = guardianCaster,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "guardian_angel",
+        target = alreadyProtected,
+    })
+    assertTrue(not duplicateGuardian.success, "Guardian Angel should reject multiple active instances on one target")
+    assertEqual(guardianCaster.resolve, resolveBeforeDuplicateGuardian,
+        "failed duplicate Guardian Angel validation should not spend Resolve")
+
+    local guardedDodger = base_entity.createEntity({
+        id = "pc_guardian_dodge",
+        name = "Guarded Dodger",
+        isPC = true,
+    })
+    local guardianDodge = resolver:resolve({
+        actor = guardianCaster,
+        card = { name = "Seven of Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "guardian_angel",
+        target = guardedDodger,
+    })
+    assertTrue(guardianDodge.success, "Guardian Angel should prepare a later Dodge/Riposte card")
+    local preparedOk = guardedDodger:prepareDefense("dodge", {
+        name = "Three of Pentacles",
+        value = 3,
+        suit = constants.SUITS.PENTACLES,
+    })
+    assertTrue(preparedOk, "Guardian Angel should not block a normal prepared defense")
+    local guardianAttacker = base_entity.createEntity({
+        id = "npc_guardian_attacker",
+        name = "Guardian Attacker",
+        isPC = false,
+        swords = 3,
+        health = 2,
+        defense = 0,
+    })
+    local guardianDodgeResult = resolver:resolve({
+        actor = guardianAttacker,
+        target = guardedDodger,
+        card = { name = "King of Swords", value = 14, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 8,
+        guardianAngelDefenseType = "dodge",
+    })
+    assertTrue(not guardianDodgeResult.success, "Guardian Angel Dodge should combine with same-type prepared Dodge")
+    assertTrue(hasValue(guardianDodgeResult.effects, "guardian_angel_used"),
+        "Guardian Angel Dodge should record angel use")
+    assertTrue(guardedDodger.guardianAngel == nil, "Guardian Angel should be consumed after use")
+    assertTrue(not guardedDodger:hasDefense(), "combined Guardian Angel Dodge should consume the matching prepared defense")
+
+    local guardedRiposter = base_entity.createEntity({
+        id = "pc_guardian_riposte",
+        name = "Guarded Riposter",
+        isPC = true,
+    })
+    local guardianRiposte = resolver:resolve({
+        actor = guardianCaster,
+        card = { name = "King of Wands", value = 14, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "guardian_angel",
+        target = guardedRiposter,
+    })
+    assertTrue(guardianRiposte.success, "Guardian Angel should prepare a Riposte option")
+    local riposteAttacker = base_entity.createEntity({
+        id = "npc_guardian_riposte_attacker",
+        name = "Guardian Riposte Attacker",
+        isPC = false,
+        swords = 0,
+        health = 2,
+        defense = 0,
+    })
+    local guardianRiposteResult = resolver:resolve({
+        actor = riposteAttacker,
+        target = guardedRiposter,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 8,
+        guardianAngelDefenseType = "riposte",
+    })
+    assertTrue(guardianRiposteResult.riposteResult and guardianRiposteResult.riposteResult.success,
+        "Guardian Angel should be usable as a Riposte card")
+    assertEqual(riposteAttacker.npcHealth, 1, "Guardian Angel Riposte should wound the attacker on success")
+    assertTrue(guardedRiposter.guardianAngel == nil, "Guardian Angel Riposte should consume the angel")
+
+    local heavenfireCaster = base_entity.createEntity({
+        id = "pc_heavenfire",
+        name = "Heavenfire Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    heavenfireCaster.resolve = 7
+    heavenfireCaster.inventory = inventory.createInventory()
+    heavenfireCaster.inventory:addItem(inventory.createItemFromTemplate("component_heavenfire"), inventory.LOCATIONS.HANDS)
+
+    local sightedTarget = base_entity.createEntity({
+        id = "npc_heavenfire_living",
+        name = "Sighted Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local heavenfireBlind = resolver:resolve({
+        actor = heavenfireCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = sightedTarget,
+        targetInitiative = 2,
+    })
+    assertTrue(heavenfireBlind.success, "Heavenfire should cast on a living sighted target")
+    assertTrue(sightedTarget.conditions.blind, "Heavenfire should blind living sighted targets")
+    assertEqual(sightedTarget.blindUntil, "end_next_turn", "Challenge Heavenfire blindness should last until the next turn ends")
+
+    local holyObject = inventory.createItem({
+        name = "Archwood Wand Tip",
+        size = 1,
+        durability = 1,
+        properties = {},
+    })
+    local heavenfireObject = resolver:resolve({
+        actor = heavenfireCaster,
+        card = { name = "Wands", value = 4, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = holyObject,
+    })
+    assertTrue(heavenfireObject.success, "Heavenfire should cast on an object")
+    assertTrue(holyObject.properties.isLit and holyObject.properties.brightLight, "Heavenfire should make objects glow with bright light")
+    assertTrue(holyObject.properties.noHeat and holyObject.properties.consumesFuel == false,
+        "Heavenfire object light should be heatless and not consume fuel")
+    assertEqual(holyObject.properties.extinguishOnMeatgrinder, "torches_gutter",
+        "Heavenfire-lit objects should remember the torches-gutter extinguish trigger")
+
+    local lanternBearer = base_entity.createEntity({
+        id = "npc_heavenfire_lantern_bearer",
+        name = "Lantern Bearer",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    lanternBearer.inventory = inventory.createInventory()
+    local carriedLantern = inventory.createItem({
+        name = "Carried Lantern",
+        size = 1,
+        durability = 2,
+        properties = {},
+    })
+    lanternBearer.inventory:addItem(carriedLantern, inventory.LOCATIONS.HANDS)
+    local resolveBeforeResistedObject = heavenfireCaster.resolve
+    local resistedCarriedObject = resolver:resolve({
+        actor = heavenfireCaster,
+        card = { name = "Wands", value = 3, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = carriedLantern,
+        targetOwner = lanternBearer,
+        targetInitiative = 99,
+    })
+    assertTrue(not resistedCarriedObject.success,
+        "spells targeting carried or worn objects should test against the possessor")
+    assertTrue(not carriedLantern.properties.isLit, "resisted carried-object spell should not affect the item")
+    assertEqual(heavenfireCaster.resolve, resolveBeforeResistedObject - 1,
+        "resisted carried-object spell should still spend Resolve")
+
+    local acceptedCarriedObject = resolver:resolve({
+        actor = heavenfireCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = carriedLantern,
+        targetOwner = lanternBearer,
+        targetInitiative = 1,
+    })
+    assertTrue(acceptedCarriedObject.success,
+        "carried-object spell should affect the item when the possessor's Initiative is beaten")
+    assertTrue(carriedLantern.properties.isLit and carriedLantern.properties.brightLight,
+        "successful carried-object spell should apply the object spell effect")
+
+    local undeadHeavenfireTarget = base_entity.createEntity({
+        id = "npc_heavenfire_undead",
+        name = "Heavenfire Undead",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    undeadHeavenfireTarget.undead = true
+    local heavenfireUndead = resolver:resolve({
+        actor = heavenfireCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = undeadHeavenfireTarget,
+        targetInitiative = 2,
+    })
+    assertTrue(heavenfireUndead.success, "Heavenfire should cast on undead")
+    assertEqual(undeadHeavenfireTarget.npcHealth, 1, "Heavenfire should deal a Wound to undead")
+    assertTrue(hasValue(heavenfireUndead.effects, "heavenfire_piercing_wound"),
+        "Heavenfire should record its piercing undead damage")
+
+    local wastesSpirit = base_entity.createEntity({
+        id = "npc_heavenfire_wastes_spirit",
+        name = "Wastes Spirit",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    wastesSpirit.spirit = true
+    wastesSpirit.realm = "wastes"
+    local heavenfireSpirit = resolver:resolve({
+        actor = heavenfireCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = wastesSpirit,
+        targetInitiative = 2,
+    })
+    assertTrue(heavenfireSpirit.success, "Heavenfire should cast on a Wastes spirit")
+    assertEqual(wastesSpirit.npcHealth, 1, "Heavenfire should wound spirits of the Wastes")
+
+    local veritasCaster = base_entity.createEntity({
+        id = "pc_veritas",
+        name = "Veritas Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    veritasCaster.resolve = 2
+    veritasCaster.inventory = inventory.createInventory()
+    veritasCaster.inventory:addItem(inventory.createItemFromTemplate("component_veritas"), inventory.LOCATIONS.HANDS)
+    local veritasTarget = base_entity.createEntity({
+        id = "pc_veritas_target",
+        name = "Veritas Target",
+        isPC = true,
+    })
+    local veritas = resolver:resolve({
+        actor = veritasCaster,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "veritas",
+        target = veritasTarget,
+    })
+    assertTrue(veritas.success, "Veritas should cast on a person")
+    assertTrue(veritasTarget.conditions.veritas, "Veritas should mark the target under its effect")
+    assertTrue(veritasTarget.veritas.knowsKnowinglyToldLies, "Veritas should let the caster know knowingly spoken lies")
+    assertTrue(veritasTarget.veritas.targetAware, "Veritas target should understand the magical polygraph")
+    assertEqual(veritasCaster.resolve, 1, "Veritas should spend Resolve")
+    assertEqual(veritasCaster.committedResolve, 1, "Veritas should commit Resolve while concentrated")
+    assertTrue(veritasCaster.activeSpells and veritasCaster.activeSpells[1].spellId == "veritas",
+        "Veritas should be recorded as an active concentration spell")
+
+    local sealPactEvents = 0
+    local sealPactViolationEvents = 0
+    local sealPactDispelEvents = 0
+    bus:on(events.EVENTS.SEALED_PACT_CREATED, function(data)
+        sealPactEvents = sealPactEvents + 1
+        assertTrue(data.pact ~= nil, "Seal Pact creation events should include the pact")
+    end)
+    bus:on(events.EVENTS.SEALED_PACT_VIOLATED, function(data)
+        sealPactViolationEvents = sealPactViolationEvents + 1
+        assertTrue(data.violation ~= nil, "Seal Pact violation events should include violation detail")
+    end)
+    bus:on(events.EVENTS.SEALED_PACT_DISPELLED, function(data)
+        sealPactDispelEvents = sealPactDispelEvents + 1
+        assertTrue(data.pact ~= nil, "Seal Pact dispel events should include the pact")
+    end)
+
+    local sealCaster = base_entity.createEntity({
+        id = "pc_seal_pact",
+        name = "Seal Pact Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    sealCaster.resolve = 8
+    sealCaster.inventory = inventory.createInventory()
+    sealCaster.inventory:addItem(inventory.createItemFromTemplate("component_seal_pact"), inventory.LOCATIONS.HANDS)
+
+    local pactPartyA = base_entity.createEntity({ id = "pc_pact_a", name = "Pact A", isPC = true })
+    local pactPartyB = base_entity.createEntity({ id = "pc_pact_b", name = "Pact B", isPC = true })
+    local sealPact = resolver:resolve({
+        actor = sealCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "seal_pact",
+        parties = { pactPartyA, pactPartyB },
+        pactId = "pact_test",
+        terms = "Return the relic before dawn.",
+    })
+    assertTrue(sealPact.success, "Seal Pact should bind two willing parties")
+    assertTrue(sealPact.sealedPact.permanent, "Seal Pact should create a permanent pact record")
+    assertEqual(sealPact.sealedPact.id, "pact_test", "Seal Pact should preserve supplied pact IDs")
+    assertEqual(#sealPact.sealedPact.parties, 2, "Seal Pact should record all pact parties")
+    assertTrue(pactPartyA.sealedPacts[1] == sealPact.sealedPact, "Seal Pact should attach the pact to the first party")
+    assertTrue(pactPartyB.sealedPacts[1] == sealPact.sealedPact, "Seal Pact should attach the pact to the second party")
+    assertTrue(sealCaster.sealedPacts[1] == sealPact.sealedPact, "Seal Pact should attach officiated pacts to the caster")
+    assertEqual(sealCaster.resolve, 7, "Seal Pact should spend base Resolve")
+    assertEqual(sealPactEvents, 1, "Seal Pact should emit a creation event")
+
+    local violation = resolver:violateSealedPact(sealPact.sealedPact, pactPartyA, {
+        reason = "relic_stolen",
+    })
+    assertTrue(violation.success, "Seal Pact violation helper should resolve")
+    assertTrue(pactPartyA.conditions.doomed, "Seal Pact violators should become doomed")
+    assertTrue(pactPartyA.pendingSealPactGreatFailure ~= nil,
+        "Seal Pact violators should carry the pending automatic great failure")
+    assertEqual(pactPartyA.pendingSealPactGreatFailure.result, "great_failure",
+        "Seal Pact doom should specify a future great failure")
+    assertTrue(pactPartyB.sealPactAwareness and pactPartyB.sealPactAwareness[1].violated,
+        "Other pact parties should immediately know about violations")
+    assertEqual(pactPartyB.sealPactAwareness[1].violator, pactPartyA,
+        "Seal Pact awareness should identify the violator")
+    assertEqual(sealPactViolationEvents, 1, "Seal Pact should emit a violation event")
+
+    local dispelViolated = resolver:dispelSealedPact(sealPact.sealedPact, {
+        dispeller = sealCaster,
+        reason = "dispel_magic",
+    })
+    assertTrue(not dispelViolated.success, "violated Seal Pact consequences should not be dispellable")
+    assertEqual(dispelViolated.reason, "sealed_pact_already_violated",
+        "violated Seal Pact dispel failures should report the canonical block")
+    assertTrue(sealPact.sealedPact.violated and not sealPact.sealedPact.dispelled,
+        "failed post-violation dispel should leave the pact consequences intact")
+    assertEqual(sealPactDispelEvents, 0,
+        "blocked post-violation dispels should not emit dispel events")
+
+    local pactPartyC = base_entity.createEntity({ id = "pc_pact_c", name = "Pact C", isPC = true })
+    local threePartyPact = resolver:resolve({
+        actor = sealCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "seal_pact",
+        parties = { pactPartyA, pactPartyB, pactPartyC },
+        pactId = "pact_three",
+        resolveSpent = 2,
+    })
+    assertTrue(threePartyPact.success, "Seal Pact should allow one extra party for one extra Resolve")
+    assertEqual(#threePartyPact.sealedPact.parties, 3, "extra Resolve Seal Pact should bind all paid-for parties")
+    assertEqual(sealCaster.resolve, 5, "extra-party Seal Pact should spend declared Resolve")
+
+    local resolveBeforeTooManyPact = sealCaster.resolve
+    local tooManyPactParties = resolver:resolve({
+        actor = sealCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "seal_pact",
+        parties = { pactPartyA, pactPartyB, pactPartyC },
+        pactId = "pact_too_many",
+        resolveSpent = 1,
+    })
+    assertTrue(not tooManyPactParties.success, "Seal Pact should reject unpaid extra parties")
+    assertEqual(sealCaster.resolve, resolveBeforeTooManyPact,
+        "failed Seal Pact party-count validation should not spend Resolve")
+
+    local unwillingParty = base_entity.createEntity({
+        id = "pc_pact_unwilling",
+        name = "Unwilling Pact Party",
+        isPC = true,
+    })
+    unwillingParty.consent = false
+    local unwillingPact = resolver:resolve({
+        actor = sealCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "seal_pact",
+        parties = { pactPartyA, unwillingParty },
+        pactId = "pact_unwilling",
+    })
+    assertTrue(not unwillingPact.success, "Seal Pact should reject unwilling parties")
+    assertEqual(sealCaster.resolve, resolveBeforeTooManyPact,
+        "failed Seal Pact consent validation should not spend Resolve")
+
+    local dispelPartyA = base_entity.createEntity({ id = "pc_pact_dispel_a", name = "Dispel A", isPC = true })
+    local dispelPartyB = base_entity.createEntity({ id = "pc_pact_dispel_b", name = "Dispel B", isPC = true })
+    local dispelPact = resolver:resolve({
+        actor = sealCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "seal_pact",
+        parties = { dispelPartyA, dispelPartyB },
+        pactId = "pact_dispel",
+    })
+    assertTrue(dispelPact.success, "Seal Pact should create a pact that can later be dispelled")
+    local dispelled = resolver:dispelSealedPact(dispelPact.sealedPact, {
+        dispeller = sealCaster,
+        reason = "dispel_magic",
+    })
+    assertTrue(dispelled.success, "Seal Pact dispel helper should resolve")
+    assertTrue(dispelPact.sealedPact.dispelled and not dispelPact.sealedPact.active,
+        "dispelling Seal Pact should mark the pact inactive")
+    assertTrue(dispelPartyA.sealPactAwareness and dispelPartyA.sealPactAwareness[1].dispelled,
+        "dispelling Seal Pact should alert pact parties")
+    assertTrue(not (dispelPartyA.conditions and dispelPartyA.conditions.doomed),
+        "dispelling Seal Pact should not doom pact parties")
+    assertEqual(sealPactDispelEvents, 1, "Seal Pact should emit a dispel event")
+
+    local lifeCaster = base_entity.createEntity({
+        id = "pc_life",
+        name = "Life Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    lifeCaster.resolve = 6
+    lifeCaster.inventory = inventory.createInventory()
+    lifeCaster.inventory:addItem(inventory.createItemFromTemplate("component_life"), inventory.LOCATIONS.HANDS)
+
+    local deathsDoorTarget = base_entity.createEntity({
+        id = "pc_life_dd",
+        name = "Life Death Door",
+        isPC = true,
+    })
+    deathsDoorTarget:markDeathsDoor(0)
+    local lifeDeathsDoor = resolver:resolve({
+        actor = lifeCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "life",
+        target = deathsDoorTarget,
+    })
+    assertTrue(lifeDeathsDoor.success, "Life should cast on a Death's Door ally")
+    assertTrue(not deathsDoorTarget.conditions.deaths_door, "Life should clear Death's Door")
+    assertTrue(deathsDoorTarget.conditions.stressed, "Life should mark the saved target Stressed")
+
+    local afflictedTarget = base_entity.createEntity({
+        id = "pc_life_afflicted",
+        name = "Life Afflicted",
+        isPC = true,
+    })
+    afflictedTarget.afflictions = {
+        red_welts = {
+            stage = 3,
+            maxStage = 3,
+        },
+    }
+    local lifeAffliction = resolver:resolve({
+        actor = lifeCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "life",
+        target = afflictedTarget,
+        affliction = "red_welts",
+    })
+    assertTrue(lifeAffliction.success, "Life should cast on an afflicted ally")
+    assertEqual(afflictedTarget.afflictions.red_welts.stage, 2, "Life should reduce affliction progress by one stage")
+    assertTrue(afflictedTarget.afflictions.red_welts.curedThisCamp, "Life should count as this-camp affliction treatment")
+
+    local undeadTarget = base_entity.createEntity({
+        id = "npc_life_undead",
+        name = "Life Undead",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    undeadTarget.undead = true
+    local lifeUndead = resolver:resolve({
+        actor = lifeCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "life",
+        target = undeadTarget,
+        targetInitiative = 1,
+    })
+    assertTrue(lifeUndead.success, "Life should cast offensively against an undead target")
+    assertEqual(undeadTarget.npcHealth, 1, "Life should wound undead targets")
+
+    local firstAffliction = base_entity.createEntity({
+        id = "pc_life_first",
+        name = "Life First Stage",
+        isPC = true,
+    })
+    firstAffliction.afflictions = {
+        ghost_lotus = {
+            stage = 1,
+            maxStage = 2,
+        },
+    }
+    local secondAffliction = base_entity.createEntity({
+        id = "pc_life_second",
+        name = "Life Second Stage",
+        isPC = true,
+    })
+    secondAffliction.afflictions = {
+        goblin_rot = {
+            stage = 2,
+            maxStage = 2,
+        },
+    }
+    local multiLife = resolver:resolve({
+        actor = lifeCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "life",
+        targets = { firstAffliction, secondAffliction },
+        resolveSpent = 2,
+    })
+    assertTrue(multiLife.success, "Life should allow one extra target per additional Resolve spent")
+    assertTrue(firstAffliction.afflictions.ghost_lotus == nil, "Life should remove a first-stage affliction")
+    assertEqual(secondAffliction.afflictions.goblin_rot.stage, 1, "Life should reduce each paid-for target")
+    assertEqual(lifeCaster.resolve, 1, "Life casts should spend the declared Resolve")
+
+    local tooManyTargets = resolver:resolve({
+        actor = lifeCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "life",
+        targets = { firstAffliction, secondAffliction },
+        resolveSpent = 1,
+    })
+    assertTrue(not tooManyTargets.success, "Life should reject more targets than Resolve supports")
+    assertEqual(lifeCaster.resolve, 1, "failed Life target-count validation should not spend Resolve")
+
+    local noResolveTrainee = base_entity.createEntity({
+        id = "pc_no_resolve_trainee",
+        name = "Spent Trainee",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = false },
+        },
+    })
+    noResolveTrainee.resolve = 0
+    noResolveTrainee.xp = 1
+    noResolveTrainee.inventory = inventory.createInventory()
+    noResolveTrainee.inventory:addItem(inventory.createItemFromTemplate("component_withering"), inventory.LOCATIONS.HANDS)
+    local noResolveTrainingCast = resolver:resolve({
+        actor = noResolveTrainee,
+        card = { name = "Wands", value = 7, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "withering",
+        target = base_entity.createEntity({ id = "npc_no_resolve_target", isPC = false, health = 2, defense = 0 }),
+        targetInitiative = 6,
+    })
+    assertTrue(not noResolveTrainingCast.success, "in-training spellcasting should fail without Resolve")
+    assertEqual(noResolveTrainee.xp, 1, "Resolve failure should not spend training XP")
+
+    local concentrationRequests = 0
+    local maleficenceEvents = 0
+    local maleficenceResolved = 0
+    bus:on(events.EVENTS.CONCENTRATION_TEST_REQUIRED, function(data)
+        concentrationRequests = concentrationRequests + 1
+        assertEqual(data.attribute, "wands", "concentration test should be a Wands test")
+        assertEqual(data.actionType, action_resolver.ACTION_TYPES.TEST_FATE, "challenge concentration check should request Test Fate")
+    end)
+    bus:on(events.EVENTS.MALEFICENCE_TRIGGERED, function(data)
+        maleficenceEvents = maleficenceEvents + 1
+        assertTrue(data.branch ~= nil, "maleficence should use the spell branch")
+    end)
+    bus:on(events.EVENTS.MALEFICENCE_RESOLVED, function(data)
+        maleficenceResolved = maleficenceResolved + 1
+        assertTrue(data.entry ~= nil, "resolved maleficence should include table entry")
+    end)
+
+    local cloudCaster = base_entity.createEntity({
+        id = "pc_cloud",
+        name = "Cloud Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+            path_lore = { mastered = true },
+        },
+    })
+    cloudCaster.resolve = 4
+    cloudCaster.inventory = inventory.createInventory()
+    cloudCaster.inventory:addItem(inventory.createItemFromTemplate("component_stinking_cloud"), inventory.LOCATIONS.HANDS)
+
+    local cloud = resolver:resolve({
+        actor = cloudCaster,
+        card = { name = "Wands", value = 2, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "stinking_cloud",
+        zoneId = "crypt",
+        resolveSpent = 2,
+    })
+    assertTrue(cloud.success, "Stinking Cloud should cast against the environment without Initiative contest")
+    assertEqual(cloud.zoneCount, 2, "Stinking Cloud should scale zone count by Resolve")
+    assertEqual(cloudCaster.committedResolve, 2, "concentration spell should commit spent Resolve")
+    assertTrue(cloudCaster.activeSpells and cloudCaster.activeSpells[1].concentration, "Stinking Cloud should occupy concentration")
+
+    local cloudBreather = base_entity.createEntity({
+        id = "pc_cloud_breather",
+        name = "Cloud Breather",
+        isPC = true,
+        zone = "crypt",
+    })
+    local cloudSkeleton = base_entity.createEntity({
+        id = "npc_cloud_skeleton",
+        name = "Cloud Skeleton",
+        isPC = false,
+        zone = "crypt",
+        health = 2,
+        defense = 0,
+    })
+    cloudSkeleton.undead = true
+    local cloudAirProtected = base_entity.createEntity({
+        id = "pc_cloud_air_protected",
+        name = "Cloud Air Protected",
+        isPC = true,
+        zone = "crypt",
+    })
+    cloudAirProtected.noNeedToBreathe = true
+    cloudAirProtected.immuneToSuffocation = true
+    local cloudElsewhere = base_entity.createEntity({
+        id = "pc_cloud_elsewhere",
+        name = "Cloud Elsewhere",
+        isPC = true,
+        zone = "hall",
+    })
+
+    local cloudRoundResults = resolver:applyStinkingCloudRoundStart({
+        round = 2,
+        allEntities = { cloudCaster, cloudBreather, cloudSkeleton, cloudAirProtected, cloudElsewhere },
+    })
+    assertEqual(#cloudRoundResults, 3, "Stinking Cloud should affect creatures only in cloud zones")
+    assertTrue(cloudBreather.conditions.stunned, "breathers who begin a round in the cloud should become Stunned")
+    assertEqual(cloudBreather.stinkingCloudDrawPenalty, 1,
+        "first Stinking Cloud exposure should draw one fewer card")
+    assertTrue(cloudSkeleton.conditions.stinkingCloudImmune and not cloudSkeleton.conditions.stunned,
+        "non-breathing creatures should be immune to Stinking Cloud")
+    assertTrue(cloudAirProtected.conditions.stinkingCloudImmune and not cloudAirProtected.conditions.stunned,
+        "air-protected creatures should be immune to Stinking Cloud")
+    assertTrue(not cloudElsewhere.conditions.stunned,
+        "creatures outside the cloud should not be affected")
+
+    resolver:applyStinkingCloudRoundStart({
+        round = 3,
+        allEntities = { cloudCaster, cloudBreather, cloudSkeleton, cloudAirProtected, cloudElsewhere },
+    })
+    resolver:applyStinkingCloudRoundStart({
+        round = 4,
+        allEntities = { cloudCaster, cloudBreather, cloudSkeleton, cloudAirProtected, cloudElsewhere },
+    })
+    resolver:applyStinkingCloudRoundStart({
+        round = 5,
+        allEntities = { cloudCaster, cloudBreather, cloudSkeleton, cloudAirProtected, cloudElsewhere },
+    })
+    assertTrue(cloudBreather.conditions.knocked_out and cloudBreather.conditions.knockout,
+        "four Stinking Cloud exposures should Knock Out the creature")
+    assertEqual(cloudBreather.stinkingCloudDrawPenalty, 4,
+        "cumulative Stinking Cloud exposure should increase the round draw penalty")
+
+    local fakePlayerDeck = {
+        nextValue = 0,
+        draw = function(self)
+            self.nextValue = self.nextValue + 1
+            return { name = "Drawn " .. tostring(self.nextValue), value = self.nextValue }
+        end,
+    }
+    local hand = player_hand.createPlayerHand({
+        eventBus = events.createEventBus(),
+        playerDeck = fakePlayerDeck,
+        guild = { cloudBreather },
+    })
+    hand:drawHand(cloudBreather)
+    assertEqual(#hand.hands[cloudBreather.id].cards, 0,
+        "Stinking Cloud draw penalties should reduce player round draws")
+
+    local secondCloud = resolver:resolve({
+        actor = cloudCaster,
+        card = { name = "Wands", value = 2, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "stinking_cloud",
+        zoneId = "crypt",
+    })
+    assertTrue(not secondCloud.success, "a sorcerer should not concentrate on two spells")
+    assertEqual(cloudCaster.resolve, 2, "blocked concentration should not spend Resolve")
+
+    resolver:applyDamage(cloudCaster, 1, { "piercing" })
+    assertTrue(cloudCaster.pendingConcentrationTest ~= nil, "hurt concentrating caster should require a concentration test")
+    assertEqual(concentrationRequests, 1, "hurt concentration should emit one test request")
+
+    local concentrationSuccess = resolver:resolveConcentrationTestOutcome(cloudCaster, true)
+    assertTrue(concentrationSuccess.success, "successful concentration test should maintain spell")
+    assertTrue(cloudCaster.pendingConcentrationTest == nil, "successful concentration test should clear pending test")
+    assertEqual(#cloudCaster.activeSpells, 1, "successful concentration test should keep active spell")
+    assertEqual(cloudCaster.committedResolve, 2, "successful concentration test should keep Resolve committed")
+
+    resolver:applyDamage(cloudCaster, 1, { "piercing" })
+    local concentrationFailure = resolver:resolveConcentrationTestOutcome(cloudCaster, false)
+    assertTrue(not concentrationFailure.success, "failed concentration test result should report failure")
+    assertEqual(#cloudCaster.activeSpells, 0, "failed concentration test should end the spell")
+    assertEqual(cloudCaster.committedResolve, 0, "ended concentration spell should release committed Resolve")
+    assertTrue(cloudCaster.pendingMaleficence ~= nil, "failed concentration test should mark pending maleficence")
+    assertEqual(maleficenceEvents, 1, "failed concentration test should emit maleficence")
+
+    local wastesResolution = resolver:resolvePendingMaleficence(cloudCaster, {
+        value = 10,
+        allEntities = { cloudCaster },
+    })
+    assertTrue(wastesResolution.success, "pending maleficence should resolve from a table draw")
+    assertEqual(wastesResolution.branch, "wastes", "pending maleficence should keep its branch")
+    assertEqual(wastesResolution.rank, "X", "maleficence value should map to rank")
+    assertTrue(cloudCaster.conditions.stunned, "Wastes X should stun the sorcerer for a watch")
+    assertTrue(cloudCaster.pendingMaleficence == nil, "resolved maleficence should clear pending marker")
+    assertTrue(cloudCaster.lastMaleficence == wastesResolution, "resolved maleficence should be recorded")
+    assertEqual(maleficenceResolved, 1, "resolving pending maleficence should emit event")
+
+    do
+        local blockCaster = base_entity.createEntity({
+            id = "pc_wastes_healing_block",
+            name = "Wastes Healing Block",
+            isPC = true,
+            talents = {
+                path_lore = { mastered = true, wounded = true },
+            },
+        })
+        blockCaster.conditions.injured = true
+        blockCaster.woundedTalents = 1
+        local blockRecord = resolver:triggerMaleficence(blockCaster, "wastes", "smoke_test", {
+            spell = { id = "necromancy", branch = "wastes" },
+        })
+        local blockResolution = resolver:resolvePendingMaleficence(blockCaster, {
+            record = blockRecord,
+            value = 6,
+            allEntities = { blockCaster },
+        })
+        assertTrue(blockResolution.success, "Wastes VI maleficence should resolve from table data")
+        assertTrue(blockCaster.healingBlocks and blockCaster.healingBlocks[1],
+            "Wastes VI should store a healing block on the sorcerer")
+        assertEqual(blockCaster.healingBlocks[1]["until"], "fool_reshuffle",
+            "Wastes VI healing block should last until the next Fool reshuffle")
+
+        local blockedHeal, blockErr = blockCaster:healWound()
+        assertEqual(blockedHeal, nil, "Wastes VI should prevent healing Injured")
+        assertEqual(blockErr, "healing_blocked", "blocked Wastes VI healing should report healing_blocked")
+        assertTrue(blockCaster.conditions.injured, "blocked Wastes VI healing should leave Injured marked")
+
+        blockCaster.conditions.injured = false
+        blockCaster.conditions.staggered = true
+        local staggerHeal = blockCaster:healWound()
+        assertEqual(staggerHeal, "staggered_healed", "Wastes VI should not block Staggered healing")
+        blockedHeal, blockErr = blockCaster:healWound()
+        assertEqual(blockedHeal, nil, "Wastes VI should prevent healing Wounded talents")
+        assertEqual(blockErr, "healing_blocked", "blocked Wastes VI talent healing should report healing_blocked")
+        assertEqual(blockCaster.woundedTalents, 1, "blocked Wastes VI talent healing should leave talent wounds")
+    end
+
+    local wealdCaster = {
+        id = "pc_weald_maleficence",
+        name = "Weald Maleficence",
+        isPC = true,
+        zone = "grove",
+        conditions = {},
+    }
+    local allyInZone = {
+        id = "pc_weald_ally",
+        name = "Nearby Ally",
+        isPC = true,
+        zone = "grove",
+        conditions = {},
+    }
+    local allyElsewhere = {
+        id = "pc_elsewhere",
+        name = "Elsewhere Ally",
+        isPC = true,
+        zone = "hall",
+        conditions = {},
+    }
+    local wealdRecord = resolver:triggerMaleficence(wealdCaster, "weald", "smoke_test", {
+        spell = { id = "control_animal", branch = "weald" },
+    })
+    local wealdResolution = resolver:resolvePendingMaleficence(wealdCaster, {
+        record = wealdRecord,
+        value = 3,
+        allEntities = { wealdCaster, allyInZone, allyElsewhere },
+    })
+    assertTrue(wealdResolution.success, "Weald maleficence should resolve from table data")
+    assertTrue(wealdCaster.conditions.rooted, "Weald III should root the sorcerer's zone")
+    assertTrue(allyInZone.conditions.rooted, "Weald III should root others in the zone")
+    assertTrue(not allyElsewhere.conditions.rooted, "Weald III should not root other zones")
+
+    local autoBus = events.createEventBus()
+    local discardedMaleficenceCards = {}
+    local fakeDeck = {
+        draw = function()
+            return { name = "Three of Wands", value = 3, suit = constants.SUITS.WANDS }
+        end,
+        discard = function(_, card)
+            discardedMaleficenceCards[#discardedMaleficenceCards + 1] = card
+        end,
+    }
+    local autoResolver = action_resolver.createActionResolver({
+        eventBus = autoBus,
+        playerDeck = fakeDeck,
+    })
+    autoBus:on(events.EVENTS.MALEFICENCE_TRIGGERED, function(data)
+        autoResolver:resolvePendingMaleficence(data.actor, {
+            record = data,
+            allEntities = { data.actor },
+        })
+    end)
+    local autoCaster = {
+        id = "pc_auto_maleficence",
+        name = "Auto Maleficence",
+        isPC = true,
+        zone = "crypt",
+        conditions = {},
+    }
+    local autoRecord = autoResolver:triggerMaleficence(autoCaster, "weald", "auto_smoke")
+    assertTrue(autoRecord.resolved, "runtime maleficence event hook should resolve the record")
+    assertTrue(autoCaster.pendingMaleficence == nil, "runtime maleficence resolution should clear pending marker")
+    assertTrue(autoCaster.conditions.rooted, "runtime maleficence draw should apply table effect")
+    assertEqual(#discardedMaleficenceCards, 1, "runtime maleficence draw should discard the drawn table card")
+end
+
+local function checkControlUndeadSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_control_undead",
+        name = "Control Undead Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    caster.resolve = 3
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_control_undead"), inventory.LOCATIONS.HANDS)
+
+    local undead = base_entity.createEntity({
+        id = "npc_control_undead",
+        name = "Commanded Skeleton",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    undead.undead = true
+
+    local controlled = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_undead",
+        target = undead,
+        targetInitiative = 3,
+        resolveSpent = 2,
+        controlOrder = "guard the door tonight",
+    })
+    assertTrue(controlled.success, "Control Undead should cast against undead")
+    assertTrue(undead.conditions.controlled, "Control Undead should mark undead controlled")
+    assertTrue(undead.controlledBy == caster, "Control Undead should record the controlling caster")
+    assertEqual(undead.controlWords, 8, "Control Undead order length should scale by Wands per Resolve")
+    assertEqual(undead.controlOrder.text, "guard the door tonight", "Control Undead should store the delivered order")
+    assertEqual(undead.controlCommandsRemaining, 1, "Control Undead should deliver one order")
+    assertEqual(caster.resolve, 1, "Control Undead should spend declared Resolve")
+    assertEqual(caster.committedResolve, 2, "Control Undead should commit Resolve until the order is fulfilled")
+
+    local ended = resolver:fulfillControlOrder(caster, undead)
+    assertTrue(ended ~= nil, "fulfilling a Control Undead order should end the spell")
+    assertTrue(not undead.conditions.controlled, "fulfilled Control Undead should clear controlled condition")
+    assertTrue(undead.controlledBy == nil, "fulfilled Control Undead should clear caster control")
+    assertEqual(caster.committedResolve, 0, "fulfilled Control Undead should release committed Resolve")
+
+    local livingCaster = base_entity.createEntity({
+        id = "pc_control_undead_living",
+        name = "Living Control Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    livingCaster.resolve = 1
+    livingCaster.inventory = inventory.createInventory()
+    livingCaster.inventory:addItem(inventory.createItemFromTemplate("component_control_undead"),
+        inventory.LOCATIONS.HANDS)
+    local livingTarget = base_entity.createEntity({
+        id = "npc_control_undead_living",
+        name = "Living Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local livingControl = resolver:resolve({
+        actor = livingCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_undead",
+        target = livingTarget,
+        targetInitiative = 3,
+        controlOrder = "kneel",
+    })
+    assertTrue(not livingControl.success, "Control Undead should reject living targets before spending")
+    assertTrue(hasValue(livingControl.effects, "control_target_not_undead"),
+        "Control Undead should report invalid living targets")
+    assertEqual(livingCaster.resolve, 1, "failed Control Undead target gate should not spend Resolve")
+
+    local longOrderCaster = base_entity.createEntity({
+        id = "pc_control_undead_long",
+        name = "Long Order Mage",
+        isPC = true,
+        wands = 2,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    longOrderCaster.resolve = 1
+    longOrderCaster.inventory = inventory.createInventory()
+    longOrderCaster.inventory:addItem(inventory.createItemFromTemplate("component_control_undead"),
+        inventory.LOCATIONS.HANDS)
+    local longOrderTarget = base_entity.createEntity({
+        id = "npc_control_undead_long",
+        name = "Long Order Skeleton",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    longOrderTarget.undead = true
+    local longOrder = resolver:resolve({
+        actor = longOrderCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_undead",
+        target = longOrderTarget,
+        targetInitiative = 3,
+        controlOrder = "guard the door",
+    })
+    assertTrue(not longOrder.success, "Control Undead should reject orders longer than Wands per Resolve")
+    assertTrue(hasValue(longOrder.effects, "control_order_too_long"),
+        "Control Undead should report order length failures")
+    assertEqual(longOrderCaster.resolve, 1, "failed Control Undead order gate should not spend Resolve")
+end
+
+local function checkControlAnimalSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local animalCaster = base_entity.createEntity({
+        id = "pc_control_animal_suicidal",
+        name = "Control Animal Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    animalCaster.resolve = 1
+    animalCaster.inventory = inventory.createInventory()
+    animalCaster.inventory:addItem(inventory.createItemFromTemplate("component_control_animal"),
+        inventory.LOCATIONS.HANDS)
+
+    local wolf = base_entity.createEntity({
+        id = "npc_control_animal_wolf",
+        name = "Wolf",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    wolf.animal = true
+
+    local rejected = resolver:resolve({
+        actor = animalCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_animal",
+        target = wolf,
+        targetInitiative = 3,
+        controlOrder = "jump into lava",
+    })
+    assertTrue(not rejected.success, "Control Animal should reject obviously suicidal orders")
+    assertTrue(hasValue(rejected.effects, "control_animal_suicidal_order"),
+        "Control Animal should report suicidal-order failures")
+    assertTrue(not wolf.conditions.controlled, "rejected suicidal Control Animal should not control the target")
+    assertEqual(animalCaster.resolve, 1, "failed Control Animal suicidal gate should not spend Resolve")
+
+    local combatCaster = base_entity.createEntity({
+        id = "pc_control_animal_combat",
+        name = "Combat Control Animal Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    combatCaster.resolve = 1
+    combatCaster.inventory = inventory.createInventory()
+    combatCaster.inventory:addItem(inventory.createItemFromTemplate("component_control_animal"),
+        inventory.LOCATIONS.HANDS)
+    local hound = base_entity.createEntity({
+        id = "npc_control_animal_hound",
+        name = "Hound",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "yard",
+    })
+    hound.animal = true
+    local bitten = base_entity.createEntity({
+        id = "npc_control_animal_bitten",
+        name = "Bite Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        zone = "yard",
+    })
+    local combatControl = resolver:resolve({
+        actor = combatCaster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_animal",
+        target = hound,
+        targetInitiative = 3,
+        controlOrder = "bite",
+        inChallenge = true,
+        allEntities = { combatCaster, hound, bitten },
+        controlledAction = {
+            type = action_resolver.ACTION_TYPES.MELEE,
+            target = bitten,
+            targetInitiative = 9,
+        },
+    })
+    assertTrue(combatControl.success, "Control Animal should cast with a structured Challenge order")
+    assertTrue(combatControl.controlledActionResult and combatControl.controlledActionResult.success,
+        "Controlled creatures should immediately perform the commanded Challenge action")
+    assertEqual(combatControl.controlledActionResult.testValue, combatControl.testValue,
+        "Controlled Challenge actions should use the Control action value")
+    assertEqual(bitten.npcHealth, 1, "the immediate controlled Attack should affect its target")
+    assertTrue(not hound.conditions.controlled and hound.controlledBy == nil,
+        "completed immediate Control order should end the spell")
+    assertEqual(combatCaster.committedResolve, 0,
+        "completed immediate Control order should release committed Resolve")
+
+    local undeadCaster = base_entity.createEntity({
+        id = "pc_control_undead_suicidal",
+        name = "Control Undead Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    undeadCaster.resolve = 1
+    undeadCaster.inventory = inventory.createInventory()
+    undeadCaster.inventory:addItem(inventory.createItemFromTemplate("component_control_undead"),
+        inventory.LOCATIONS.HANDS)
+    local skeleton = base_entity.createEntity({
+        id = "npc_control_undead_suicidal",
+        name = "Skeleton",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    skeleton.undead = true
+
+    local accepted = resolver:resolve({
+        actor = undeadCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "control_undead",
+        target = skeleton,
+        targetInitiative = 3,
+        controlOrder = "jump into lava",
+    })
+    assertTrue(accepted.success, "Control Undead should allow suicidal orders")
+    assertTrue(skeleton.conditions.controlled, "Control Undead suicidal order should still control undead")
+    assertEqual(skeleton.controlOrder.text, "jump into lava",
+        "Control Undead should store suicidal orders normally")
+end
+
+local function checkHeavenfireLightGutter()
+    local bus = events.createEventBus()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+    local caster = base_entity.createEntity({
+        id = "pc_heavenfire_gutter",
+        name = "Heavenfire Light Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    caster.resolve = 1
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_heavenfire"), inventory.LOCATIONS.HANDS)
+    local holyCap = inventory.createItem({ name = "Pilgrim Hat", size = 1 })
+    caster.inventory:addItem(holyCap, inventory.LOCATIONS.HANDS)
+
+    local heavenfire = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "heavenfire",
+        target = holyCap,
+    })
+    assertTrue(heavenfire.success, "Heavenfire should light carried objects")
+    assertTrue(holyCap.properties.heavenfire and holyCap.properties.isLit,
+        "Heavenfire-lit objects should provide bright light before guttering")
+
+    local extinguished = nil
+    bus:on(events.EVENTS.LIGHT_EXTINGUISHED, function(data)
+        if data.item == holyCap then
+            extinguished = data
+        end
+    end)
+    local lights = light_system.createLightSystem({
+        eventBus = bus,
+        guild = { caster },
+    })
+    lights:init()
+    assertEqual(lights:getLightLevelForEntity(caster), light_system.LIGHT_LEVELS.BRIGHT,
+        "Heavenfire-lit objects should count as light sources")
+
+    bus:emit(events.EVENTS.TORCHES_GUTTER, { value = 1 })
+    assertTrue(extinguished and extinguished.reason == "torches_gutter",
+        "Heavenfire-lit objects should extinguish on torches gutter")
+    assertTrue(not holyCap.properties.isLit and holyCap.properties.extinguished,
+        "torches gutter should put out heavenfire")
+    assertTrue(not holyCap.destroyed, "torches gutter should not destroy heavenfire-lit objects")
+end
+
+local function checkNecromancySpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_necromancy",
+        name = "Death Speaker",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    caster.resolve = 2
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_necromancy"), inventory.LOCATIONS.HANDS)
+
+    local corpse = base_entity.createEntity({
+        id = "corpse_necromancy_target",
+        name = "Dead Witness",
+        isPC = false,
+        health = 0,
+        defense = 0,
+    })
+    corpse.conditions.dead = true
+    corpse.isPerson = true
+
+    local spoken = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "necromancy",
+        target = corpse,
+    })
+    assertTrue(spoken.success, "Necromancy should let the caster speak with a dead person")
+    assertTrue(corpse.necromancy and corpse.necromancy.active, "Necromancy should record active dead speech")
+    assertTrue(corpse.canSpeakWhileDead and corpse.speaksAsIfAlive,
+        "Necromancy should let the dead speak as if alive")
+    assertTrue(corpse.necromancy.noCompulsion and corpse.necromancy.notGuaranteedTruthful,
+        "Necromancy should preserve no-compulsion and no-truth guarantee")
+    assertTrue(corpse.necromancy.canBargainNormally,
+        "Necromancy should allow normal bargaining with the dead")
+    assertTrue(resolver:canSpeakWithDead(caster, corpse),
+        "Necromancy helper should allow the caster to converse with the dead")
+    assertEqual(caster.committedResolve, 1, "Necromancy should commit Resolve while concentrated")
+    assertTrue(caster.activeSpells and caster.activeSpells[1] and caster.activeSpells[1].concentration,
+        "Necromancy should occupy concentration")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "released")
+    assertTrue(corpse.necromancy == nil and not corpse.canSpeakWhileDead,
+        "ending Necromancy should clear dead speech")
+    assertEqual(caster.committedResolve, 0, "ending Necromancy should release committed Resolve")
+
+    local livingCaster = base_entity.createEntity({
+        id = "pc_necromancy_living",
+        name = "Living Death Speaker",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    livingCaster.resolve = 1
+    livingCaster.inventory = inventory.createInventory()
+    livingCaster.inventory:addItem(inventory.createItemFromTemplate("component_necromancy"), inventory.LOCATIONS.HANDS)
+    local living = base_entity.createEntity({
+        id = "npc_necromancy_living",
+        name = "Living Witness",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    living.isPerson = true
+    local livingResult = resolver:resolve({
+        actor = livingCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "necromancy",
+        target = living,
+    })
+    assertTrue(not livingResult.success, "Necromancy should reject living targets before spending Resolve")
+    assertTrue(hasValue(livingResult.effects, "necromancy_target_not_dead"),
+        "Necromancy living-target rejection should report its gate")
+    assertEqual(livingCaster.resolve, 1, "failed Necromancy dead gate should not spend Resolve")
+
+    local animalCaster = base_entity.createEntity({
+        id = "pc_necromancy_animal",
+        name = "Animal Death Speaker",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    animalCaster.resolve = 1
+    animalCaster.inventory = inventory.createInventory()
+    animalCaster.inventory:addItem(inventory.createItemFromTemplate("component_necromancy"), inventory.LOCATIONS.HANDS)
+    local animalCorpse = base_entity.createEntity({
+        id = "corpse_necromancy_animal",
+        name = "Dead Hound",
+        isPC = false,
+        health = 0,
+        defense = 0,
+    })
+    animalCorpse.conditions.dead = true
+    animalCorpse.animal = true
+    local animalResult = resolver:resolve({
+        actor = animalCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "necromancy",
+        target = animalCorpse,
+    })
+    assertTrue(not animalResult.success, "Necromancy should require a dead person, not an animal corpse")
+    assertTrue(hasValue(animalResult.effects, "necromancy_target_not_person"),
+        "Necromancy non-person rejection should report its gate")
+    assertEqual(animalCaster.resolve, 1, "failed Necromancy person gate should not spend Resolve")
+end
+
+local function checkFleshcraftSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local function makeCaster(id)
+        local caster = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            wands = 3,
+            talents = {
+                magic_of_the_wastes = { mastered = true },
+            },
+        })
+        caster.resolve = 2
+        caster.inventory = inventory.createInventory()
+        caster.inventory:addItem(inventory.createItemFromTemplate("component_fleshcraft"), inventory.LOCATIONS.HANDS)
+        return caster
+    end
+
+    local caster = makeCaster("pc_fleshcraft_hand")
+    local hand = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "fleshcraft",
+        bodyPart = "hand",
+    })
+    assertTrue(hand.success, "Fleshcraft should detach a selected body part from the sorcerer")
+    assertTrue(caster.fleshcraft and caster.fleshcraft.active, "Fleshcraft should record active detached-part state")
+    assertEqual(caster.fleshcraft.bodyPart, "hand", "Fleshcraft should store the chosen body part")
+    assertTrue(caster.fleshcraft.crawlsLikeSpider and caster.fleshcraft.canChokeSleepingTarget,
+        "detached hand should record rulebook capabilities")
+    assertTrue(caster.detachedBodyParts.hand == caster.fleshcraft,
+        "detached body part should be addressable by body-part key")
+    assertEqual(caster.committedResolve, 1, "Fleshcraft should commit Resolve while concentrated")
+    assertTrue(caster.activeSpells and caster.activeSpells[1] and caster.activeSpells[1].concentration,
+        "Fleshcraft should occupy concentration")
+
+    local damaged = resolver:damageFleshcraftedPart(caster)
+    assertTrue(damaged.success, "damage to a detached Fleshcraft part should resolve")
+    assertTrue(caster.fleshcraft == nil and caster.detachedBodyPart == nil,
+        "damaging a detached body part should end Fleshcraft")
+    assertTrue(caster.talents.magic_of_the_wastes.wounded,
+        "damage to a detached body part should transfer a piercing Wound to the owner")
+    assertEqual(caster.committedResolve, 0, "ending Fleshcraft after part damage should release committed Resolve")
+
+    local eyeCaster = makeCaster("pc_fleshcraft_eye")
+    local eye = resolver:resolve({
+        actor = eyeCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "fleshcraft",
+        bodyPart = "eye",
+    })
+    assertTrue(eye.success, "Fleshcraft should detach an eye")
+    assertTrue(eyeCaster.fleshcraft.remoteSight and eyeCaster.fleshcraft.ownerCanSeeThroughPart,
+        "detached eye should record remote-sight capabilities")
+    local reattached = resolver:reattachFleshcraftedPart(eyeCaster)
+    assertTrue(reattached.success, "placing a detached part back should reattach it")
+    assertTrue(eyeCaster.fleshcraft == nil and not eyeCaster.conditions.fleshcraft,
+        "reattaching Fleshcraft should clear detached-part state")
+    assertEqual(eyeCaster.committedResolve, 0, "reattaching Fleshcraft should release committed Resolve")
+
+    local missingPartCaster = makeCaster("pc_fleshcraft_missing_part")
+    local missingPart = resolver:resolve({
+        actor = missingPartCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "fleshcraft",
+    })
+    assertTrue(not missingPart.success, "Fleshcraft should require a body-part choice")
+    assertTrue(hasValue(missingPart.effects, "fleshcraft_part_missing"),
+        "missing Fleshcraft body-part choice should report its gate")
+    assertEqual(missingPartCaster.resolve, 2, "failed Fleshcraft body-part gate should not spend Resolve")
+end
+
+local function checkRaiseZombieSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_raise_zombie",
+        name = "Zombie Raiser",
+        isPC = true,
+        wands = 2,
+        cups = 3,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    caster.resolve = 3
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_raise_zombie"), inventory.LOCATIONS.HANDS)
+
+    local corpse = base_entity.createEntity({
+        id = "corpse_raise_zombie",
+        name = "Dead Hireling",
+        isPC = false,
+        health = 0,
+        defense = 0,
+    })
+    corpse.conditions.dead = true
+    corpse.type = "corpse"
+    corpse.zone = "crypt"
+
+    local raised = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "raise_zombie",
+        target = corpse,
+        resolveSpent = 2,
+        ritualWatchSpent = true,
+    })
+    assertTrue(raised.success, "Raise Zombie should create a bound zombie from a dead body")
+    local zombie = raised.raisedZombie
+    assertTrue(zombie and zombie.boundZombie and zombie.undead, "raised body should become a bound undead zombie")
+    assertEqual(zombie.swords, 0, "zombies should have no attributes")
+    assertEqual(zombie.zombieServicesRemaining, 4, "Raise Zombie services should scale by Wands per Resolve")
+    assertTrue(zombie.obeysMostCommands and zombie.obeysSuicidalCommands,
+        "raised zombies should obey most commands, including suicidal commands")
+    assertTrue(corpse.raisedZombie == zombie and corpse.corpseRaisedByRaiseZombie,
+        "source body should be marked raised")
+    assertEqual(caster.committedResolve, 2, "Raise Zombie should commit Resolve until services are complete")
+    assertTrue(caster.activeSpells and caster.activeSpells[1] and not caster.activeSpells[1].concentration,
+        "Raise Zombie should not occupy concentration")
+
+    local guard = resolver:resolve({
+        actor = caster,
+        card = { name = "Cups", value = 10, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        companion = zombie,
+        commandName = "guard",
+        contestedCommand = false,
+    })
+    assertTrue(guard.success, "bound zombie should obey Command actions")
+    assertEqual(zombie.zombieServicesRemaining, 3, "each zombie command should spend one bound service")
+    assertTrue(hasValue(guard.effects, "bound_zombie_service_spent"),
+        "bound zombie service spend should be reported")
+
+    for _ = 1, 3 do
+        local service = resolver:resolve({
+            actor = caster,
+            card = { name = "Cups", value = 10, suit = constants.SUITS.CUPS },
+            type = action_resolver.ACTION_TYPES.COMMAND,
+            companion = zombie,
+            commandName = "carry_the_chest",
+            contestedCommand = false,
+        })
+        assertTrue(service.success, "bound zombie should obey generic service commands")
+    end
+
+    assertEqual(zombie.zombieServicesRemaining, 0, "zombie service counter should reach zero")
+    assertTrue(not zombie.boundZombie and zombie.releasedFromBinding,
+        "zombie should be released when its services are complete")
+    assertTrue(zombie.devilClaimsBody and zombie.mayAttackShuffleOrCrumble,
+        "completed Raise Zombie service should mark the devil's claim on the body")
+    assertEqual(caster.committedResolve, 0, "completed Raise Zombie services should release committed Resolve")
+    assertTrue(not caster.companion and (not caster.companions or #caster.companions == 0),
+        "released zombie should no longer be a command companion")
+
+    local missingWatchCaster = base_entity.createEntity({
+        id = "pc_raise_zombie_missing_watch",
+        name = "Unprepared Raiser",
+        isPC = true,
+        wands = 2,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    missingWatchCaster.resolve = 1
+    missingWatchCaster.inventory = inventory.createInventory()
+    missingWatchCaster.inventory:addItem(inventory.createItemFromTemplate("component_raise_zombie"), inventory.LOCATIONS.HANDS)
+    local missingWatchCorpse = base_entity.createEntity({
+        id = "corpse_raise_zombie_missing_watch",
+        name = "Unruned Body",
+        isPC = false,
+        health = 0,
+        defense = 0,
+    })
+    missingWatchCorpse.conditions.dead = true
+    local missingWatch = resolver:resolve({
+        actor = missingWatchCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "raise_zombie",
+        target = missingWatchCorpse,
+    })
+    assertTrue(not missingWatch.success, "Raise Zombie should require spending a watch on the ritual")
+    assertTrue(hasValue(missingWatch.effects, "raise_zombie_watch_required"),
+        "missing Raise Zombie watch should report its gate")
+    assertEqual(missingWatchCaster.resolve, 1, "failed Raise Zombie watch gate should not spend Resolve")
+
+    local livingCaster = base_entity.createEntity({
+        id = "pc_raise_zombie_living",
+        name = "Living Raiser",
+        isPC = true,
+        wands = 2,
+        talents = {
+            magic_of_the_wastes = { mastered = true },
+        },
+    })
+    livingCaster.resolve = 1
+    livingCaster.inventory = inventory.createInventory()
+    livingCaster.inventory:addItem(inventory.createItemFromTemplate("component_raise_zombie"), inventory.LOCATIONS.HANDS)
+    local living = base_entity.createEntity({
+        id = "npc_raise_zombie_living",
+        name = "Living Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local livingRaise = resolver:resolve({
+        actor = livingCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "raise_zombie",
+        target = living,
+        ritualWatchSpent = true,
+    })
+    assertTrue(not livingRaise.success, "Raise Zombie should reject living bodies")
+    assertTrue(hasValue(livingRaise.effects, "raise_zombie_target_not_dead"),
+        "living Raise Zombie rejection should report its gate")
+    assertEqual(livingCaster.resolve, 1, "failed Raise Zombie dead-body gate should not spend Resolve")
+end
+
+local function checkMaledictionSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local function makeCaster(id, resolve)
+        local caster = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            wands = 3,
+            talents = {
+                magic_of_the_wastes = { mastered = true },
+            },
+        })
+        caster.resolve = resolve or 3
+        caster.inventory = inventory.createInventory()
+        caster.inventory:addItem(inventory.createItemFromTemplate("component_malediction"), inventory.LOCATIONS.HANDS)
+        return caster
+    end
+
+    local caster = makeCaster("pc_malediction")
+    local target = base_entity.createEntity({
+        id = "npc_malediction_target",
+        name = "Cursed Rival",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+
+    local oldCrone = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "malediction",
+        target = target,
+        unwilling = false,
+        curseCard = { name = "Knight of Wands", value = 12, suit = constants.SUITS.WANDS },
+    })
+    assertTrue(oldCrone.success, "Malediction should curse a creature from the random curse table")
+    assertTrue(target.malediction and target.malediction.active, "Malediction should record active curse state")
+    assertEqual(target.malediction.curseId, "old_crone", "Knight should apply the old crone curse")
+    assertTrue(target.conditions.maledicted, "Malediction should mark the target cursed")
+    assertEqual(target.sightRangeFeet, 30, "old crone curse should limit sight range")
+    assertTrue(target.cannotDash, "old crone curse should block Dash")
+    assertEqual(caster.committedResolve, 1, "Malediction should commit Resolve while active")
+    assertTrue(caster.activeSpells and caster.activeSpells[1] and not caster.activeSpells[1].concentration,
+        "Malediction should not occupy concentration")
+
+    local dash = resolver:resolve({
+        actor = target,
+        card = { name = "Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DASH,
+    })
+    assertTrue(not dash.success, "old crone curse should prevent Dash actions")
+    assertTrue(hasValue(dash.effects, "dash_blocked"), "Dash block should report a curse-compatible gate")
+
+    local dismissed = resolver:dismissMalediction(caster, target)
+    assertTrue(dismissed.success, "caster should be able to dismiss Malediction")
+    assertTrue(target.malediction == nil and not target.conditions.maledicted,
+        "dismissing Malediction should clear curse state")
+    assertTrue(not target.cannotDash and target.sightRangeFeet == nil,
+        "dismissing Malediction should restore curse flags")
+    assertEqual(caster.committedResolve, 0, "dismissing Malediction should release committed Resolve")
+
+    local doomedCaster = makeCaster("pc_malediction_doomed")
+    local doomed = base_entity.createEntity({
+        id = "pc_malediction_doomed_target",
+        name = "Doomed Adventurer",
+        isPC = true,
+        health = 2,
+        defense = 0,
+    })
+    local doom = resolver:resolve({
+        actor = doomedCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "malediction",
+        target = doomed,
+        unwilling = false,
+        curseCard = { name = "Four of Cups", value = 4, suit = constants.SUITS.CUPS },
+    })
+    assertTrue(doom.success, "Malediction should apply the doomed curse")
+    assertTrue(doomed.conditions.exhausted, "doomed curse should mark Exhausted")
+    assertEqual(doomed.nonRecoverableConditions.exhausted, "malediction",
+        "doomed Exhausted condition should be non-Recoverable")
+
+    local recover = resolver:resolve({
+        actor = doomed,
+        card = { name = "Wands", value = 10, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+    })
+    assertTrue(not recover.success, "Recover should not clear a Malediction curse")
+    assertTrue(hasValue(recover.effects, "malediction_recover_blocked"),
+        "Recover should report Malediction as the blocker")
+
+    resolver:dismissMalediction(doomedCaster, doomed)
+    assertTrue(not doomed.conditions.exhausted and not doomed.nonRecoverableConditions.exhausted,
+        "dismissing doomed Malediction should clear its Exhausted rider")
+
+    local infirmCaster = makeCaster("pc_malediction_infirm")
+    local infirm = base_entity.createEntity({
+        id = "pc_malediction_infirm_target",
+        name = "Infirm Adventurer",
+        isPC = true,
+        cups = 3,
+        health = 2,
+        defense = 0,
+    })
+    local infirmResult = resolver:resolve({
+        actor = infirmCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "malediction",
+        target = infirm,
+        unwilling = false,
+        curseCard = { name = "Page of Swords", value = 11, suit = constants.SUITS.SWORDS },
+    })
+    assertTrue(infirmResult.success, "Malediction should apply the Page curse")
+    assertTrue(infirm.immuneToHealEffect and infirm.maledictionExtraBondRecoveryCost,
+        "Page curse should mark Heal immunity and increased Bond recovery cost")
+    infirm.conditions.injured = true
+    local heal = resolver:resolve({
+        actor = infirm,
+        target = infirm,
+        card = { name = "Queen of Cups", value = 13, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.HEAL,
+    })
+    assertTrue(not heal.success, "Page curse should block the Heal effect")
+    assertTrue(hasValue(heal.effects, "heal_immune"), "Heal immunity should be reported")
+
+    local rustCaster = makeCaster("pc_malediction_rust")
+    local rusted = base_entity.createEntity({
+        id = "pc_malediction_rust_target",
+        name = "Rusting Adventurer",
+        isPC = true,
+        swords = 3,
+        health = 2,
+        defense = 0,
+    })
+    local rust = resolver:resolve({
+        actor = rustCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "malediction",
+        target = rusted,
+        unwilling = false,
+        curseCard = { name = "Seven of Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+    })
+    assertTrue(rust.success, "Malediction should apply the rusting weapons curse")
+    local sword = inventory.createItemFromTemplate("longsword")
+    local foe = base_entity.createEntity({
+        id = "npc_malediction_rust_foe",
+        name = "Rust Test Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local attack = resolver:resolve({
+        actor = rusted,
+        target = foe,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        weapon = sword,
+        targetInitiative = 6,
+    })
+    assertTrue(attack.success, "rusting weapon check should still allow the attack to resolve")
+    assertEqual(sword.notches, 1, "rusting weapons curse should Notch attacks made with cards of 10+")
+    assertTrue(hasValue(attack.effects, "malediction_weapon_notched"),
+        "rusting weapon Notch should be reported")
+
+    local shameCaster = makeCaster("pc_malediction_shame")
+    local shamed = base_entity.createEntity({
+        id = "pc_malediction_shame_target",
+        name = "Bell-Shamed Adventurer",
+        isPC = true,
+        pentacles = 3,
+        health = 2,
+        defense = 0,
+    })
+    shamed.resolve = 1
+    local shame = resolver:resolve({
+        actor = shameCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "malediction",
+        target = shamed,
+        unwilling = false,
+        curseCard = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+    })
+    assertTrue(shame.success, "Malediction should apply the Shame Bell curse")
+    assertTrue(shamed.stealthImpossible and shamed.shameBellFootsteps,
+        "Shame Bell curse should mark stealth as impossible")
+    local stealth = resolver:resolve({
+        actor = shamed,
+        card = { name = "Three of Pentacles", value = 3, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        context = "stealth",
+        spendResolveForFavor = true,
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(not stealth.success, "Shame Bell should block stealth Test Fate attempts")
+    assertTrue(not stealth.pendingTestOfFate, "blocked stealth should not open the Test Fate modal")
+    assertTrue(hasValue(stealth.effects, "shame_bell_stealth_blocked"),
+        "Shame Bell stealth block should be reported")
+    assertEqual(shamed.resolve, 1, "blocked stealth should not spend Resolve for favor")
+
+    local missingCaster = makeCaster("pc_malediction_missing_draw", 1)
+    local missingTarget = base_entity.createEntity({
+        id = "npc_malediction_missing_draw",
+        name = "No Draw Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local missing = resolver:resolve({
+        actor = missingCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "malediction",
+        target = missingTarget,
+        unwilling = false,
+    })
+    assertTrue(not missing.success, "Malediction should require a separate curse-table draw")
+    assertTrue(hasValue(missing.effects, "malediction_draw_missing"),
+        "missing Malediction draw should report its gate")
+    assertEqual(missingCaster.resolve, 1, "failed Malediction draw gate should not spend Resolve")
+end
+
+local function checkGiveFormToNothingnessSpell()
+    local drumTemplate = item_templates.getTemplate("component_give_form_to_nothingness")
+    assertEqual(drumTemplate.size, 1, "Give Form drum component should be standard size")
+    assertTrue(drumTemplate.properties.requiresTwoHandsToPlayDuringChallenges,
+        "Give Form drum should require two hands to play during Challenges")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_give_form",
+        name = "Form Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 3
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_give_form_to_nothingness"),
+        inventory.LOCATIONS.HANDS)
+
+    local unseenSpirit = base_entity.createEntity({
+        id = "npc_unseen_spirit",
+        name = "Unseen Spirit",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    unseenSpirit.invisible = true
+    unseenSpirit.intangible = true
+    unseenSpirit.conditions.invisible = true
+    unseenSpirit.conditions.intangible = true
+
+    local ghostDoor = {
+        id = "ghost_door",
+        name = "Ghost Door",
+        properties = {
+            invisible = true,
+            intangible = true,
+        },
+    }
+    local dreamKey = {
+        id = "dream_key",
+        name = "Dream Key",
+        ethereal = true,
+        properties = {
+            ethereal = true,
+        },
+    }
+    local mundaneStatue = {
+        id = "mundane_statue",
+        name = "Mundane Statue",
+        visible = true,
+        tangible = true,
+    }
+
+    local cast = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "give_form_to_nothingness",
+        resolveSpent = 2,
+        rooms = {
+            {
+                id = "crypt",
+                entities = { unseenSpirit },
+                objects = { ghostDoor, mundaneStatue },
+            },
+            {
+                id = "observatory",
+                items = { dreamKey },
+            },
+        },
+    })
+
+    assertTrue(cast.success, "Give Form to Nothingness should affect rooms without an Initiative contest")
+    assertEqual(#cast.giveForm.affectedSubjects, 3, "Give Form should affect invisible or intangible subjects only")
+    assertEqual(#cast.giveForm.roomIds, 2, "extra Resolve should allow one extra room")
+    assertTrue(cast.giveForm.requiresContinuousDrum, "Give Form should track continuous drum performance")
+    assertEqual(caster.resolve, 1, "Give Form should spend declared Resolve")
+    assertEqual(caster.committedResolve, 2, "Give Form should commit Resolve while the drum is played")
+    assertTrue(not caster.activeSpells[1].concentration, "Give Form should be ongoing without concentration")
+
+    assertTrue(unseenSpirit.visible and unseenSpirit.tangible, "Give Form should make spirits visible and tangible")
+    assertTrue(not unseenSpirit.invisible and not unseenSpirit.intangible,
+        "Give Form should suppress invisible and intangible flags")
+    assertTrue(ghostDoor.properties.visible and ghostDoor.properties.tangible,
+        "Give Form should update object properties")
+    assertTrue(dreamKey.visible and dreamKey.tangible and not dreamKey.ethereal,
+        "Give Form should force ethereal items into visible tangible form")
+    assertTrue(mundaneStatue.visible and mundaneStatue.tangible,
+        "Give Form should leave already mundane subjects alone")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "stopped_playing_drum")
+    assertEqual(caster.committedResolve, 0, "ending Give Form should release committed Resolve")
+    assertTrue(unseenSpirit.invisible and unseenSpirit.intangible,
+        "ending Give Form should restore previous invisible and intangible state")
+    assertEqual(unseenSpirit.visible, nil, "ending Give Form should clear visibility it introduced")
+    assertTrue(ghostDoor.properties.invisible and ghostDoor.properties.intangible,
+        "ending Give Form should restore object properties")
+    assertTrue(dreamKey.ethereal and dreamKey.properties.ethereal,
+        "ending Give Form should restore ethereal item state")
+
+    local underpaidCaster = base_entity.createEntity({
+        id = "pc_give_form_underpaid",
+        name = "Underpaid Form Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    underpaidCaster.resolve = 1
+    underpaidCaster.inventory = inventory.createInventory()
+    underpaidCaster.inventory:addItem(inventory.createItemFromTemplate("component_give_form_to_nothingness"),
+        inventory.LOCATIONS.HANDS)
+    local underpaid = resolver:resolve({
+        actor = underpaidCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "give_form_to_nothingness",
+        rooms = { { id = "room_one" }, { id = "room_two" } },
+    })
+    assertTrue(not underpaid.success, "Give Form should require extra Resolve for extra rooms")
+    assertTrue(hasValue(underpaid.effects, "give_form_too_many_rooms"),
+        "Give Form room overreach should report its gate")
+    assertEqual(underpaidCaster.resolve, 1, "failed Give Form room gate should not spend Resolve")
+
+    local silentCaster = base_entity.createEntity({
+        id = "pc_give_form_silent_drum",
+        name = "Silent Form Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    silentCaster.resolve = 1
+    silentCaster.inventory = inventory.createInventory()
+    silentCaster.inventory:addItem(inventory.createItemFromTemplate("component_give_form_to_nothingness"),
+        inventory.LOCATIONS.HANDS)
+    local silentDrum = resolver:resolve({
+        actor = silentCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "give_form_to_nothingness",
+        rooms = { { id = "silent_room" } },
+        playingDrum = false,
+    })
+    assertTrue(not silentDrum.success, "Give Form should require the drum to be played")
+    assertTrue(hasValue(silentDrum.effects, "give_form_drum_not_played"),
+        "Give Form silent drum gate should be reported")
+    assertEqual(silentCaster.resolve, 1, "failed Give Form drum gate should not spend Resolve")
+
+    local busyCaster = base_entity.createEntity({
+        id = "pc_give_form_busy_hands",
+        name = "Busy Form Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    busyCaster.resolve = 1
+    busyCaster.inventory = inventory.createInventory()
+    busyCaster.inventory:addItem(inventory.createItemFromTemplate("component_give_form_to_nothingness"),
+        inventory.LOCATIONS.HANDS)
+    busyCaster.inventory:addItem(inventory.createItemFromTemplate("dagger"), inventory.LOCATIONS.HANDS)
+    local busyHands = resolver:resolve({
+        actor = busyCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "give_form_to_nothingness",
+        challengeController = {},
+        rooms = { { id = "challenge_room" } },
+    })
+    assertTrue(not busyHands.success, "Give Form drum should require both hands during Challenges")
+    assertTrue(hasValue(busyHands.effects, "give_form_drum_requires_two_hands"),
+        "Give Form two-handed drum gate should be reported")
+    assertEqual(busyCaster.resolve, 1, "failed Give Form hand gate should not spend Resolve")
+end
+
+local function checkPortableHoleSpell()
+    local calfskin = item_templates.getTemplate("component_portable_hole")
+    assertEqual(calfskin.properties.diameterInches, 9, "Portable Hole component should be a nine-inch calfskin circle")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_portable_hole",
+        name = "Hole Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 2
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_portable_hole"), inventory.LOCATIONS.HANDS)
+
+    local stoneDoor = {
+        id = "stone_door",
+        name = "Stone Door",
+        properties = {
+            material = "stone",
+            door = true,
+            loadBearing = true,
+        },
+    }
+    local cast = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "portable_hole",
+        target = stoneDoor,
+        otherSide = "hidden_stair",
+    })
+
+    assertTrue(cast.success, "Portable Hole should open through inanimate material")
+    assertTrue(cast.portableHole.active and cast.portableHole.hasOtherSide,
+        "Portable Hole should create an active passage to the immediate other side")
+    assertTrue(stoneDoor.portableHoleOpen and stoneDoor.properties.passageOpen,
+        "Portable Hole should mark the surface as passable")
+    assertTrue(not stoneDoor.structureDamaged and stoneDoor.structuralIntegrityPreserved,
+        "Portable Hole should not damage structural integrity")
+    assertTrue(resolver:portableHoleAllowsPassage(stoneDoor), "Portable Hole helper should report passage")
+    assertEqual(caster.committedResolve, 1, "Portable Hole should commit Resolve while concentrated")
+    assertTrue(caster.activeSpells[1].concentration, "Portable Hole should be maintained by concentration")
+
+    local thrownRope = inventory.createItem({ name = "Thrown Rope" })
+    local passage = resolver:placeInPortableHole(stoneDoor, thrownRope)
+    assertTrue(passage.success and passage.passedThrough, "items should pass through a Portable Hole with another side")
+    assertTrue(thrownRope.passedThroughPortableHole, "passed-through items should be marked for downstream handling")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "concentration_released")
+    assertEqual(caster.committedResolve, 0, "ending Portable Hole should release committed Resolve")
+    assertEqual(stoneDoor.portableHole, nil, "ending Portable Hole should close the surface opening")
+    assertEqual(stoneDoor.portableHoleOpen, nil, "ending Portable Hole should restore introduced target flags")
+    assertEqual(stoneDoor.properties.passageOpen, nil, "ending Portable Hole should restore introduced property flags")
+
+    local livingCaster = base_entity.createEntity({
+        id = "pc_portable_hole_living_caster",
+        name = "Living Tissue Hole Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    livingCaster.resolve = 1
+    livingCaster.inventory = inventory.createInventory()
+    livingCaster.inventory:addItem(inventory.createItemFromTemplate("component_portable_hole"), inventory.LOCATIONS.HANDS)
+    local livingTarget = base_entity.createEntity({
+        id = "pc_portable_hole_living_target",
+        name = "Living Target",
+        isPC = true,
+    })
+    local living = resolver:resolve({
+        actor = livingCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "portable_hole",
+        target = livingTarget,
+        unwilling = false,
+    })
+    assertTrue(not living.success, "Portable Hole should not function on living tissue")
+    assertTrue(hasValue(living.effects, "portable_hole_living_tissue"),
+        "Portable Hole living-tissue gate should be reported")
+    assertEqual(livingCaster.resolve, 1, "failed Portable Hole living-tissue gate should not spend Resolve")
+
+    local pocketCaster = base_entity.createEntity({
+        id = "pc_portable_hole_pocket",
+        name = "Pocket Hole Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    pocketCaster.resolve = 1
+    pocketCaster.inventory = inventory.createInventory()
+    pocketCaster.inventory:addItem(inventory.createItemFromTemplate("component_portable_hole"), inventory.LOCATIONS.HANDS)
+    local stoneBlock = {
+        id = "stone_block",
+        name = "Solid Stone Block",
+        noOtherSide = true,
+        properties = {
+            material = "stone",
+        },
+    }
+    local pocket = resolver:resolve({
+        actor = pocketCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "portable_hole",
+        target = stoneBlock,
+    })
+    assertTrue(pocket.success, "Portable Hole should open a blind pocket when there is no other side")
+    assertEqual(pocket.portableHole.pocketDepthFeet, 1, "blind Portable Hole pockets should be about one foot deep")
+    assertTrue(not resolver:portableHoleAllowsPassage(stoneBlock),
+        "blind Portable Hole pockets should not report through-passage")
+
+    local hiddenGem = inventory.createItem({ name = "Hidden Gem" })
+    local stored = resolver:placeInPortableHole(stoneBlock, hiddenGem)
+    assertTrue(stored.success and stored.storedInPocket, "items should fit into blind Portable Hole pockets")
+    resolver:endOngoingSpell(pocketCaster, pocketCaster.activeSpells[1], "concentration_released")
+    assertTrue(hiddenGem.swallowedByMaterial and hiddenGem.swallowedButUndamaged,
+        "blind pocket contents should be swallowed but not damaged when the spell ends")
+    assertTrue(not hiddenGem.destroyed, "blind pocket contents should not be destroyed")
+    assertEqual(stoneBlock.portableHole, nil, "ending a blind Portable Hole should close the surface opening")
+end
+
+local function checkIllusionSpell()
+    local prism = item_templates.getTemplate("component_illusion")
+    assertEqual(prism.properties.facets, 7, "Illusion component should be a seven-faceted prism")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_illusion",
+        name = "Illusion Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 3
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_illusion"), inventory.LOCATIONS.HANDS)
+
+    local cast = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "illusion",
+        illusionKind = "creature",
+        image = "Knight drawing a blade",
+        zoneId = "hall",
+        details = { "rusted helm" },
+    })
+
+    assertTrue(cast.success, "Illusion should create a visual image")
+    assertTrue(cast.visualIllusion.visualOnly and cast.visualIllusion.hologram,
+        "Illusion should be a visual-only hologram")
+    assertTrue(cast.visualIllusion.additiveOnly and cast.visualIllusion.cannotMakeExistingThingsUnseen,
+        "Illusion should preserve the additive-only rule")
+    assertTrue(not cast.visualIllusion.hasWeight and not cast.visualIllusion.hasSubstance,
+        "Illusion should have no weight or substance")
+    assertTrue(not cast.visualIllusion.hasSound and not cast.visualIllusion.hasSmell,
+        "Illusion should create no sound or smell")
+    assertEqual(cast.visualIllusion.kind, "creature", "Illusion should record creature images")
+    assertEqual(cast.visualIllusion.details[1], "rusted helm", "Illusion should keep initial visual details")
+    assertEqual(caster.resolve, 2, "Illusion should spend base Resolve")
+    assertEqual(caster.committedResolve, 1, "Illusion should commit Resolve while concentrated")
+    assertTrue(caster.activeSpells[1].concentration, "Illusion should be maintained by concentration")
+
+    local detail = resolver:addVisualIllusionDetail(caster, cast.visualIllusion, "scroll pulled from pack")
+    assertTrue(detail.success, "Illusion should allow paid details while maintained")
+    assertEqual(caster.resolve, 1, "Illusion detail should cost one Resolve")
+    assertEqual(cast.visualIllusion.detailResolveSpent, 1, "Illusion should track paid detail Resolve")
+    assertEqual(cast.visualIllusion.details[2], "scroll pulled from pack", "Illusion should append paid details")
+
+    local command = resolver:commandVisualIllusion(caster, cast.visualIllusion, "raise shield", {
+        challengeController = {},
+    })
+    assertTrue(command.success, "Illusion should obey mental commands")
+    assertTrue(command.command.requiresMiscAction, "Illusion command during Challenges should require a misc action")
+    assertTrue(hasValue(command.effects, "illusion_command_misc_action"),
+        "Illusion command should report the Challenge misc-action requirement")
+
+    local noResolve = resolver:addVisualIllusionDetail(caster, cast.visualIllusion, "jeweled crown", { resolveCost = 2 })
+    assertTrue(not noResolve.success, "Illusion details should require available Resolve")
+    assertTrue(hasValue(noResolve.effects, "resolve_missing"), "failed Illusion detail should report missing Resolve")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "concentration_released")
+    assertEqual(caster.committedResolve, 0, "ending Illusion should release committed Resolve")
+    assertTrue(not cast.visualIllusion.active and cast.visualIllusion.ended, "ending Illusion should deactivate the image")
+    assertEqual(#caster.activeVisualIllusions, 0, "ending Illusion should remove it from caster tracking")
+
+    local subtractCaster = base_entity.createEntity({
+        id = "pc_illusion_subtractive",
+        name = "Subtractive Illusion Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    subtractCaster.resolve = 1
+    subtractCaster.inventory = inventory.createInventory()
+    subtractCaster.inventory:addItem(inventory.createItemFromTemplate("component_illusion"), inventory.LOCATIONS.HANDS)
+    local subtractive = resolver:resolve({
+        actor = subtractCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "illusion",
+        image = "make the door vanish",
+        makeUnseen = true,
+    })
+    assertTrue(not subtractive.success, "Illusion should reject subtractive invisibility-style uses")
+    assertTrue(hasValue(subtractive.effects, "illusion_subtractive_forbidden"),
+        "subtractive Illusion gate should be reported")
+    assertEqual(subtractCaster.resolve, 1, "failed Illusion additive gate should not spend Resolve")
+end
+
+local function checkMirrorMeldSpell()
+    local tears = item_templates.getTemplate("component_mirror_meld")
+    assertTrue(tears.properties.tears, "Mirror Meld component should be dreaming children's tears")
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local function createCaster(id, resolve)
+        local caster = base_entity.createEntity({
+            id = id,
+            name = "Mirror Meld Mage",
+            isPC = true,
+            wands = 3,
+            talents = {
+                magic_of_the_weird = { mastered = true },
+            },
+        })
+        caster.resolve = resolve or 3
+        caster.inventory = inventory.createInventory()
+        caster.inventory:addItem(inventory.createItemFromTemplate("component_mirror_meld"), inventory.LOCATIONS.HANDS)
+        return caster
+    end
+
+    local caster = createCaster("pc_mirror_meld", 3)
+    local standingMirror = {
+        id = "standing_mirror",
+        name = "Standing Mirror",
+        properties = {
+            mirror = true,
+            capacitySize = "medium",
+        },
+    }
+
+    local cast = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "mirror_meld",
+        target = standingMirror,
+    })
+    assertTrue(cast.success, "Mirror Meld should open a portal on a mirror")
+    assertTrue(cast.mirrorMeld.active and standingMirror.mirrorPortalOpen,
+        "Mirror Meld should mark the mirror portal open")
+    assertEqual(cast.mirrorMeld.capacityRank, 3, "medium mirrors should admit human-sized creatures")
+    assertTrue(not caster.activeSpells[1].concentration, "Mirror Meld should not require concentration")
+    assertEqual(caster.resolve, 2, "Mirror Meld should spend base Resolve")
+    assertEqual(caster.committedResolve, 1, "Mirror Meld should commit Resolve while the portal persists")
+
+    local reflected = base_entity.createEntity({
+        id = "pc_mirror_reflection",
+        name = "Reflected Adventurer",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 0,
+        talents = {},
+    })
+
+    local entered = resolver:enterMirrorMeld(standingMirror, reflected)
+    assertTrue(entered.success, "creatures should be able to enter an active Mirror Meld portal")
+    assertTrue(reflected.visibleOnlyInMirror and reflected.conditions.mirrorMeldReflection,
+        "entered creatures should become visible only within the mirror")
+    assertTrue(reflected.canSeeHearNearMirror, "reflections should see and hear near the mirror")
+    assertTrue(reflected.canInteractWithWorld == false, "reflections should not interact with the world")
+
+    local mirroredItem = inventory.createItem({ id = "silver_key", name = "Silver Key", size = 1 })
+    local stored = resolver:enterMirrorMeld(standingMirror, mirroredItem, { carried = true })
+    assertTrue(stored.success, "items should be able to enter the mirror")
+    assertTrue(mirroredItem.visibleInMirror and mirroredItem.intangibleFromOutside,
+        "items left in the mirror should be visible but intangible outside")
+    assertTrue(mirroredItem.magicalWeight and mirroredItem.stillCountsAgainstPackSlots,
+        "carried mirrored items should keep their magical pack weight")
+
+    local exited = resolver:exitMirrorMeld(standingMirror, reflected)
+    assertTrue(exited.success, "creatures should be able to step back out through the portal")
+    assertTrue(not reflected.conditions.mirrorMeldReflection, "exiting should clear reflection state")
+    assertTrue(not standingMirror.mirrorMeld, "the portal should end when its last creature leaves")
+    assertEqual(caster.committedResolve, 0, "ending Mirror Meld should release committed Resolve")
+    assertTrue(not mirroredItem.inMirrorMeld and not mirroredItem.destroyed,
+        "items should return intact when the spell ends without a broken mirror")
+
+    local breakCaster = createCaster("pc_mirror_meld_break", 3)
+    local brittleMirror = {
+        id = "brittle_mirror",
+        name = "Brittle Mirror",
+        properties = {
+            mirror = true,
+            capacitySize = "medium",
+        },
+    }
+    local breakCast = resolver:resolve({
+        actor = breakCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "mirror_meld",
+        target = brittleMirror,
+    })
+    assertTrue(breakCast.success, "second Mirror Meld should cast for broken-mirror consequences")
+
+    local trapped = base_entity.createEntity({
+        id = "pc_mirror_trapped",
+        name = "Trapped Reflection",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 0,
+        talents = {},
+    })
+    local lostRelic = inventory.createItem({ id = "lost_relic", name = "Lost Relic", size = 1 })
+    assertTrue(resolver:enterMirrorMeld(brittleMirror, trapped).success,
+        "second creature should enter before mirror break")
+    assertTrue(resolver:enterMirrorMeld(brittleMirror, lostRelic, { carried = true }).success,
+        "second item should enter before mirror break")
+
+    local broken = resolver:breakMirrorMeld(brittleMirror)
+    assertTrue(broken.success, "breaking the mirror should end Mirror Meld")
+    assertTrue(trapped.shuntedByBrokenMirror and trapped.returnedFromMirrorMeld,
+        "broken mirrors should shunt reflected creatures back to reality")
+    assertEqual(trapped.mirrorBreakWounds, 2, "broken mirrors should deal two Wounds to reflected creatures")
+    assertTrue(trapped.conditions.staggered and trapped.conditions.injured,
+        "the two broken-mirror Wounds should apply to the wound track")
+    assertTrue(lostRelic.destroyed and lostRelic.destroyedByMirrorBreak,
+        "items in a broken mirror should be Destroyed when they return")
+    assertTrue(brittleMirror.broken and brittleMirror.properties.mirrorBroken,
+        "broken mirror state should remain on the target")
+    assertEqual(breakCaster.committedResolve, 0, "broken mirrors should release committed Resolve")
+
+    local smallCaster = createCaster("pc_mirror_meld_small", 2)
+    local handMirror = {
+        id = "hand_mirror",
+        name = "Small Hand Mirror",
+        properties = {
+            mirror = true,
+            capacitySize = "small",
+        },
+    }
+    local smallCast = resolver:resolve({
+        actor = smallCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "mirror_meld",
+        target = handMirror,
+    })
+    assertTrue(smallCast.success, "small mirrors can still become Mirror Meld portals")
+    local oversized = base_entity.createEntity({
+        id = "npc_oversized_reflection",
+        name = "Oversized Reflection",
+        isPC = false,
+        health = 4,
+        sizeCategory = "large",
+    })
+    local tooLarge = resolver:enterMirrorMeld(handMirror, oversized)
+    assertTrue(not tooLarge.success, "creatures too large for the mirror should not enter")
+    assertTrue(hasValue(tooLarge.effects, "mirror_meld_mirror_too_small"),
+        "too-small mirror gate should be reported")
+
+    local badCaster = createCaster("pc_mirror_meld_bad", 1)
+    local paintedDoor = {
+        id = "painted_door",
+        name = "Painted Door",
+        properties = {
+            door = true,
+        },
+    }
+    local invalid = resolver:resolve({
+        actor = badCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "mirror_meld",
+        target = paintedDoor,
+    })
+    assertTrue(not invalid.success, "Mirror Meld should reject non-mirror objects")
+    assertTrue(hasValue(invalid.effects, "mirror_meld_target_not_mirror"),
+        "non-mirror target gate should be reported")
+    assertEqual(badCaster.resolve, 1, "failed Mirror Meld target gate should not spend Resolve")
+end
+
+local function checkSleepSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_sleep",
+        name = "Sleep Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 5
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_sleep"), inventory.LOCATIONS.HANDS)
+
+    local sleeper = base_entity.createEntity({
+        id = "npc_sleep_quiet",
+        name = "Quiet Sleeper",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local quietSleep = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "sleep",
+        target = sleeper,
+        targetInitiative = 3,
+        resolveSpent = 4,
+        dangerous = false,
+    })
+    assertTrue(quietSleep.success, "Sleep should cast outside danger")
+    assertTrue(sleeper.conditions.knocked_out and sleeper.conditions.sleeping,
+        "non-dangerous Sleep should apply Knockout and sleeping")
+    assertTrue(sleeper.sleep.canAwakenWithSharpSlap, "non-dangerous Sleep should allow waking by sharp slap")
+    assertTrue(sleeper.sleep.noAging and sleeper.sleep.noFoodRequired,
+        "4-Resolve Sleep should suspend aging and food while asleep")
+    assertEqual(caster.resolve, 1, "Sleep should spend declared Resolve")
+
+    local dangerCaster = base_entity.createEntity({
+        id = "pc_sleep_danger",
+        name = "Danger Sleep Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    dangerCaster.resolve = 2
+    dangerCaster.inventory = inventory.createInventory()
+    dangerCaster.inventory:addItem(inventory.createItemFromTemplate("component_sleep"), inventory.LOCATIONS.HANDS)
+    local dangerTarget = base_entity.createEntity({
+        id = "npc_sleep_danger",
+        name = "Danger Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local dangerSleep = resolver:resolve({
+        actor = dangerCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "sleep",
+        target = dangerTarget,
+        targetInitiative = 3,
+        dangerous = true,
+    })
+    assertTrue(dangerSleep.success, "Sleep should cast in danger")
+    assertTrue(dangerTarget.conditions.stunned and dangerTarget.conditions.drowsy,
+        "dangerous Sleep should make the target drowsy and Stunned")
+    assertTrue(not dangerTarget.conditions.knocked_out, "dangerous Sleep should not Knockout the target")
+    assertTrue(not dangerTarget.sleep.noFoodRequired, "dangerous Sleep should not apply long-sleep suspended needs")
+
+    local noResolveCaster = base_entity.createEntity({
+        id = "pc_sleep_no_resolve",
+        name = "No Resolve Sleep Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    noResolveCaster.resolve = 3
+    noResolveCaster.inventory = inventory.createInventory()
+    noResolveCaster.inventory:addItem(inventory.createItemFromTemplate("component_sleep"), inventory.LOCATIONS.HANDS)
+    local noResolveSleep = resolver:resolve({
+        actor = noResolveCaster,
+        card = { name = "Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "sleep",
+        target = base_entity.createEntity({ id = "npc_sleep_no_resolve", isPC = false, health = 2, defense = 0 }),
+        targetInitiative = 3,
+        resolveSpent = 4,
+    })
+    assertTrue(not noResolveSleep.success, "Sleep should fail if 4 Resolve is declared but unavailable")
+    assertEqual(noResolveCaster.resolve, 3, "failed Sleep Resolve gate should not spend Resolve")
+end
+
+local function checkShroudSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_shroud_caster",
+        name = "Shroud Mage",
+        isPC = true,
+        wands = 4,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 3
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_shroud"), inventory.LOCATIONS.HANDS)
+
+    local shrouded = base_entity.createEntity({
+        id = "pc_shrouded",
+        name = "Hidden Ally",
+        isPC = true,
+        health = 2,
+        defense = 2,
+        swords = 0,
+    })
+    shrouded.inventory = inventory.createInventory()
+    local shroudBow = inventory.createItemFromTemplate("bow")
+    shrouded.inventory:addItem(shroudBow, inventory.LOCATIONS.HANDS)
+    shrouded.ammo = 1
+
+    local cast = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "shroud",
+        target = shrouded,
+        unwilling = false,
+    })
+    assertTrue(cast.success, "Shroud should cast on a willing creature")
+    assertTrue(shrouded.conditions.shrouded and shrouded.conditions.invisible,
+        "Shroud should mark the target invisible and Shrouded")
+    assertEqual(caster.resolve, 2, "Shroud should spend 1 Resolve")
+    assertEqual(caster.committedResolve, 1, "Shroud should commit Resolve while concentrated")
+
+    local attacker = base_entity.createEntity({
+        id = "npc_shroud_attacker",
+        name = "Confused Attacker",
+        isPC = false,
+        swords = 0,
+        health = 2,
+        defense = 0,
+    })
+    local unseenAttack = resolver:resolve({
+        actor = attacker,
+        target = shrouded,
+        card = { name = "Swords", value = 13, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(not unseenAttack.success, "still and quiet Shrouded targets should not be deliberately targetable")
+    assertTrue(hasValue(unseenAttack.effects, "shrouded_target_unseen"),
+        "unseen Shrouded targeting should report why it failed")
+
+    resolver:markShroudedMovement(shrouded, { reason = "moved" })
+    shrouded.inventory = inventory.createInventory()
+    shrouded.inventory:addItem(inventory.createItemFromTemplate("longsword"), inventory.LOCATIONS.HANDS)
+    local vagueAttack = resolver:resolve({
+        actor = attacker,
+        target = shrouded,
+        card = { name = "Swords", value = 4, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+    })
+    assertTrue(not vagueAttack.success, "known Shrouded presence should still be hard to hit")
+    assertTrue(hasValue(vagueAttack.effects, "shrouded_target_disfavor"),
+        "targeting a moving Shrouded creature should apply disfavor")
+    assertEqual(vagueAttack.favorModifier, -3, "Shrouded targeting disfavor should subtract 3")
+
+    shrouded.inventory = inventory.createInventory()
+    shrouded.inventory:addItem(shroudBow, inventory.LOCATIONS.HANDS)
+    local victim = base_entity.createEntity({
+        id = "npc_shroud_victim",
+        name = "Unseeing Victim",
+        isPC = false,
+        health = 2,
+        defense = 6,
+    })
+    local shroudedAttack = resolver:resolve({
+        actor = shrouded,
+        target = victim,
+        card = { name = "Swords", value = 4, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MISSILE,
+        weapon = shrouded.inventory:getWieldedWeapon(),
+        targetInitiative = 6,
+    })
+    assertTrue(shroudedAttack.success, "Shrouded harmful actions should gain favor against creatures who cannot see them")
+    assertTrue(hasValue(shroudedAttack.effects, "shrouded_harm_favor"),
+        "Shrouded harmful action favor should be reported")
+
+    local maintained = resolver:maintainShroudForVisibleInteraction(caster, shrouded, { visibleObject = true })
+    assertTrue(maintained.success, "interacting with visible objects should spend Resolve to maintain Shroud")
+    assertEqual(caster.resolve, 1, "Shroud maintenance should spend uncommitted Resolve")
+    assertEqual(shrouded.shroud.maintenanceResolveSpent, 1, "Shroud should track maintenance Resolve")
+
+    caster.resolve = 0
+    local ended = resolver:maintainShroudForVisibleInteraction(caster, shrouded, { visibleObject = true })
+    assertTrue(not ended.success, "Shroud should end if visible-object maintenance Resolve cannot be paid")
+    assertTrue(shrouded.shroud == nil, "unpaid Shroud maintenance should clear the Shrouded effect")
+    assertTrue(not shrouded.conditions.shrouded, "ending Shroud should clear the Shrouded condition")
+    assertEqual(caster.committedResolve, 0, "ending Shroud should release committed Resolve")
+end
+
+local function checkAugurySpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_augury",
+        name = "Augur",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    caster.resolve = 2
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_augury"), inventory.LOCATIONS.HANDS)
+
+    local omenCard = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS }
+    local cast = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "augury",
+        auguryCard = omenCard,
+        testAttribute = "wands",
+        targetSuit = constants.SUITS.SWORDS,
+        task = "force the sealed tomb door",
+    })
+    assertTrue(cast.success, "Augury should cast before a Test of Fate")
+    assertTrue(cast.augury.cardHidden, "Augury should hide the fate card from the player-facing result")
+    assertTrue(caster.pendingAugury ~= nil, "Augury should leave a pending omen on the caster")
+    assertEqual(caster.resolve, 1, "Augury should spend 1 Resolve to cast")
+    assertEqual(caster.pendingAugury.card, omenCard, "Augury should store the hidden GM-drawn card")
+    assertTrue(caster.pendingAugury.parable:find("Codex Sophia") ~= nil,
+        "Augury should provide a parable instead of revealing the card")
+
+    local attempt = resolver:resolveAuguryAttempt(caster.pendingAugury, caster, {
+        spendResolveForFavor = true,
+    })
+    assertTrue(attempt.success, "attempting an Augury should reveal and resolve the hidden card")
+    assertEqual(attempt.card, omenCard, "Augury attempt should reveal the prepared card")
+    assertEqual(attempt.testResult.total, 16, "Augury attempt should use the hidden card plus attribute and Resolve favor")
+    assertTrue(attempt.testResult.isGreat, "Augury attempt should allow Great Success on matching suit")
+    assertEqual(caster.resolve, 0, "Augury attempt favor should spend the acting character's Resolve")
+    assertTrue(caster.pendingAugury == nil, "resolved Augury should clear the pending omen")
+
+    local drawn = 0
+    local discarded = 0
+    local fakeDeck = {
+        draw = function()
+            drawn = drawn + 1
+            return { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS }
+        end,
+        discard = function()
+            discarded = discarded + 1
+        end,
+    }
+    local declineCaster = base_entity.createEntity({
+        id = "pc_augury_decline",
+        name = "Declining Augur",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_welkin = { mastered = true },
+        },
+    })
+    declineCaster.resolve = 1
+    declineCaster.inventory = inventory.createInventory()
+    declineCaster.inventory:addItem(inventory.createItemFromTemplate("component_augury"), inventory.LOCATIONS.HANDS)
+
+    local declineCast = resolver:resolve({
+        actor = declineCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "augury",
+        deck = fakeDeck,
+    })
+    assertTrue(declineCast.success, "Augury should be able to draw its hidden card from a deck")
+    assertEqual(drawn, 1, "Augury should draw one hidden fate card")
+    assertEqual(discarded, 0, "Augury should not discard the hidden card until the task is declined")
+
+    local declined = resolver:declineAugury(declineCaster.pendingAugury, {
+        deck = fakeDeck,
+        boundOutcome = false,
+    })
+    assertTrue(declined.success, "declining an Augury should resolve the pending omen")
+    assertTrue(declined.boundByFate, "declined Augury should preserve bound-by-fate semantics")
+    assertEqual(discarded, 1, "declined Augury should discard the prepared card")
+    assertTrue(declineCaster.pendingAugury == nil, "declined Augury should clear the pending omen")
+end
+
+local function checkAnimateObjectSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_animate_object",
+        name = "Object Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 4
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_animate_object"), inventory.LOCATIONS.HANDS)
+
+    local key = inventory.createItem({
+        name = "Bronze Key",
+        size = 1,
+        durability = 2,
+        properties = {
+            key = true,
+            intendedPurpose = "unlock",
+        },
+    })
+    local animate = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "animate_object",
+        target = key,
+        order = "unlock cell door",
+    })
+    assertTrue(animate.success, "Animate Object should animate an object with a legal order")
+    assertTrue(key.animatedObject and key.animatedObject.invisibleHand,
+        "Animate Object should record invisible-hand operation")
+    assertEqual(key.animatedObject.maxWords, 3, "Animate Object word limit should be Wands per Resolve")
+    assertEqual(key.animatedObject.wordCount, 3, "Animate Object should count command words")
+    assertEqual(key.animatedObject.actionValue, animate.testValue,
+        "Animate Object Challenge action value should match Speak Incantation value")
+    assertEqual(caster.committedResolve, 1, "Animate Object should commit Resolve until the task is fulfilled")
+    assertTrue(caster.activeSpells and caster.activeSpells[1] and not caster.activeSpells[1].concentration,
+        "Animate Object should not occupy concentration")
+
+    local task = resolver:resolveAnimatedObjectTask(key, {
+        task = "unlock cell door",
+        inChallenge = true,
+    })
+    assertTrue(task.success, "Animate Object task helper should fulfill the one task")
+    assertEqual(task.actionValue, animate.testValue, "fulfilled animated object task should expose action value")
+    assertTrue(key.animatedObject == nil, "fulfilled Animate Object task should clear object animation")
+    assertEqual(caster.committedResolve, 0, "fulfilled Animate Object task should release committed Resolve")
+
+    local vaultKey = inventory.createItem({
+        name = "Vault Key",
+        size = 1,
+        durability = 2,
+        properties = {
+            key = true,
+            intendedPurpose = "unlock",
+        },
+    })
+    local extended = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "animate_object",
+        target = vaultKey,
+        resolveSpent = 2,
+        order = "unlock the heavy bronze vault door",
+    })
+    assertTrue(extended.success, "additional Resolve should extend Animate Object commands")
+    assertEqual(vaultKey.animatedObject.maxWords, 6, "extra Resolve should add Wands more words")
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "released")
+    assertTrue(vaultKey.animatedObject == nil, "ending Animate Object manually should clear animation")
+
+    local dagger = inventory.createItemFromTemplate("dagger")
+    local strike = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "animate_object",
+        target = dagger,
+        order = "stab guard",
+    })
+    assertTrue(strike.success, "Animate Object should animate an unattended weapon")
+    assertTrue(dagger.animatedObject.unattendedWeaponOneStrike,
+        "unattended animated weapons should be limited to one strike")
+    local strikeTask = resolver:resolveAnimatedObjectTask(dagger, { task = "stab guard", inChallenge = true })
+    assertTrue(hasValue(strikeTask.effects, "animate_object_weapon_strike"),
+        "animated weapon fulfillment should report the one strike")
+    local secondStrike = resolver:resolveAnimatedObjectTask(dagger, { task = "stab again", inChallenge = true })
+    assertTrue(not secondStrike.success, "Animate Object should only fulfill one task per casting")
+
+    local invalidCaster = base_entity.createEntity({
+        id = "pc_animate_object_invalid",
+        name = "Invalid Object Mage",
+        isPC = true,
+        wands = 2,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    invalidCaster.resolve = 1
+    invalidCaster.inventory = inventory.createInventory()
+    invalidCaster.inventory:addItem(inventory.createItemFromTemplate("component_animate_object"), inventory.LOCATIONS.HANDS)
+    local invalidKey = inventory.createItem({
+        name = "Wordy Key",
+        size = 1,
+        durability = 2,
+        properties = { key = true },
+    })
+    local tooLong = resolver:resolve({
+        actor = invalidCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "animate_object",
+        target = invalidKey,
+        order = "unlock the door",
+    })
+    assertTrue(not tooLong.success, "Animate Object should reject overlong commands before spending Resolve")
+    assertTrue(hasValue(tooLong.effects, "animate_object_order_too_long"),
+        "Animate Object overlong command should report its gate")
+    assertEqual(invalidCaster.resolve, 1, "failed Animate Object validation should not spend Resolve")
+end
+
+local function checkScrySpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_scry",
+        name = "Crystal Seer",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.metaphysicalArea = "crypt_level_1"
+    caster.visitedLocations = {
+        crypt_shrine = true,
+        city_gate = true,
+    }
+    caster.resolve = 4
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_scry"), inventory.LOCATIONS.HANDS)
+
+    local shrine = {
+        id = "crypt_shrine",
+        name = "Guardian Shrine",
+        metaphysicalArea = "crypt_level_1",
+    }
+    local sameArea = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "scry",
+        targetLocation = shrine,
+    })
+    assertTrue(sameArea.success, "Scry should reveal a visited location in the same metaphysical area")
+    assertTrue(caster.scrying and caster.scrying.canSeeLocation, "Scry should record active remote sight")
+    assertEqual(caster.scrying.locationId, "crypt_shrine", "Scry should store the viewed location")
+    assertTrue(not caster.scrying.outsideCurrentArea, "same-area Scry should not mark cross-area viewing")
+    assertEqual(caster.committedResolve, 1, "Scry should commit Resolve while concentrated")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "released")
+    assertTrue(caster.scrying == nil, "ending Scry should clear active remote sight")
+    assertEqual(caster.committedResolve, 0, "ending Scry should release committed Resolve")
+
+    local cityGate = {
+        id = "city_gate",
+        name = "City Gate",
+        metaphysicalArea = "surface_city",
+    }
+    local crossAreaTooCheap = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "scry",
+        targetLocation = cityGate,
+        resolveSpent = 1,
+    })
+    assertTrue(not crossAreaTooCheap.success, "Scry should require +1 Resolve outside the current area")
+    assertTrue(hasValue(crossAreaTooCheap.effects, "scry_area_resolve_missing"),
+        "cross-area Scry should report its Resolve gate")
+    assertEqual(caster.resolve, 3, "failed cross-area Scry should not spend Resolve")
+
+    local crossArea = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "scry",
+        targetLocation = cityGate,
+        resolveSpent = 2,
+    })
+    assertTrue(crossArea.success, "Scry should allow outside-area viewing with +1 Resolve")
+    assertTrue(crossArea.scrying.outsideCurrentArea, "paid cross-area Scry should mark outside-area viewing")
+    assertTrue(hasValue(crossArea.effects, "scry_cross_area"), "paid cross-area Scry should report the rider")
+    assertEqual(caster.committedResolve, 2, "paid cross-area Scry should commit all spent Resolve")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "released")
+
+    local unvisited = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "scry",
+        targetLocation = {
+            id = "unvisited_vault",
+            name = "Unvisited Vault",
+            metaphysicalArea = "crypt_level_1",
+        },
+    })
+    assertTrue(not unvisited.success, "Scry should reject unvisited locations")
+    assertTrue(hasValue(unvisited.effects, "scry_location_unvisited"),
+        "unvisited Scry should report its visited-location gate")
+    assertEqual(caster.resolve, 1, "failed unvisited Scry should not spend Resolve")
+end
+
+local function checkTotemSpell()
+    local bus = events.createEventBus()
+    local testRequest = nil
+    bus:on(events.EVENTS.REQUEST_TEST_OF_FATE, function(data)
+        testRequest = data
+    end)
+
+    local resolver = action_resolver.createActionResolver({
+        eventBus = bus,
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_totem",
+        name = "Totem Mage",
+        isPC = true,
+        swords = 3,
+        pentacles = 2,
+        cups = 1,
+        wands = 4,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    caster.resolve = 3
+    caster.inventory = inventory.createInventory()
+    local acorn = inventory.createItemFromTemplate("component_totem")
+    local dagger = inventory.createItemFromTemplate("dagger")
+    local torch = inventory.createItemFromTemplate("torch")
+    caster.inventory:addItem(acorn, inventory.LOCATIONS.HANDS)
+    caster.inventory:addItem(dagger, inventory.LOCATIONS.HANDS)
+    caster.inventory:addItem(torch, inventory.LOCATIONS.PACK)
+
+    local totem = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "totem",
+        totemCard = { name = "Knight of Swords", value = 12, suit = constants.SUITS.SWORDS },
+        totemKnownFor = { "spot", "fly" },
+    })
+    assertTrue(totem.success, "Totem should transform the caster without an explicit target")
+    assertEqual(totem.totemForm.totemAnimal, "Eagle", "Totem should map random chart cards")
+    assertTrue(caster.conditions.totemForm and caster.inTotemForm, "Totem should mark active animal form")
+    assertEqual(caster.swords, 0, "Totem form should set Swords to +0")
+    assertEqual(caster.pentacles, 0, "Totem form should set Pentacles to +0")
+    assertEqual(caster.cups, 0, "Totem form should set Cups to +0")
+    assertEqual(caster.wands, 0, "Totem form should set Wands to +0")
+    assertTrue(caster.inventory:findItem(dagger.id) == nil, "Totem should drop carried gear")
+    assertTrue(caster.inventory:findItem(torch.id) == nil, "Totem should drop packed gear")
+    assertTrue(caster.inventory:findItem(acorn.id) == nil, "Totem should move the component to the mouth")
+    assertEqual(#caster.droppedItems, 2, "Totem should leave worn and carried objects around the target")
+    assertEqual(caster.committedResolve, 1, "Totem should commit Resolve while the acorn is held")
+    assertTrue(caster.activeSpells and caster.activeSpells[1] and not caster.activeSpells[1].concentration,
+        "Totem should be ongoing without occupying concentration")
+
+    local pending = resolver:resolve({
+        actor = caster,
+        card = { name = "Cups", value = 2, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.TEST_FATE,
+        testAttribute = "wands",
+        targetSuit = constants.SUITS.WANDS,
+        totemTags = { "spot" },
+        challengeController = {
+            isActive = function()
+                return true
+            end,
+        },
+    })
+    assertTrue(pending.pendingTestOfFate, "Totem-form Tests of Fate should still use the async test flow")
+    assertEqual(testRequest.attributeBonus, 5, "Totem should add +5 to relevant Tests of Fate")
+    assertTrue(hasValue(pending.effects, "totem_test_bonus"), "Totem test bonus should be reported")
+
+    local modal = test_of_fate_modal.createTestOfFateModal({
+        eventBus = events.createEventBus(),
+        deck = {
+            draw = function()
+                return { name = "Nine of Cups", value = 9, suit = constants.SUITS.CUPS }
+            end,
+            discard = function() end,
+        },
+    })
+    modal:startTest({
+        entity = caster,
+        attribute = "wands",
+        attributeBonus = testRequest.attributeBonus,
+    })
+    assertEqual(modal.result.total, 14, "Totem +5 should apply to Test of Fate totals")
+    assertTrue(modal.result.success, "Totem +5 should be enough to pass this test")
+    modal:hide()
+
+    local ended = resolver:endTotemForMouthAction(caster, "talk")
+    assertTrue(ended.success, "using the mouth should end Totem")
+    assertTrue(caster.totemForm == nil and not caster.conditions.totemForm,
+        "ending Totem should clear animal form")
+    assertEqual(caster.swords, 3, "ending Totem should restore Swords")
+    assertEqual(caster.wands, 4, "ending Totem should restore Wands")
+    assertEqual(caster.committedResolve, 0, "ending Totem should release committed Resolve")
+    assertEqual(#caster.droppedItems, 3, "ending Totem should spit out the acorn")
+
+    local randomCaster = base_entity.createEntity({
+        id = "pc_totem_random",
+        name = "Random Totem Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    randomCaster.resolve = 1
+    randomCaster.inventory = inventory.createInventory()
+    randomCaster.inventory:addItem(inventory.createItemFromTemplate("component_totem"), inventory.LOCATIONS.HANDS)
+    local drawCount = 0
+    local discardCount = 0
+    local randomDeck = {
+        draw = function()
+            drawCount = drawCount + 1
+            return { name = "Queen of Wands", value = 13, suit = constants.SUITS.WANDS }
+        end,
+        discard = function()
+            discardCount = discardCount + 1
+        end,
+    }
+    local randomTotem = resolver:resolve({
+        actor = randomCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "totem",
+        deck = randomDeck,
+    })
+    assertTrue(randomTotem.success, "Totem should randomly determine an unknown soul totem")
+    assertEqual(randomCaster.soulTotemAnimal, "Dire Spider", "Totem should store the random soul totem")
+    assertEqual(drawCount, 1, "Totem should draw once from the random totem deck")
+    assertEqual(discardCount, 1, "Totem should discard the random chart card")
+
+    local invalidCaster = base_entity.createEntity({
+        id = "pc_totem_invalid",
+        name = "Invalid Totem Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    invalidCaster.resolve = 1
+    invalidCaster.inventory = inventory.createInventory()
+    invalidCaster.inventory:addItem(inventory.createItemFromTemplate("component_totem"), inventory.LOCATIONS.HANDS)
+    local invalid = resolver:resolve({
+        actor = invalidCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "totem",
+    })
+    assertTrue(not invalid.success, "Totem should require a known totem or random chart draw")
+    assertTrue(hasValue(invalid.effects, "totem_missing"), "Totem missing chart should report its gate")
+    assertEqual(invalidCaster.resolve, 1, "failed Totem validation should not spend Resolve")
+end
+
+local function checkWoodweaveSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_woodweave",
+        name = "Woodweaver",
+        isPC = true,
+        wands = 3,
+        zone = "grove",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    caster.resolve = 6
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_woodweave"), inventory.LOCATIONS.HANDS)
+
+    local sapling = {
+        id = "plant_grow",
+        name = "Sapling",
+        plant = true,
+        livingPlant = true,
+        conditions = {},
+    }
+    local grow = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        target = sapling,
+        mode = "grow",
+    })
+    assertTrue(grow.success, "Woodweave should grow living plants")
+    assertTrue(sapling.conditions.grown, "Woodweave grow should mark the plant grown")
+
+    local vine = {
+        id = "plant_shrink",
+        name = "Vine",
+        plant = true,
+        livingPlant = true,
+        conditions = {},
+    }
+    local shrink = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        target = vine,
+        mode = "shrink",
+    })
+    assertTrue(shrink.success, "Woodweave should shrink living plants")
+    assertTrue(vine.conditions.shrunk and vine.conditions.witheredToSeed,
+        "Woodweave shrink should wither the plant toward seed")
+
+    local woodenDoor = inventory.createItem({
+        name = "Wooden Door",
+        size = 3,
+        durability = 2,
+        properties = {
+            material = "wood",
+        },
+    })
+    local warp = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        target = woodenDoor,
+        mode = "warp",
+    })
+    assertTrue(warp.success, "Woodweave should affect wooden objects")
+    assertEqual(woodenDoor.notches, 1, "Woodweave should Notch wooden objects")
+    assertTrue(woodenDoor.woodweaveWarped, "Woodweave should record warped wooden objects")
+
+    local ally = base_entity.createEntity({
+        id = "pc_woodweave_ally",
+        name = "Rooted Ally",
+        isPC = true,
+        zone = "grove",
+        conditions = {},
+    })
+    local foe = base_entity.createEntity({
+        id = "npc_woodweave_foe",
+        name = "Rooted Foe",
+        isPC = false,
+        zone = "grove",
+        conditions = {},
+    })
+    local elsewhere = base_entity.createEntity({
+        id = "npc_woodweave_elsewhere",
+        name = "Elsewhere Foe",
+        isPC = false,
+        zone = "crypt",
+        conditions = {},
+    })
+    local root = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        mode = "root",
+        zoneId = "grove",
+        allEntities = { caster, ally, foe, elsewhere },
+    })
+    assertTrue(root.success, "Woodweave should root creatures in a vegetation zone")
+    assertTrue(caster.conditions.rooted and ally.conditions.rooted and foe.conditions.rooted,
+        "Woodweave roots all creatures in the selected zone")
+    assertTrue(not elsewhere.conditions.rooted, "Woodweave should not root creatures outside the selected zone")
+
+    local rawWood = {
+        id = "raw_wood",
+        name = "Equivalent Raw Wood",
+        properties = {
+            material = "wood",
+        },
+    }
+    local shape = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        target = rawWood,
+        mode = "shape",
+        shapeInto = "ladder",
+    })
+    assertTrue(shape.success, "Woodweave should shape equivalent raw materials")
+    assertEqual(rawWood.shapedInto, "ladder", "Woodweave should record the shaped wooden object")
+
+    local invalidCaster = base_entity.createEntity({
+        id = "pc_woodweave_invalid",
+        name = "Invalid Woodweaver",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    invalidCaster.resolve = 1
+    invalidCaster.inventory = inventory.createInventory()
+    invalidCaster.inventory:addItem(inventory.createItemFromTemplate("component_woodweave"), inventory.LOCATIONS.HANDS)
+    local tooSmallRawWood = {
+        id = "small_raw_wood",
+        name = "Small Raw Wood",
+        size = 1,
+        properties = {
+            material = "wood",
+        },
+    }
+    local sizeMismatch = resolver:resolve({
+        actor = invalidCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        target = tooSmallRawWood,
+        mode = "shape",
+        shapeInto = "door",
+        shapeSize = 3,
+    })
+    assertTrue(not sizeMismatch.success, "Woodweave should reject undersized raw materials")
+    assertTrue(hasValue(sizeMismatch.effects, "woodweave_material_size_mismatch"),
+        "Woodweave undersized raw materials should report the equivalent-size gate")
+    assertEqual(invalidCaster.resolve, 1, "undersized Woodweave shape should not spend Resolve")
+    assertTrue(not tooSmallRawWood.shapedByWoodweave, "undersized Woodweave shape should not shape the material")
+
+    local stone = {
+        id = "stone_object",
+        name = "Stone Block",
+        properties = {
+            material = "stone",
+        },
+    }
+    local invalid = resolver:resolve({
+        actor = invalidCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "woodweave",
+        target = stone,
+        mode = "warp",
+    })
+    assertTrue(not invalid.success, "Woodweave should reject non-wood, non-plant targets")
+    assertTrue(hasValue(invalid.effects, "woodweave_invalid_target"),
+        "Woodweave invalid target should report its target gate")
+    assertEqual(invalidCaster.resolve, 1, "failed Woodweave target gate should not spend Resolve")
+end
+
+local function checkWallOfElementsSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_wall_elements",
+        name = "Wall Mage",
+        isPC = true,
+        wands = 3,
+        zone = "causeway",
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    caster.resolve = 4
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_wall_of_elements"), inventory.LOCATIONS.HANDS)
+
+    local fireWall = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "wall_of_elements",
+        resolveSpent = 3,
+        element = "fire",
+        zoneId = "bridge",
+    })
+    assertTrue(fireWall.success, "Wall of Elements should create paid wall sections")
+    assertTrue(fireWall.elementWall ~= nil, "Wall of Elements should return a wall object")
+    assertEqual(fireWall.elementWall.sectionCount, 3, "each Resolve should create one wall section")
+    assertEqual(fireWall.elementWall.sections[1].element, "fire", "scalar element should apply to all sections")
+    assertTrue(fireWall.elementWall.sections[1].opaque, "fire wall sections should be opaque")
+    assertTrue(fireWall.elementWall.sections[1].permeable, "fire wall sections should be permeable")
+    assertTrue(fireWall.elementWall.sections[1].woundsOnPassage, "fire wall sections should wound on passage")
+    assertEqual(caster.resolve, 1, "Wall of Elements should spend Resolve")
+    assertEqual(caster.committedResolve, 3, "Wall of Elements should commit Resolve while concentrated")
+    assertTrue(caster.activeElementWalls and caster.activeElementWalls[1] == fireWall.elementWall,
+        "caster should track active element walls")
+
+    local passer = base_entity.createEntity({
+        id = "npc_fire_wall_passer",
+        name = "Fire Wall Passer",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        conditions = {},
+    })
+    local passage = resolver:resolveElementWallPassage(fireWall.elementWall.sections[1], passer)
+    assertTrue(passage.success and passage.wounded, "passing through fire wall should wound the creature")
+    assertTrue(hasValue(passage.effects, "wall_fire_wound"), "fire wall passage should report the wound")
+    assertEqual(passer.npcHealth, 1, "fire wall passage should apply one Wound")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "released")
+    assertTrue(not fireWall.elementWall.active, "ending Wall of Elements should deactivate the wall")
+    assertTrue(not fireWall.elementWall.sections[1].active, "ending Wall of Elements should deactivate sections")
+    assertEqual(#caster.activeElementWalls, 0, "ending Wall of Elements should clear caster wall tracking")
+    assertEqual(caster.committedResolve, 0, "ending Wall of Elements should release committed Resolve")
+
+    local windCaster = base_entity.createEntity({
+        id = "pc_wall_elements_wind",
+        name = "Wind Wall Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    windCaster.resolve = 1
+    windCaster.inventory = inventory.createInventory()
+    windCaster.inventory:addItem(inventory.createItemFromTemplate("component_wall_of_elements"), inventory.LOCATIONS.HANDS)
+    local windWall = resolver:resolve({
+        actor = windCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "wall_of_elements",
+        element = "wind",
+    })
+    assertTrue(windWall.success, "Wall of Elements should create wind sections")
+    assertTrue(not windWall.elementWall.sections[1].opaque, "wind wall sections should not be opaque")
+    assertTrue(resolver:wallBlocksPassage(windWall.elementWall.sections[1], { missile = true }),
+        "wind wall should block missile weapons")
+    assertTrue(resolver:wallBlocksPassage(windWall.elementWall.sections[1], { flying = true }),
+        "wind wall should block flying creatures")
+    assertTrue(not resolver:wallBlocksPassage(windWall.elementWall.sections[1], { walking = true }),
+        "wind wall should not block ordinary passage")
+
+    local waterCaster = base_entity.createEntity({
+        id = "pc_wall_elements_water_invalid",
+        name = "Water Wall Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weald = { mastered = true },
+        },
+    })
+    waterCaster.resolve = 1
+    waterCaster.inventory = inventory.createInventory()
+    waterCaster.inventory:addItem(inventory.createItemFromTemplate("component_wall_of_elements"), inventory.LOCATIONS.HANDS)
+    local invalidWater = resolver:resolve({
+        actor = waterCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "wall_of_elements",
+        element = "water",
+    })
+    assertTrue(not invalidWater.success, "water walls should require a body of water")
+    assertTrue(hasValue(invalidWater.effects, "wall_water_requires_water"),
+        "water wall placement should report its water gate")
+    assertEqual(waterCaster.resolve, 1, "failed Wall of Elements water gate should not spend Resolve")
+
+    local tooMany = resolver:resolve({
+        actor = waterCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "wall_of_elements",
+        resolveSpent = 1,
+        elements = { "earth", "fire" },
+    })
+    assertTrue(not tooMany.success, "Wall of Elements should require one Resolve per section")
+    assertTrue(hasValue(tooMany.effects, "wall_elements_too_many_sections"),
+        "Wall of Elements should report too many sections before spending Resolve")
+    assertEqual(waterCaster.resolve, 1, "failed Wall of Elements section gate should not spend Resolve")
+end
+
+local function checkChangeSizeSpell()
+    local resolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local caster = base_entity.createEntity({
+        id = "pc_change_size",
+        name = "Size Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    caster.resolve = 2
+    caster.inventory = inventory.createInventory()
+    caster.inventory:addItem(inventory.createItemFromTemplate("component_change_size"), inventory.LOCATIONS.HANDS)
+
+    local target = base_entity.createEntity({
+        id = "pc_change_size_target",
+        name = "Grown Target",
+        isPC = true,
+        pentacles = 0,
+        swords = 0,
+        conditions = {},
+    })
+    target.inventory = inventory.createInventory()
+    target.inventory:addItem(inventory.createItemFromTemplate("dagger"), inventory.LOCATIONS.HANDS)
+
+    local grow = resolver:resolve({
+        actor = caster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "change_size",
+        target = target,
+        mode = "grow",
+        unwilling = false,
+    })
+    assertTrue(grow.success, "Change Size should grow a creature")
+    assertTrue(target.conditions.sizeChanged and target.conditions.sizeGrown,
+        "Change Size grow should mark size state")
+    assertEqual(target.sizeMultiplier, 2, "Change Size grow should double effective size")
+    assertEqual(caster.committedResolve, 1, "Change Size should commit Resolve while concentrated")
+
+    local foe = base_entity.createEntity({
+        id = "npc_change_size_foe",
+        name = "Size Foe",
+        isPC = false,
+        health = 2,
+        defense = 0,
+        conditions = {},
+    })
+    local roughhouse = resolver:resolve({
+        actor = target,
+        target = foe,
+        card = { name = "Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+        targetInitiative = 9,
+    })
+    assertTrue(roughhouse.success, "grown creatures should gain favor where size helps Roughhouse")
+    assertEqual(roughhouse.favorModifier, 3, "Change Size grow should grant Roughhouse favor")
+    assertTrue(hasValue(roughhouse.effects, "change_size_action_favor"),
+        "Change Size Roughhouse favor should be reported")
+
+    foe.conditions.prone = false
+    local attack = resolver:resolve({
+        actor = target,
+        target = foe,
+        card = { name = "Swords", value = 7, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        weapon = target.inventory:getWieldedWeapon(),
+        targetInitiative = 10,
+    })
+    assertTrue(not hasValue(attack.effects, "change_size_action_favor"),
+        "Change Size should not grant Attack favor")
+    assertEqual(attack.favorModifier, 0, "Change Size should not modify Attack values")
+
+    resolver:endOngoingSpell(caster, caster.activeSpells[1], "released")
+    assertTrue(target.changeSize == nil, "ending Change Size should clear size state")
+    assertTrue(not target.conditions.sizeChanged, "ending Change Size should clear size condition")
+    assertEqual(target.sizeMultiplier, 1, "ending Change Size should restore size multiplier")
+    assertEqual(caster.committedResolve, 0, "ending Change Size should release committed Resolve")
+
+    local shrinkCaster = base_entity.createEntity({
+        id = "pc_change_size_shrink",
+        name = "Shrink Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    shrinkCaster.resolve = 1
+    shrinkCaster.inventory = inventory.createInventory()
+    shrinkCaster.inventory:addItem(inventory.createItemFromTemplate("component_change_size"), inventory.LOCATIONS.HANDS)
+    local smallTarget = base_entity.createEntity({
+        id = "pc_change_size_small",
+        name = "Shrunk Target",
+        isPC = true,
+        pentacles = 0,
+        conditions = {},
+    })
+    local shrink = resolver:resolve({
+        actor = shrinkCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "change_size",
+        target = smallTarget,
+        mode = "shrink",
+        unwilling = false,
+    })
+    assertTrue(shrink.success, "Change Size should shrink a creature")
+    assertEqual(smallTarget.sizeMultiplier, 0.5, "Change Size shrink should halve effective size")
+
+    local shrinkContest = resolver:resolve({
+        actor = smallTarget,
+        target = foe,
+        card = { name = "Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+        targetInitiative = 10,
+    })
+    assertTrue(not shrinkContest.success, "shrunk creatures should take disfavor where size hurts Roughhouse")
+    assertEqual(shrinkContest.favorModifier, -3, "Change Size shrink should apply Roughhouse disfavor")
+    assertTrue(hasValue(shrinkContest.effects, "change_size_action_disfavor"),
+        "Change Size Roughhouse disfavor should be reported")
+
+    local invalidCaster = base_entity.createEntity({
+        id = "pc_change_size_invalid",
+        name = "Invalid Size Mage",
+        isPC = true,
+        wands = 3,
+        talents = {
+            magic_of_the_weird = { mastered = true },
+        },
+    })
+    invalidCaster.resolve = 1
+    invalidCaster.inventory = inventory.createInventory()
+    invalidCaster.inventory:addItem(inventory.createItemFromTemplate("component_change_size"), inventory.LOCATIONS.HANDS)
+    local invalid = resolver:resolve({
+        actor = invalidCaster,
+        card = { name = "Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        spellId = "change_size",
+        target = base_entity.createEntity({ id = "pc_change_size_no_mode", isPC = true, conditions = {} }),
+    })
+    assertTrue(not invalid.success, "Change Size should require grow or shrink")
+    assertTrue(hasValue(invalid.effects, "change_size_mode_missing"),
+        "Change Size missing mode should report its target gate")
+    assertEqual(invalidCaster.resolve, 1, "failed Change Size target gate should not spend Resolve")
+end
+
+local function checkNPCGroupedDrawNoFloor()
     local bus = events.createEventBus()
     local ai = npc_ai.createNPCAI({
         eventBus = bus,
@@ -97,6 +17606,7 @@ local function checkNPCDrawFloor()
         return {
             id = id,
             isPC = false,
+            blueprintId = "imp",
             rank = "soldier",
             conditions = {},
         }
@@ -126,11 +17636,187 @@ local function checkNPCDrawFloor()
     }
 
     local drawCount = ai:calculateRoundDrawCount()
-    assertTrue(drawCount >= #ai.challengeController.npcs, "Draw count should cover NPC initiative submissions")
+    assertEqual(drawCount, 4, "same enemy group no longer needs one initiative card per NPC")
+end
+
+local function checkMaleficenceModalPresentation()
+    local bus = events.createEventBus()
+    local modal = maleficence_modal.createMaleficenceModal({
+        eventBus = bus,
+    })
+    modal:init()
+
+    bus:emit(events.EVENTS.MALEFICENCE_RESOLVED, {
+        branch = "weald",
+        rank = "III",
+        card = {
+            name = "Three of Wands",
+            value = 3,
+            suit = constants.SUITS.WANDS,
+        },
+        entry = {
+            title = "Thornburst",
+            summary = "Roots and thorns erupt in the sorcerer's zone.",
+        },
+        effects = { "maleficence_zone_rooted" },
+        unappliedEffects = {
+            { type = "gm_adjudicate", summary = "Describe the vegetation." },
+        },
+    })
+
+    assertTrue(modal.isVisible, "resolved maleficence should open the presentation modal")
+    assertEqual(modal.result.rank, "III", "modal should retain maleficence rank")
+    assertEqual(modal.result.entry.title, "Thornburst", "modal should retain table entry title")
+    assertTrue(modal:keypressed("return"), "modal should consume confirmation key")
+    assertTrue(not modal.isVisible, "confirmation key should close the maleficence modal")
 end
 
 checkDoomClassification()
+checkGroupTestResolution()
 checkMovementAdjacency()
-checkNPCDrawFloor()
+checkMovementActionDistances()
+checkEventBusMutationSafeDispatch()
+checkKeyedTalentWoundSlots()
+checkChosenPCWoundOptions()
+checkDeathsDoorDefeatedInChallengeFlow()
+checkChallengeSurpriseAmbushActions()
+checkActingEntityCannotMinor()
+checkSkippedTurnBypassesMinorWindow()
+checkNPCNoActionSkipsTurn()
+checkDeathsDoorWatchExpiry()
+checkWatchDurationConditionExpiry()
+checkStartingGuildData()
+checkLightSourceVisibility()
+checkDroppedLightSourceRules()
+checkOutOfLightDoom()
+checkFallingProcedure()
+checkCrawlScreenListenerLifecycle()
+checkStunDiscardsChallengeCard()
+checkChallengeActionFavorAndResolve()
+checkTrivialActionExamples()
+checkBanterSocialIntentAndPreferences()
+checkSocialOutcomesAndParley()
+checkGuardianRoomSocialEncounterOutcomes()
+checkStartingDispositionFromMinorDiscard()
+checkRoughhouseFacade()
+checkGiantsStrengthContestTalent()
+checkFightDirtyRoughhouseTalent()
+checkAmbusherFirstRoundDamageTalent()
+checkAegisTalentDamageSubstitution()
+checkDoomEyePerfectShotTalent()
+checkGramaryeArchwoodWandAttacks()
+checkHeavyMetalMachineInterruptTalent()
+checkMonsterHunterAttackFavorTalent()
+checkTwoHandedFocusMinorAttackTalent()
+checkReaverChargeAttackTalent()
+checkNPCDrawFormula()
+checkStartRoundSpellEffectsHook()
+checkMaledictionChickenDoomChallengeStart()
+checkNPCSharedInitiativeGroups()
+checkNPCRoundEndDiscardBeforeReshuffle()
+checkFoolReshuffleConditionExpiry()
+checkGreaterDoomAttackPairing()
+checkWebGreaterDoomResolution()
+checkRecoverClearsBurningDuration()
+checkBloodyTearsMaleficenceDisfavor()
+checkAngelicChantBlocksStealth()
+checkRustFogNotchesGuildMetalGear()
+checkWelkinItemTransformMaleficence()
+checkWoodWarpsDestroysRoomWood()
+checkLightningThroughMetalWoundsRoomCarriers()
+checkDemonicFliesDestroyRoomPerishables()
+checkMaleficenceRoomFeaturesAndHazards()
+checkWeirdRandomInspirationDisposition()
+checkWeirdSleepTestMaleficence()
+checkPermanentBodyChangeMaleficence()
+checkMassGraveStenchAreaCondition()
+checkAnimalConvergenceForcedEncounter()
+checkProceduralMaleficenceRecords()
+checkPotionDetonationAdjacentInventory()
+checkMaleficenceSpawnEffects()
+checkChallengeItemActions()
+checkCampTinkersKitRepair()
+checkCampFletchArrowsAction()
+checkCampFellowshipAction()
+checkCampTrainAction()
+checkCampUseTalentAction()
+checkLaborUnendingCampActionAllowance()
+checkCampBrewAlchemyAction()
+checkAlchemyHarvestReagents()
+checkHarvestableCorpseFeatures()
+checkAlchemyMenagerieReagentPurchase()
+checkAlchemyReagentSale()
+checkCityPhaseDeathAndTaxes()
+checkCityPhaseNoteworthyDeeds()
+checkCityPhaseCityEvents()
+checkCityPhaseCityEventEffects()
+checkCityPhaseEndMaledictionConsequences()
+checkCityPhaseTurnInContracts()
+checkCityPhaseSellTreasure()
+checkCityPhasePlanNextCrawl()
+checkCityPhaseRestockUnderworld()
+checkOmphalicMarketCatalog()
+checkCityPhaseUpkeepTiers()
+checkCityPhaseBegAndBuskAction()
+checkCityPhaseBankingAction()
+checkCityPhaseBuildAction()
+checkCityPhaseCampActionFacade()
+checkCityPhaseCarouseAction()
+checkCityPhaseCommissionCraftAction()
+checkCityPhaseHoldFuneralAction()
+checkCityPhasePrepareComponentsAction()
+checkCityPhaseTrainAction()
+checkCityPhaseSupportAction()
+checkCityPhaseResearchAction()
+checkCityPhaseAlchemyActionFacade()
+checkCampReadBookAction()
+checkCampScoutAheadAction()
+checkCampUpdateMapsAction()
+checkLoudNoiseMeatgrinderThreshold()
+checkMeatgrinderTorchesGutterNotConsumed()
+checkCampHuntAction()
+checkCampPatrolMeatgrinderChoice()
+checkCampComfortRequirements()
+checkCampRationConsumption()
+checkCampAnimalFeedConsumption()
+checkCampRecoveryEndClearsStaggered()
+checkCampCompleteConditionDurations()
+checkMaledictionExtraBondRecoveryCost()
+checkCampStarvingSkipsRecovery()
+checkCampAfflictionRecoveryCharges()
+checkReloadCrossbowAction()
+checkTestFateActionDrawsSeparateCard()
+checkGuardInitiativeReplacement()
+checkFacedownDefenseReplacement()
+checkFacedownDefenseTimingValues()
+checkAllyPreparedDefenseInSameZone()
+checkCommandCompanionActions()
+checkCommandBoardCompanionCommandSelection()
+checkVigilanceTriggerTemplates()
+checkRoughhouseCommandBoardEffectSelection()
+checkVigilanceCommandBoardTriggerSelection()
+checkSpeakIncantationRegistry()
+checkControlAnimalSpell()
+checkControlUndeadSpell()
+checkHeavenfireLightGutter()
+checkNecromancySpell()
+checkFleshcraftSpell()
+checkRaiseZombieSpell()
+checkMaledictionSpell()
+checkGiveFormToNothingnessSpell()
+checkPortableHoleSpell()
+checkIllusionSpell()
+checkMirrorMeldSpell()
+checkSleepSpell()
+checkShroudSpell()
+checkAugurySpell()
+checkAnimateObjectSpell()
+checkScrySpell()
+checkTotemSpell()
+checkWoodweaveSpell()
+checkWallOfElementsSpell()
+checkChangeSizeSpell()
+checkNPCGroupedDrawNoFloor()
+checkMaleficenceModalPresentation()
 
 print("smoke_challenge_parity: ok")

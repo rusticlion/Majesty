@@ -43,6 +43,9 @@ M.ACTIONS = {
     TALK      = "talk",       -- Speak to
     ATTACK    = "attack",     -- Harm
     TRAP_CHECK = "trap_check", -- Check for traps (risky!)
+    HARVEST_REAGENT = "harvest_reagent", -- Alchemy: spend a watch on fresh monster remains
+    MAKE_OFFERING = "make_offering",
+    STUDY_LORE = "study_lore",
 }
 
 --------------------------------------------------------------------------------
@@ -343,6 +346,27 @@ function M.createInteractionSystem(config)
                 actions[#actions + 1] = { action = M.ACTIONS.SEARCH, level_required = M.LEVELS.INVESTIGATE }
             end
 
+            if target.alchemy or target.alchemyReagent or target.reagentTemplateId then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.HARVEST_REAGENT,
+                    level_required = M.LEVELS.SCRUTINIZE,
+                }
+            end
+
+            if target.acceptsOffering or target.offeringEffect then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.MAKE_OFFERING,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.grantsLore or target.loreEffect then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.STUDY_LORE,
+                    level_required = M.LEVELS.SCRUTINIZE,
+                }
+            end
+
             if target.trap then
                 actions[#actions + 1] = { action = M.ACTIONS.TRAP_CHECK, level_required = M.LEVELS.INVESTIGATE }
             end
@@ -391,6 +415,9 @@ function M.createInteractionSystem(config)
             [M.ACTIONS.TALK]       = "Talk to",
             [M.ACTIONS.ATTACK]     = "Attack",
             [M.ACTIONS.TRAP_CHECK] = "Check for traps",
+            [M.ACTIONS.HARVEST_REAGENT] = "Harvest alchemical reagent",
+            [M.ACTIONS.MAKE_OFFERING] = "Make an offering",
+            [M.ACTIONS.STUDY_LORE] = "Study lore",
         }
         return descriptions[action] or action
     end

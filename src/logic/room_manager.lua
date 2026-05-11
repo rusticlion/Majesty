@@ -9,6 +9,18 @@ local events = require('logic.events')
 
 local M = {}
 
+local function deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, child in pairs(value) do
+        copy[key] = deepCopy(child)
+    end
+    return copy
+end
+
 --------------------------------------------------------------------------------
 -- ROOM INSTANCE FACTORY
 -- Creates a mutable room instance from a blueprint
@@ -19,13 +31,10 @@ local M = {}
 -- @param roomId string: Unique ID for this instance
 -- @return RoomInstance
 function M.createRoomInstance(blueprint, roomId)
-    -- Deep copy features so each instance has mutable state
+    -- Deep copy authored room procedure data so each instance has mutable state.
     local features = {}
     for i, feat in ipairs(blueprint.features or {}) do
-        features[i] = {}
-        for k, v in pairs(feat) do
-            features[i][k] = v
-        end
+        features[i] = deepCopy(feat)
     end
 
     local instance = {
@@ -37,6 +46,8 @@ function M.createRoomInstance(blueprint, roomId)
         description      = blueprint.description,
         danger_level     = blueprint.danger_level or 1,
         features         = features,
+        zones            = deepCopy(blueprint.zones or {}),
+        socialEncounter  = deepCopy(blueprint.socialEncounter),
         verbs            = blueprint.verbs or {},
         meatgrinder_overrides = blueprint.meatgrinder_overrides or {},
 
@@ -76,6 +87,125 @@ function M.createRoomManager(config)
     --- Get a room by ID
     function manager:getRoom(roomId)
         return self.rooms[roomId]
+    end
+
+    function manager:getSocialEncounter(roomId)
+        local room = self.rooms[roomId]
+        return room and room.socialEncounter or nil
+    end
+
+    local function appendSocialPreparedEffect(room, record)
+        if not room or not room.socialEncounter or not record then
+            return nil
+        end
+
+        local socialEncounter = room.socialEncounter
+        socialEncounter.preparedEffects = socialEncounter.preparedEffects or {}
+        socialEncounter.preparedEffects[#socialEncounter.preparedEffects + 1] = record
+        return record
+    end
+
+    function manager:getSocialPreparedEffects(roomId)
+        local socialEncounter = self:getSocialEncounter(roomId)
+        return socialEncounter and socialEncounter.preparedEffects or {}
+    end
+
+    function manager:resolveSocialFeatureProcedure(roomId, featureId, action, actor, opts)
+        opts = opts or {}
+        local room = self.rooms[roomId]
+        local feature = self:getFeature(roomId, featureId)
+        if not room or not feature then
+            return { success = false, description = "There is nothing to use that way." }
+        end
+
+        local result = {
+            success = false,
+            roomId = roomId,
+            featureId = featureId,
+            action = action,
+            effects = {},
+        }
+
+        if action == "make_offering" then
+            if feature.offeringMade then
+                result.description = "An offering has already been made here."
+                return result
+            end
+            if not feature.acceptsOffering and not feature.offeringEffect then
+                result.description = "This does not seem like a place for offerings."
+                return result
+            end
+
+            local effect = deepCopy(feature.offeringEffect or {})
+            local record = {
+                type = effect.type or "disposition_shift",
+                target = effect.target,
+                disposition = effect.disposition or effect.toward or "trust",
+                severity = effect.severity or 2,
+                amount = effect.amount or 1,
+                sourceFeatureId = featureId,
+                sourceAction = action,
+                actorId = actor and actor.id or nil,
+                appliedTo = {},
+            }
+            appendSocialPreparedEffect(room, record)
+
+            feature.offeringMade = true
+            result.success = true
+            result.record = record
+            result.description = "The offering is accepted as a sign of respectful intent."
+            result.effects[#result.effects + 1] = "room_social_offering_prepared"
+        elseif action == "study_lore" then
+            if feature.loreStudied then
+                result.description = "You have already drawn what you can from this lore."
+                return result
+            end
+            if not feature.grantsLore and not feature.loreEffect then
+                result.description = "There is no useful lore to study here."
+                return result
+            end
+
+            local effect = deepCopy(feature.loreEffect or {})
+            local record = {
+                type = effect.type or "social_favor",
+                target = effect.target,
+                modifier = effect.modifier or 2,
+                description = effect.description,
+                lore = feature.grantsLore,
+                sourceFeatureId = featureId,
+                sourceAction = action,
+                actorId = actor and actor.id or nil,
+            }
+            appendSocialPreparedEffect(room, record)
+
+            feature.loreStudied = true
+            if actor then
+                actor.discoveredLore = actor.discoveredLore or {}
+                if feature.grantsLore then
+                    actor.discoveredLore[feature.grantsLore] = true
+                end
+            end
+            result.success = true
+            result.record = record
+            result.description = effect.description or "The studied lore gives you leverage in the conversation."
+            result.effects[#result.effects + 1] = "room_social_lore_prepared"
+        else
+            result.description = "That feature does not support this social procedure."
+        end
+
+        if result.success then
+            self.eventBus:emit(events.EVENTS.ROOM_SOCIAL_FEATURE_RESOLVED, {
+                roomId = roomId,
+                featureId = featureId,
+                action = action,
+                actor = actor,
+                actorId = actor and actor.id or nil,
+                record = result.record,
+                result = result,
+            })
+        end
+
+        return result
     end
 
     ----------------------------------------------------------------------------
@@ -156,6 +286,81 @@ function M.createRoomManager(config)
             end
         end
         return result
+    end
+
+    local function uniqueFeatureId(room, baseId)
+        local wanted = baseId
+        local suffix = 2
+        local seen = {}
+        for _, feature in ipairs(room.features or {}) do
+            seen[feature.id] = true
+        end
+        while seen[wanted] do
+            wanted = baseId .. "_" .. tostring(suffix)
+            suffix = suffix + 1
+        end
+        return wanted
+    end
+
+    --- Add a feature to a room.
+    function manager:addFeature(roomId, feature)
+        local room = self.rooms[roomId]
+        if not room or not feature then
+            return nil
+        end
+
+        feature.id = uniqueFeatureId(room, feature.id or "feature")
+        room.features[#room.features + 1] = feature
+
+        self.eventBus:emit(events.EVENTS.FEATURE_UPDATED, {
+            roomId = roomId,
+            featureId = feature.id,
+            feature = feature,
+            added = true,
+        })
+
+        return feature
+    end
+
+    --- Turn a defeated monster into a fresh corpse POI that can be harvested.
+    function manager:addCorpseForEntity(roomId, entity, opts)
+        opts = opts or {}
+        local room = self.rooms[roomId]
+        if not room then
+            return nil, "room_not_found"
+        end
+
+        if not entity or entity.isPC or not entity.alchemy then
+            return nil, "no_harvestable_reagents"
+        end
+
+        local isDead = entity.dead == true or (entity.conditions and entity.conditions.dead == true)
+        if not isDead then
+            return nil, "entity_not_dead"
+        end
+
+        for _, feature in ipairs(room.features or {}) do
+            if feature.defeatedEntityId == entity.id then
+                return feature
+            end
+        end
+
+        local corpse = {
+            id = opts.id or ("corpse_" .. tostring(entity.id or entity.blueprintId or "monster")),
+            name = (entity.name or "Monster") .. " corpse",
+            type = "corpse",
+            description = "The fresh corpse of " .. (entity.name or "a monster") .. " lies here.",
+            state = "fresh",
+            isCorpse = true,
+            freshCorpse = true,
+            defeatedEntityId = entity.id,
+            sourceBlueprintId = entity.blueprintId,
+            defeatedAtWatch = opts.currentWatch,
+            alchemy = deepCopy(entity.alchemy),
+        }
+
+        self:removeMob(roomId, entity.id)
+        return self:addFeature(roomId, corpse)
     end
 
     --- Get all interactable features in a room

@@ -11,9 +11,22 @@
 local base_entity = require('entities.base_entity')
 local adventurer_module = require('entities.adventurer')
 local inventory = require('logic.inventory')
+local disposition = require('logic.disposition')
 local mob_blueprints = require('data.blueprints.mobs')
 
 local M = {}
+
+local function deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, child in pairs(value) do
+        copy[key] = deepCopy(child)
+    end
+    return copy
+end
 
 --------------------------------------------------------------------------------
 -- BLUEPRINT REGISTRY
@@ -62,6 +75,15 @@ local function instantiateGear(gearList)
             stackSize  = template.stackSize or 1,
             quantity   = template.quantity or 1,
             isArmor    = template.isArmor or false,
+            weaponType = template.weaponType,
+            isWeapon   = template.isWeapon,
+            isMelee    = template.isMelee,
+            isRanged   = template.isRanged,
+            uses_ammo  = template.uses_ammo,
+            isLoaded   = template.isLoaded,
+            keyId      = template.keyId,
+            type       = template.type,
+            isRation   = template.isRation,
             properties = template.properties or {},
         })
         items[#items + 1] = item
@@ -85,6 +107,23 @@ function M.createEntity(template_id, overrides)
     end
 
     overrides = overrides or {}
+    local startingDisposition = overrides.disposition or blueprint.disposition
+    local startingDispositionSeverity = overrides.dispositionSeverity or overrides.disposition_severity or
+        blueprint.dispositionSeverity or blueprint.disposition_severity
+
+    if not startingDisposition then
+        local discardCard = overrides.minorDiscardCard or overrides.dispositionCard or overrides.startingDispositionCard
+        local minorDeck = overrides.minorDeck or overrides.playerDeck
+        if not discardCard and minorDeck and minorDeck.peekDiscard then
+            discardCard = minorDeck:peekDiscard()
+        end
+
+        if discardCard then
+            local randomDisposition, randomSeverity = disposition.dispositionFromMinorDiscard(discardCard)
+            startingDisposition = randomDisposition
+            startingDispositionSeverity = randomSeverity
+        end
+    end
 
     -- Create base entity
     local entity = base_entity.createEntity({
@@ -96,7 +135,8 @@ function M.createEntity(template_id, overrides)
         armorSlots       = blueprint.armorSlots or 0,
         talentWoundSlots = blueprint.talentWoundSlots or 0,
         baseMorale       = blueprint.baseMorale or 14,  -- S12.3: Morale system
-        disposition      = overrides.disposition or blueprint.disposition or "distaste",  -- S12.4: Disposition
+        disposition      = startingDisposition or "distaste",  -- S12.4: Disposition
+        dispositionSeverity = startingDispositionSeverity,
         location         = overrides.location or nil,
 
         -- NPC Health/Defense system (p. 125)
@@ -112,6 +152,19 @@ function M.createEntity(template_id, overrides)
     -- Mark as NPC
     entity.isPC = false
     entity.blueprintId = template_id
+    entity.enemyType = blueprint.enemyType or template_id
+    entity.rank = overrides.rank or blueprint.rank
+    entity.size = overrides.size or blueprint.size
+    entity.tags = deepCopy(blueprint.tags)
+    entity.undead = overrides.undead ~= nil and overrides.undead or blueprint.undead
+    entity.construct = overrides.construct ~= nil and overrides.construct or blueprint.construct
+    entity.automaton = overrides.automaton ~= nil and overrides.automaton or blueprint.automaton
+    entity.aiTags = deepCopy(blueprint.aiTags)
+    entity.lesserDooms = deepCopy(blueprint.lesserDooms)
+    entity.greaterDooms = deepCopy(blueprint.greaterDooms)
+    entity.greaterDoom = deepCopy(blueprint.greaterDoom)
+    entity.social = deepCopy(blueprint.social)
+    entity.alchemy = deepCopy(blueprint.alchemy)
 
     -- Attach inventory
     entity.inventory = inventory.createInventory()
@@ -146,6 +199,34 @@ function M.createEntity(template_id, overrides)
     return entity
 end
 
+function M.createUndeadFromAdventurer(adventurer, undeadType, overrides)
+    overrides = overrides or {}
+    undeadType = undeadType or "zombie"
+
+    local name = overrides.name
+    if not name then
+        local sourceName = adventurer and adventurer.name or "Adventurer"
+        name = sourceName .. " Zombie"
+    end
+
+    local undead, err = M.createEntity(undeadType, {
+        name = name,
+        location = overrides.location or (adventurer and adventurer.location),
+        rank = overrides.rank,
+    })
+    if not undead then
+        return nil, err
+    end
+
+    undead.id = overrides.id or ((adventurer and adventurer.id or "adventurer") .. "_" .. undeadType)
+    undead.zone = overrides.zone or (adventurer and adventurer.zone) or undead.zone
+    undead.sourceAdventurerId = adventurer and adventurer.id or nil
+    undead.sourceAdventurerName = adventurer and adventurer.name or nil
+    undead.raisedFromDeadAdventurer = true
+
+    return undead
+end
+
 --------------------------------------------------------------------------------
 -- CREATE ADVENTURER (PCs)
 -- Specialized version with Resolve, Bonds, Motifs, Talents
@@ -159,6 +240,7 @@ function M.createAdventurer(pc_data)
 
     -- Create adventurer (extends base entity)
     local pc = adventurer_module.createAdventurer({
+        id               = pc_data.id,
         name             = pc_data.name or "Unnamed Adventurer",
         swords           = pc_data.swords or pc_data.attributes and pc_data.attributes.swords or 2,
         pentacles        = pc_data.pentacles or pc_data.attributes and pc_data.attributes.pentacles or 2,
@@ -173,6 +255,8 @@ function M.createAdventurer(pc_data)
         talents          = pc_data.talents or {},
         location         = pc_data.location or nil,
     })
+
+    pc.ammo = pc_data.ammo or pc.ammo
 
     -- Attach inventory
     pc.inventory = inventory.createInventory()

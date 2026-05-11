@@ -17,6 +17,11 @@ local function createDefaultInputState()
         availableZones = nil,
         minorPC = nil,
         selectedVigilanceFollowUp = nil,
+        selectedVigilanceTrigger = nil,
+        selectedVigilanceTriggerOption = nil,
+        selectedRoughhouseEffect = nil,
+        selectedCommandName = nil,
+        selectedCommandCompanionId = nil,
     }
 end
 
@@ -45,6 +50,11 @@ function M.createChallengeInputController(config)
         inputState.availableZones = nil
         inputState.minorPC = nil
         inputState.selectedVigilanceFollowUp = nil
+        inputState.selectedVigilanceTrigger = nil
+        inputState.selectedVigilanceTriggerOption = nil
+        inputState.selectedRoughhouseEffect = nil
+        inputState.selectedCommandName = nil
+        inputState.selectedCommandCompanionId = nil
     end
 
     local function getPlateAt(x, y)
@@ -124,7 +134,7 @@ function M.createChallengeInputController(config)
             return {}
         end
 
-        local isMelee = (action.id == "melee" or action.id == "grapple" or
+        local isMelee = (action.id == "melee" or action.id == "roughhouse" or action.id == "grapple" or
             action.id == "trip" or action.id == "disarm" or
             action.id == "displace")
 
@@ -159,17 +169,25 @@ function M.createChallengeInputController(config)
         return targets
     end
 
-    local function getAvailableDestinationZones(actor)
+    local function getAvailableDestinationZones(actor, action)
         local challengeController = gameState.challengeController
         local zones = (challengeController and challengeController.zones) or {}
         local currentZone = actor and actor.zone
         local zoneSystem = gameState.zoneRegistry or (challengeController and challengeController.zoneSystem)
+        local actionId = action and action.id
+        local maxDistance = actionId == "dash" and 2 or 1
+        local resolver = gameState.actionResolver
 
         local availableZones = {}
         for _, zone in ipairs(zones) do
             if zone.id ~= currentZone then
                 local isAdjacent = true
-                if zoneSystem and currentZone and zoneSystem.getZone and zoneSystem.areZonesAdjacent then
+                if resolver and resolver.getZoneDistance then
+                    local distance, err = resolver:getZoneDistance({
+                        challengeController = challengeController,
+                    }, currentZone, zone.id)
+                    isAdjacent = err == nil and distance and distance > 0 and distance <= maxDistance
+                elseif zoneSystem and currentZone and zoneSystem.getZone and zoneSystem.areZonesAdjacent then
                     local fromZone = zoneSystem:getZone(currentZone)
                     local toZone = zoneSystem:getZone(zone.id)
                     if fromZone and toZone then
@@ -225,17 +243,27 @@ function M.createChallengeInputController(config)
         local isMinor = (state == "minor_window")
 
         if isMinor then
-            local cards = hand:getHand(entity)
-            table.remove(cards, cardIndex)
-            gameState.playerDeck:discard(card)
-
-            challengeController:declareMinorAction(entity, card, {
+            local success, err = challengeController:declareMinorAction(entity, card, {
                 type = action.id,
                 target = target,
                 destinationZone = destinationZone,
+                roughhouseEffect = inputState.selectedRoughhouseEffect,
+                commandName = inputState.selectedCommandName,
+                companionId = inputState.selectedCommandCompanionId,
                 weapon = entity.inventory and entity.inventory:getWieldedWeapon() or nil,
                 allEntities = challengeController.allCombatants,
             })
+
+            if not success then
+                print("[MINOR] Declaration failed: " .. tostring(err))
+                resetCombatInputState()
+                eventBus:emit("card_deselected", {})
+                return
+            end
+
+            local cards = hand:getHand(entity)
+            table.remove(cards, cardIndex)
+            gameState.playerDeck:discard(card)
 
             print("[MINOR] " .. entity.name .. " declares " .. action.name)
             inputState.minorPC = nil
@@ -246,6 +274,9 @@ function M.createChallengeInputController(config)
                 card = card,
                 type = action.id,
                 destinationZone = destinationZone,
+                roughhouseEffect = inputState.selectedRoughhouseEffect,
+                commandName = inputState.selectedCommandName,
+                companionId = inputState.selectedCommandCompanionId,
                 weapon = (entity.inventory and entity.inventory:getWieldedWeapon()) or { name = "Fists", isMelee = true },
                 allEntities = challengeController.allCombatants,
             }
@@ -259,17 +290,13 @@ function M.createChallengeInputController(config)
                     return
                 end
 
-                fullAction.trigger = {
-                    mode = "targeted_by_hostile_action",
-                    target = "self",
-                    hostileOnly = true,
-                    excludeSelf = true,
-                }
+                fullAction.trigger = inputState.selectedVigilanceTrigger or { template = "hostile_targets_self" }
                 fullAction.followUpAction = followUpAction.id
                 fullAction.followUpTargetPolicy = getVigilanceFollowUpTargetPolicy(followUpAction)
 
+                local triggerName = inputState.selectedVigilanceTriggerOption and inputState.selectedVigilanceTriggerOption.name or "Target Me"
                 print("[VIGILANCE] " .. entity.name .. " prepares " .. followUpAction.name ..
-                      " when targeted by a hostile action.")
+                      " on trigger: " .. triggerName .. ".")
             elseif destinationZone then
                 print("[COMBAT] " .. entity.name .. " uses " .. action.name .. " to move to " .. destinationZone)
             else
@@ -325,6 +352,9 @@ function M.createChallengeInputController(config)
         end
 
         inputState.selectedAction = data.action
+        inputState.selectedRoughhouseEffect = data.roughhouseEffect
+        inputState.selectedCommandName = data.commandName
+        inputState.selectedCommandCompanionId = data.commandCompanionId
 
         if data.action.id == "vigilance" then
             if not data.followUpAction then
@@ -335,12 +365,14 @@ function M.createChallengeInputController(config)
             end
 
             inputState.selectedVigilanceFollowUp = data.followUpAction
+            inputState.selectedVigilanceTrigger = data.vigilanceTrigger
+            inputState.selectedVigilanceTriggerOption = data.vigilanceTriggerOption
             executeSelectedAction(nil)
             return
         end
 
         if data.action.id == "move" or data.action.id == "dash" or data.action.id == "avoid" then
-            local availableZones = getAvailableDestinationZones(inputState.selectedEntity)
+            local availableZones = getAvailableDestinationZones(inputState.selectedEntity, data.action)
 
             if #availableZones > 0 then
                 inputState.awaitingZone = true
@@ -348,6 +380,8 @@ function M.createChallengeInputController(config)
 
                 if data.action.id == "avoid" then
                     print("[COMBAT] Select adjacent destination zone (1-" .. #availableZones .. "), or press Space to avoid in place:")
+                elseif data.action.id == "dash" then
+                    print("[COMBAT] Select destination zone up to two zones away (1-" .. #availableZones .. "):")
                 else
                     print("[COMBAT] Select adjacent destination zone (1-" .. #availableZones .. "):")
                 end
@@ -367,10 +401,19 @@ function M.createChallengeInputController(config)
             return
         end
 
-        if data.action.requiresTarget then
+        local commandRequiresTarget = data.action.id == "command" and data.commandName == "sic_em"
+        if data.action.requiresTarget or commandRequiresTarget then
             inputState.awaitingTarget = true
-            local targets = getValidTargetsForAction(data.action, inputState.selectedEntity)
-            local isMelee = (data.action.id == "melee" or data.action.id == "grapple" or
+            local targetAction = data.action
+            if commandRequiresTarget then
+                targetAction = {
+                    id = data.action.id,
+                    targetType = "enemy",
+                    requiresTarget = true,
+                }
+            end
+            local targets = getValidTargetsForAction(targetAction, inputState.selectedEntity)
+            local isMelee = (data.action.id == "melee" or data.action.id == "roughhouse" or data.action.id == "grapple" or
                 data.action.id == "trip" or data.action.id == "disarm" or
                 data.action.id == "displace")
 
@@ -537,8 +580,11 @@ function M.createChallengeInputController(config)
 
         if key == "space" then
             print("[COMBAT] " .. (activeEntity.name or "PC") .. " passes")
+            local success, err = challengeController:skipTurn(activeEntity, "pass")
+            if not success then
+                print("[COMBAT] Pass failed: " .. tostring(err))
+            end
             resetCombatInputState()
-            eventBus:emit(events.EVENTS.UI_SEQUENCE_COMPLETE, {})
         end
 
         if key == "escape" then

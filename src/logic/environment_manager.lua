@@ -57,6 +57,7 @@ function M.createEnvironmentManager(config)
 
         -- Track stress history for debugging/narrative
         stressLog = {},
+        environmentShifts = config.environmentShifts or {},
     }
 
     ----------------------------------------------------------------------------
@@ -237,6 +238,32 @@ function M.createEnvironmentManager(config)
                 return self:applyStressToParty(reason)
             end,
         })
+    end
+
+    ----------------------------------------------------------------------------
+    -- ENVIRONMENT SHIFTS
+    ----------------------------------------------------------------------------
+
+    function manager:recordEnvironmentShift(shift)
+        if not shift then
+            return nil
+        end
+
+        local record = {}
+        for key, value in pairs(shift) do
+            record[key] = value
+        end
+        record.active = record.active ~= false
+        record.id = record.id or string.format("environment_shift_%d", #self.environmentShifts + 1)
+
+        self.environmentShifts[#self.environmentShifts + 1] = record
+        self.currentEnvironmentShift = record
+
+        self.eventBus:emit("environment_shift_recorded", {
+            shift = record,
+        })
+
+        return record
     end
 
     --- Check if an outcome type is stressful

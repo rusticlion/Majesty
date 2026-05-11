@@ -7,6 +7,7 @@
 
 local events = require('logic.events')
 local action_registry = require('data.action_registry')
+local vigilance_triggers = require('data.vigilance_triggers')
 
 local M = {}
 
@@ -72,9 +73,15 @@ function M.createCommandBoard(config)
         selectedCard = nil,
         selectedEntity = nil,
         isPrimaryTurn = true,  -- vs Minor Window
-        mode = "action",       -- "action" | "vigilance_followup"
+        mode = "action",       -- "action" | "roughhouse_effect" | "command_option" | "vigilance_followup" | "vigilance_trigger"
+        roughhouseBaseAction = nil,
+        roughhouseEffectOptions = nil,
+        commandBaseAction = nil,
+        commandOptions = nil,
         vigilanceBaseAction = nil,
+        vigilanceSelectedFollowUp = nil,
         vigilanceFollowUpOptions = nil,
+        vigilanceTriggerOptions = nil,
 
         -- Layout
         x = 0,
@@ -133,8 +140,14 @@ function M.createCommandBoard(config)
         self.selectedEntity = entity
         self.isPrimaryTurn = isPrimaryTurn ~= false  -- Default true
         self.mode = "action"
+        self.roughhouseBaseAction = nil
+        self.roughhouseEffectOptions = nil
+        self.commandBaseAction = nil
+        self.commandOptions = nil
         self.vigilanceBaseAction = nil
+        self.vigilanceSelectedFollowUp = nil
         self.vigilanceFollowUpOptions = nil
+        self.vigilanceTriggerOptions = nil
 
         -- Calculate position (center of screen area)
         local screenW, screenH = love.graphics.getDimensions()
@@ -156,8 +169,14 @@ function M.createCommandBoard(config)
         self.hoveredButton = nil
         self.buttons = {}
         self.mode = "action"
+        self.roughhouseBaseAction = nil
+        self.roughhouseEffectOptions = nil
+        self.commandBaseAction = nil
+        self.commandOptions = nil
         self.vigilanceBaseAction = nil
+        self.vigilanceSelectedFollowUp = nil
         self.vigilanceFollowUpOptions = nil
+        self.vigilanceTriggerOptions = nil
     end
 
     --- Calculate total board height based on max column length
@@ -210,7 +229,9 @@ function M.createCommandBoard(config)
                 local btnY = self.y + M.BOARD_PADDING + M.HEADER_HEIGHT + M.BUTTON_PADDING +
                              (i - 1) * (M.BUTTON_HEIGHT + M.BUTTON_PADDING)
 
-                local enabled = columnEnabled
+                local talentMinorEnabled = not self.isPrimaryTurn and
+                    action_registry.canUseMinorActionWithCard(action, cardSuit, self.selectedEntity)
+                local enabled = columnEnabled or talentMinorEnabled
                 local disabledReason = nil
 
                 if enabled then
@@ -292,16 +313,307 @@ function M.createCommandBoard(config)
             return false
         end
 
+        self.vigilanceBaseAction = vigilanceAction
+        self.vigilanceFollowUpOptions = options
+
         if #options == 1 then
-            self:emitActionSelected(vigilanceAction, options[1])
-            self:hide()
-            return true
+            return self:showVigilanceTriggers(options[1])
         end
 
         self.mode = "vigilance_followup"
-        self.vigilanceBaseAction = vigilanceAction
-        self.vigilanceFollowUpOptions = options
+        self.vigilanceSelectedFollowUp = nil
+        self.vigilanceTriggerOptions = nil
         self:buildVigilanceFollowUpButtons(options)
+        return true
+    end
+
+    function board:getRoughhouseEffectOptions(roughhouseAction)
+        local effects = roughhouseAction and roughhouseAction.roughhouseEffects or {}
+        local names = {
+            disarm = "Disarm",
+            displace = "Displace",
+            exhaust = "Exhaust",
+            notch = "Notch",
+            root = "Root",
+            silence = "Silence",
+            trip = "Trip",
+        }
+        local descriptions = {
+            disarm = "Drop one held item.",
+            displace = "Move the target to another zone.",
+            exhaust = "Leave the target Exhausted.",
+            notch = "Damage one held item.",
+            root = "Prevent movement until Recover.",
+            silence = "Stop the target from making vocal sounds.",
+            trip = "Knock the target prone until Recover.",
+        }
+
+        local options = {}
+        for _, effect in ipairs(effects) do
+            if not roughhouseAction.fightDirtyEffects or not roughhouseAction.fightDirtyEffects[effect] or
+               action_registry.canUseMinorActionWithCard(roughhouseAction, action_registry.SUITS.SWORDS, self.selectedEntity) then
+                options[#options + 1] = {
+                    id = "roughhouse_" .. effect,
+                    name = names[effect] or effect,
+                    description = descriptions[effect] or "Resolve this Roughhouse effect.",
+                    roughhouseEffect = effect,
+                }
+            end
+        end
+
+        return options
+    end
+
+    function board:showRoughhouseEffects(roughhouseAction)
+        local options = self:getRoughhouseEffectOptions(roughhouseAction)
+        if #options == 0 then
+            return false
+        end
+
+        self.mode = "roughhouse_effect"
+        self.roughhouseBaseAction = roughhouseAction
+        self.roughhouseEffectOptions = options
+        self:buildRoughhouseEffectButtons(options)
+        return true
+    end
+
+    function board:buildRoughhouseEffectButtons(options)
+        self.buttons = {}
+
+        local count = #options
+        self.width = M.COLUMN_WIDTH + M.BOARD_PADDING * 2
+        self.height = M.BOARD_PADDING * 2 + M.HEADER_HEIGHT +
+            count * (M.BUTTON_HEIGHT + M.BUTTON_PADDING) + M.BUTTON_PADDING
+
+        local screenW, screenH = love.graphics.getDimensions()
+        self.x = (screenW - self.width) / 2
+        self.y = (screenH - self.height) / 2 - 20
+
+        self.buttons.header_roughhouse = {
+            x = self.x + M.BOARD_PADDING,
+            y = self.y + M.BOARD_PADDING,
+            width = M.COLUMN_WIDTH,
+            height = M.HEADER_HEIGHT,
+            name = "Roughhouse",
+            color = self.colors.header_pentacles,
+            enabled = true,
+        }
+
+        local colX = self.x + M.BOARD_PADDING
+        for i, option in ipairs(options) do
+            local btnY = self.y + M.BOARD_PADDING + M.HEADER_HEIGHT + M.BUTTON_PADDING +
+                (i - 1) * (M.BUTTON_HEIGHT + M.BUTTON_PADDING)
+            self.buttons[#self.buttons + 1] = {
+                action = option,
+                x = colX,
+                y = btnY,
+                width = M.COLUMN_WIDTH,
+                height = M.BUTTON_HEIGHT,
+                enabled = true,
+                disabledReason = nil,
+                suitColor = self.colors.header_pentacles,
+            }
+        end
+    end
+
+    local function normalizeCommandName(commandName)
+        commandName = tostring(commandName or ""):lower()
+        commandName = commandName:gsub("[’']", "")
+        commandName = commandName:gsub("%s+", "_")
+        commandName = commandName:gsub("[^%w_]", "")
+
+        if commandName == "sic_em" or commandName == "sicem" or commandName == "attack" then
+            return "sic_em"
+        elseif commandName == "get_help" or commandName == "gethelp" then
+            return "get_help"
+        elseif commandName == "do_a_trick" or commandName == "do_trick" or commandName == "trick" then
+            return "do_a_trick"
+        end
+
+        return commandName
+    end
+
+    local function titleizeCommandName(commandName)
+        local normalized = normalizeCommandName(commandName)
+        local names = {
+            sic_em = "Sic 'Em",
+            get_help = "Get Help",
+            do_a_trick = "Do a Trick",
+            heel = "Heel",
+            guard = "Guard",
+            fetch = "Fetch",
+            stay = "Stay",
+            track = "Track",
+            hunt = "Hunt",
+        }
+        return names[normalized] or tostring(commandName or "Command"):gsub("_", " ")
+    end
+
+    function board:getCommandCompanions()
+        local entity = self.selectedEntity
+        if not entity then
+            return {}
+        end
+
+        local companions = {}
+        local seen = {}
+        local function add(companion, key)
+            if type(companion) ~= "table" then
+                return
+            end
+
+            local id = companion.id or key or tostring(#companions + 1)
+            if seen[id] then
+                return
+            end
+            seen[id] = true
+            companions[#companions + 1] = {
+                id = id,
+                companion = companion,
+            }
+        end
+
+        add(entity.companion, entity.companion and entity.companion.id)
+        for _, collection in ipairs({ entity.companions, entity.animalCompanions }) do
+            if type(collection) == "table" then
+                for key, companion in pairs(collection) do
+                    add(companion, key)
+                end
+            end
+        end
+
+        return companions
+    end
+
+    function board:getKnownCommands(companion)
+        local commands = companion and (companion.knownCommands or companion.commands)
+        local options = {}
+
+        if type(commands) == "table" then
+            for key, value in pairs(commands) do
+                local rawName = nil
+                if type(value) == "string" then
+                    rawName = value
+                elseif type(value) == "table" then
+                    rawName = value.name or value.id
+                elseif value then
+                    rawName = key
+                end
+
+                if rawName then
+                    options[#options + 1] = rawName
+                end
+            end
+        elseif commands == nil then
+            options[#options + 1] = "Command"
+        end
+
+        table.sort(options, function(a, b)
+            return titleizeCommandName(a) < titleizeCommandName(b)
+        end)
+
+        return options
+    end
+
+    function board:getCommandOptions()
+        local options = {}
+        for _, entry in ipairs(self:getCommandCompanions()) do
+            local companion = entry.companion
+            for _, commandName in ipairs(self:getKnownCommands(companion)) do
+                local normalizedCommand = normalizeCommandName(commandName)
+                options[#options + 1] = {
+                    id = "command_" .. entry.id .. "_" .. normalizedCommand,
+                    name = titleizeCommandName(commandName),
+                    description = "Command " .. (companion.name or "companion") .. ".",
+                    commandName = normalizedCommand,
+                    commandDisplayName = titleizeCommandName(commandName),
+                    companionId = entry.id,
+                    companion = companion,
+                }
+            end
+        end
+
+        return options
+    end
+
+    function board:showCommandOptions(commandAction)
+        local options = self:getCommandOptions()
+        if #options == 0 then
+            return false
+        end
+
+        self.mode = "command_option"
+        self.commandBaseAction = commandAction
+        self.commandOptions = options
+        self:buildCommandOptionButtons(options)
+        return true
+    end
+
+    function board:getCommandOptionDisabledReason(option)
+        local companion = option and option.companion
+        if not companion then
+            return "No companion"
+        end
+
+        local conditions = companion.conditions or {}
+        if conditions.dead then
+            return "Companion is dead"
+        end
+        if companion.weak or conditions.weak then
+            return "Companion is weak"
+        end
+        if companion.starving or conditions.starving then
+            return "Companion is starving"
+        end
+
+        return nil
+    end
+
+    function board:buildCommandOptionButtons(options)
+        self.buttons = {}
+
+        local count = #options
+        self.width = M.COLUMN_WIDTH + M.BOARD_PADDING * 2
+        self.height = M.BOARD_PADDING * 2 + M.HEADER_HEIGHT +
+            count * (M.BUTTON_HEIGHT + M.BUTTON_PADDING) + M.BUTTON_PADDING
+
+        local screenW, screenH = love.graphics.getDimensions()
+        self.x = (screenW - self.width) / 2
+        self.y = (screenH - self.height) / 2 - 20
+
+        self.buttons.header_command = {
+            x = self.x + M.BOARD_PADDING,
+            y = self.y + M.BOARD_PADDING,
+            width = M.COLUMN_WIDTH,
+            height = M.HEADER_HEIGHT,
+            name = "Command",
+            color = self.colors.header_cups,
+            enabled = true,
+        }
+
+        local colX = self.x + M.BOARD_PADDING
+        for i, option in ipairs(options) do
+            local btnY = self.y + M.BOARD_PADDING + M.HEADER_HEIGHT + M.BUTTON_PADDING +
+                (i - 1) * (M.BUTTON_HEIGHT + M.BUTTON_PADDING)
+            local disabledReason = self:getCommandOptionDisabledReason(option)
+            self.buttons[#self.buttons + 1] = {
+                action = option,
+                x = colX,
+                y = btnY,
+                width = M.COLUMN_WIDTH,
+                height = M.BUTTON_HEIGHT,
+                enabled = disabledReason == nil,
+                disabledReason = disabledReason,
+                suitColor = self.colors.header_cups,
+            }
+        end
+    end
+
+    function board:showVigilanceTriggers(followUpAction)
+        self.mode = "vigilance_trigger"
+        self.vigilanceSelectedFollowUp = followUpAction
+        self.vigilanceTriggerOptions = vigilance_triggers.listOptions()
+        self:buildVigilanceTriggerButtons(self.vigilanceTriggerOptions)
         return true
     end
 
@@ -360,8 +672,14 @@ function M.createCommandBoard(config)
 
     function board:returnToActionMode()
         self.mode = "action"
+        self.roughhouseBaseAction = nil
+        self.roughhouseEffectOptions = nil
+        self.commandBaseAction = nil
+        self.commandOptions = nil
         self.vigilanceBaseAction = nil
+        self.vigilanceSelectedFollowUp = nil
         self.vigilanceFollowUpOptions = nil
+        self.vigilanceTriggerOptions = nil
         self.hoveredAction = nil
         self.hoveredButton = nil
 
@@ -375,13 +693,72 @@ function M.createCommandBoard(config)
         self:buildButtons()
     end
 
-    function board:emitActionSelected(action, followUpAction)
+    function board:returnToVigilanceFollowUpMode()
+        if self.vigilanceBaseAction and self.vigilanceFollowUpOptions and #self.vigilanceFollowUpOptions > 1 then
+            self.mode = "vigilance_followup"
+            self.vigilanceSelectedFollowUp = nil
+            self.vigilanceTriggerOptions = nil
+            self.hoveredAction = nil
+            self.hoveredButton = nil
+            self:buildVigilanceFollowUpButtons(self.vigilanceFollowUpOptions)
+        else
+            self:returnToActionMode()
+        end
+    end
+
+    function board:buildVigilanceTriggerButtons(options)
+        self.buttons = {}
+
+        local count = #options
+        self.width = M.COLUMN_WIDTH + M.BOARD_PADDING * 2
+        self.height = M.BOARD_PADDING * 2 + M.HEADER_HEIGHT +
+            count * (M.BUTTON_HEIGHT + M.BUTTON_PADDING) + M.BUTTON_PADDING
+
+        local screenW, screenH = love.graphics.getDimensions()
+        self.x = (screenW - self.width) / 2
+        self.y = (screenH - self.height) / 2 - 20
+
+        self.buttons.header_trigger = {
+            x = self.x + M.BOARD_PADDING,
+            y = self.y + M.BOARD_PADDING,
+            width = M.COLUMN_WIDTH,
+            height = M.HEADER_HEIGHT,
+            name = "Trigger",
+            color = self.colors.header_misc,
+            enabled = true,
+        }
+
+        local colX = self.x + M.BOARD_PADDING
+        for i, option in ipairs(options) do
+            local btnY = self.y + M.BOARD_PADDING + M.HEADER_HEIGHT + M.BUTTON_PADDING +
+                (i - 1) * (M.BUTTON_HEIGHT + M.BUTTON_PADDING)
+            self.buttons[#self.buttons + 1] = {
+                action = option,
+                x = colX,
+                y = btnY,
+                width = M.COLUMN_WIDTH,
+                height = M.BUTTON_HEIGHT,
+                enabled = true,
+                disabledReason = nil,
+                suitColor = self.colors.header_misc,
+            }
+        end
+    end
+
+    function board:emitActionSelected(action, followUpAction, vigilanceTrigger, vigilanceTriggerOption, roughhouseEffect, roughhouseEffectOption, commandName, commandCompanionId, commandOption)
         self.eventBus:emit("action_selected", {
             action = action,
             card = self.selectedCard,
             entity = self.selectedEntity,
             isPrimaryTurn = self.isPrimaryTurn,
             followUpAction = followUpAction,
+            vigilanceTrigger = vigilanceTrigger,
+            vigilanceTriggerOption = vigilanceTriggerOption,
+            roughhouseEffect = roughhouseEffect,
+            roughhouseEffectOption = roughhouseEffectOption,
+            commandName = commandName,
+            commandCompanionId = commandCompanionId,
+            commandOption = commandOption,
         })
     end
 
@@ -413,15 +790,36 @@ function M.createCommandBoard(config)
         -- Draw title
         love.graphics.setColor(self.colors.header_text)
         local title = nil
-        if self.mode == "vigilance_followup" then
+        if self.mode == "roughhouse_effect" then
+            title = "Choose Roughhouse Effect"
+        elseif self.mode == "command_option" then
+            title = "Choose Companion Command"
+        elseif self.mode == "vigilance_followup" then
             title = "Choose Vigilance Follow-Up"
+        elseif self.mode == "vigilance_trigger" then
+            title = "Choose Vigilance Trigger"
         else
             title = self.isPrimaryTurn and "Choose Action (Primary Turn)" or "Choose Minor Action"
         end
         love.graphics.printf(title, self.x, self.y - 25, self.width, "center")
 
-        if self.mode == "vigilance_followup" then
+        if self.mode == "roughhouse_effect" then
+            local header = self.buttons.header_roughhouse
+            if header then
+                self:drawColumnHeader(header)
+            end
+        elseif self.mode == "command_option" then
+            local header = self.buttons.header_command
+            if header then
+                self:drawColumnHeader(header)
+            end
+        elseif self.mode == "vigilance_followup" then
             local header = self.buttons.header_followup
+            if header then
+                self:drawColumnHeader(header)
+            end
+        elseif self.mode == "vigilance_trigger" then
+            local header = self.buttons.header_trigger
             if header then
                 self:drawColumnHeader(header)
             end
@@ -600,14 +998,59 @@ function M.createCommandBoard(config)
             if btn.action and btn.enabled then
                 if x >= btn.x and x <= btn.x + btn.width and
                    y >= btn.y and y <= btn.y + btn.height then
-                    if self.mode == "action" and btn.action.id == "vigilance" and self.isPrimaryTurn then
+                    if self.mode == "action" and btn.action.id == "roughhouse" then
+                        local opened = self:showRoughhouseEffects(btn.action)
+                        if opened then
+                            return true
+                        end
+                        -- Fall back to standard behavior if no effect options are available.
+                    elseif self.mode == "action" and btn.action.id == "command" then
+                        local opened = self:showCommandOptions(btn.action)
+                        if opened then
+                            return true
+                        end
+                        -- Fall back to standard behavior if no command options are available.
+                    elseif self.mode == "action" and btn.action.id == "vigilance" and self.isPrimaryTurn then
                         local opened = self:showVigilanceFollowUp(btn.action)
                         if opened then
                             return true
                         end
                         -- Fall back to standard behavior if no follow-up options are available.
+                    elseif self.mode == "roughhouse_effect" and self.roughhouseBaseAction then
+                        self:emitActionSelected(
+                            self.roughhouseBaseAction,
+                            nil,
+                            nil,
+                            nil,
+                            btn.action.roughhouseEffect,
+                            btn.action
+                        )
+                        self:hide()
+                        return true
+                    elseif self.mode == "command_option" and self.commandBaseAction then
+                        self:emitActionSelected(
+                            self.commandBaseAction,
+                            nil,
+                            nil,
+                            nil,
+                            nil,
+                            nil,
+                            btn.action.commandName,
+                            btn.action.companionId,
+                            btn.action
+                        )
+                        self:hide()
+                        return true
                     elseif self.mode == "vigilance_followup" and self.vigilanceBaseAction then
-                        self:emitActionSelected(self.vigilanceBaseAction, btn.action)
+                        self:showVigilanceTriggers(btn.action)
+                        return true
+                    elseif self.mode == "vigilance_trigger" and self.vigilanceBaseAction and self.vigilanceSelectedFollowUp then
+                        self:emitActionSelected(
+                            self.vigilanceBaseAction,
+                            self.vigilanceSelectedFollowUp,
+                            btn.action.trigger or { template = btn.action.id },
+                            btn.action
+                        )
                         self:hide()
                         return true
                     end
@@ -622,8 +1065,12 @@ function M.createCommandBoard(config)
         -- Clicking outside closes or steps back from vigilance follow-up mode
         if x < self.x or x > self.x + self.width or
            y < self.y or y > self.y + self.height then
-            if self.mode == "vigilance_followup" then
+            if self.mode == "roughhouse_effect" or self.mode == "command_option" then
                 self:returnToActionMode()
+            elseif self.mode == "vigilance_followup" then
+                self:returnToActionMode()
+            elseif self.mode == "vigilance_trigger" then
+                self:returnToVigilanceFollowUpMode()
             else
                 self:hide()
             end
@@ -656,8 +1103,12 @@ function M.createCommandBoard(config)
 
         -- ESC to close
         if key == "escape" then
-            if self.mode == "vigilance_followup" then
+            if self.mode == "roughhouse_effect" or self.mode == "command_option" then
                 self:returnToActionMode()
+            elseif self.mode == "vigilance_followup" then
+                self:returnToActionMode()
+            elseif self.mode == "vigilance_trigger" then
+                self:returnToVigilanceFollowUpMode()
             else
                 self:hide()
             end
