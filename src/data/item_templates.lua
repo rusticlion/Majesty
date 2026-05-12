@@ -212,6 +212,21 @@ M.templates = {
         },
     },
 
+    disgusting_ration = {
+        name = "Disgusting Ration",
+        size = 1,
+        stackable = true,
+        stackSize = 6,
+        quantity = 1,
+        type = "ration",
+        isRation = true,
+        properties = {
+            disgusting = true,
+            isAnimalFeed = true,
+            feedFor = "any",
+        },
+    },
+
     lard = {
         name = "Lard",
         size = 1,
@@ -336,6 +351,42 @@ M.templates = {
             medical = true,
             antiPoison = true,
             afflictionCureCharges = 8,
+        },
+    },
+
+    firework_rocket = {
+        name = "Firework Rocket",
+        size = 1,
+        stackable = true,
+        stackSize = 6,
+        quantity = 1,
+        properties = {
+            consumable = true,
+            challengeItem = true,
+            firework = true,
+            misfireChancePercent = 25,
+            possibleEffects = { "blinding_lights", "piercing_wounds" },
+        },
+    },
+
+    fate_honey = {
+        name = "Jar of Fate Honey",
+        size = 1,
+        properties = {
+            consumable = true,
+            crawlUse = true,
+            restoresLoreBids = 1,
+        },
+    },
+
+    newt_row_amulet = {
+        name = "Newt Row Amulet",
+        size = 1,
+        properties = {
+            consumable = true,
+            consumeOnUse = true,
+            removesDisfavor = true,
+            grantsFavor = false,
         },
     },
 
@@ -468,6 +519,827 @@ M.templates = {
         },
     },
 
+    devil_potion = {
+        name = "Devil Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "devil",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    fire_immunity = true,
+                    heat_immunity = true,
+                    gear_still_burns = true,
+                },
+                successMessage = "Fire cannot harm you for a watch, though your gear can still burn.",
+            },
+        },
+    },
+
+    devil_bomb = {
+        name = "Devil Confession Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "devil",
+            useEffect = {
+                type = "compel_confession",
+                target = "target",
+                successMessage = "The target is Controlled to confess their gravest sin.",
+            },
+        },
+    },
+
+    devil_oil = {
+        name = "Devil Invisible Fire Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "devil",
+            useEffect = {
+                type = "invisible_fire",
+                target = "target",
+                successMessage = "Invisible flame burns hot without shedding light.",
+            },
+        },
+    },
+
+    cockatrice_bomb = {
+        name = "Cockatrice Stone-Smoke Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "cockatrice",
+            useEffect = {
+                type = "cockatrice_stone_smoke",
+                target = "target",
+                successMessage = "Stone-dissolving smoke blasts the target.",
+            },
+        },
+    },
+
+    cockatrice_oil = {
+        name = "Cockatrice Flesh-Stone Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "cockatrice",
+            useEffect = {
+                type = "cockatrice_stone_flesh",
+                target = "target",
+                successMessage = "Stone softens into flesh where the oil touches.",
+            },
+        },
+    },
+
+    face_rat_potion = {
+        name = "Face Rat Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "face_rat",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    face_rat_illusion = true,
+                    illusion_duplicate_pending = true,
+                    visual_illusion = true,
+                },
+                successMessage = "An illusion settles over you, ready to copy the first creature you see.",
+            },
+        },
+    },
+
+    face_rat_bomb = {
+        name = "Face Rat Skin Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "face_rat",
+            useEffect = {
+                type = "apply_conditions",
+                target = "target",
+                conditions = {
+                    blind = true,
+                    blinded = true,
+                    deaf = true,
+                    deafened = true,
+                    silenced = true,
+                },
+                successMessage = "Skin grows over the target's ears, eyes, and mouth.",
+            },
+        },
+    },
+
+    fungoid_potion = {
+        name = "Fungoid Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "fungoid",
+            useEffect = {
+                type = "heal_wound",
+                target = "self_or_target",
+                successMessage = "Mushrooms sprout where the wound closes.",
+            },
+        },
+    },
+
+    fungoid_bomb = {
+        name = "Fungoid Spore Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "fungoid",
+            useEffect = {
+                type = "apply_conditions",
+                target = "target",
+                conditions = {
+                    exhausted = true,
+                },
+                successMessage = "A choking cloud of spores leaves the target exhausted.",
+            },
+        },
+    },
+
+    fungoid_oil = {
+        name = "Fungoid Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "fungoid",
+            useEffect = {
+                type = "mushroom_patch",
+                target = "target",
+                duration = "watch",
+                mushroomsBySuit = {
+                    [1] = { id = "giant_inky_cap", name = "giant inky cap", edible = true, poisonousWithAlcohol = true },
+                    [2] = { id = "giant_destroying_angel", name = "giant destroying angel", poisonous = true },
+                    [3] = { id = "giant_hen_of_the_woods", name = "giant hen of the woods", edible = true },
+                    [4] = { id = "giant_shrieker", name = "giant shrieker", magical = true, screams = true },
+                },
+                successMessage = "Huge mushrooms erupt where the oil is poured.",
+            },
+        },
+    },
+
+    harpy_potion = {
+        name = "Harpy Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "harpy",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    harpy_wings = true,
+                    flying = true,
+                    flight = true,
+                    arms_are_wings = true,
+                    cannot_hold_items = true,
+                    cannot_hover = true,
+                    must_keep_flying = true,
+                },
+                successMessage = "Your arms become wings for a watch; you can fly but cannot hold anything.",
+            },
+        },
+    },
+
+    harpy_bomb = {
+        name = "Harpy Distaste Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "harpy",
+            useEffect = {
+                type = "distaste_inspiration",
+                target = "target",
+                duration = "watch",
+                successMessage = "The victim hates the first creature they see for a watch.",
+            },
+        },
+    },
+
+    imp_potion = {
+        name = "Imp Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "imp",
+            useEffect = {
+                type = "purge_poison_alchemy",
+                target = "self",
+                successMessage = "You vomit up poisons and lingering alchemy.",
+            },
+        },
+    },
+
+    imp_bomb = {
+        name = "Imp Stink Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "imp",
+            useEffect = {
+                type = "imp_stink",
+                target = "target",
+                successMessage = "The target chokes on a terrible stink.",
+            },
+        },
+    },
+
+    imp_oil = {
+        name = "Imp Frictionless Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "imp",
+            useEffect = {
+                type = "frictionless_surface",
+                target = "target",
+                puddleDiameterFeet = 10,
+                successMessage = "The touched surface becomes utterly frictionless.",
+            },
+        },
+    },
+
+    griffin_potion = {
+        name = "Griffin Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "griffin",
+            useEffect = {
+                type = "dungeon_bird_rumor",
+                target = "self",
+                arrivesInWatches = 1,
+                successMessage = "A dungeon bird will seek you out with a rumor in a watch or so.",
+            },
+        },
+    },
+
+    griffin_oil = {
+        name = "Griffin Cleansing Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "griffin",
+            useEffect = {
+                type = "cleanse_surface",
+                target = "target",
+                successMessage = "Rust, flaws, impurities, and filth slide away.",
+            },
+        },
+    },
+
+    jinn_potion = {
+        name = "Jinn Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "jinn",
+            useEffect = {
+                type = "jinn_shroud",
+                target = "self",
+                duration = "visible_interaction",
+                successMessage = "Smokeless fire hides you as Shrouded until you touch the visible world.",
+            },
+        },
+    },
+
+    jinn_bomb = {
+        name = "Jinn Materializing Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "jinn",
+            useEffect = {
+                type = "materialize_intangible",
+                target = "target",
+                successMessage = "The intangible target is forced into visible, tangible form.",
+            },
+        },
+    },
+
+    jinn_oil = {
+        name = "Jinn City Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "jinn",
+            useEffect = {
+                type = "city_portal",
+                target = "target",
+                duration = "one_minute",
+                successMessage = "A fiery hole opens in reality toward the City.",
+            },
+        },
+    },
+
+    mimic_potion = {
+        name = "Mimic Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "mimic",
+            useEffect = {
+                type = "object_speech",
+                target = "self",
+                duration = "three_minutes_real_time",
+                realTimeMinutes = 3,
+                successMessage = "You can talk to objects for the next three minutes.",
+            },
+        },
+    },
+
+    mimic_oil = {
+        name = "Mimic Awakening Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "mimic",
+            useEffect = {
+                type = "awaken_mimic",
+                target = "target",
+                successMessage = "The non-living object becomes a mimic, and it is not loyal to you.",
+            },
+        },
+    },
+
+    kelpie_potion = {
+        name = "Kelpie Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "kelpie",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    water_breathing = true,
+                    underwater_breathing = true,
+                    gills = true,
+                },
+                successMessage = "Gills open along your neck; you can breathe underwater for a watch.",
+            },
+        },
+    },
+
+    kelpie_oil = {
+        name = "Kelpie Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "kelpie",
+            useEffect = {
+                type = "apply_properties",
+                target = "target",
+                duration = "watch",
+                properties = {
+                    rejectsWater = true,
+                    hydrophobic = true,
+                    buoyant = true,
+                    waterWalking = true,
+                    waterPlatform = true,
+                },
+                successMessage = "The touched surface rejects water for a watch.",
+            },
+        },
+    },
+
+    nymph_potion = {
+        name = "Nymph Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "nymph",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    nymph_beauty = true,
+                    disposition_influence_favor = true,
+                    inspire_immune = true,
+                    control_immune = true,
+                },
+                successMessage = "You become supernaturally beautiful and hard to sway for a watch.",
+            },
+        },
+    },
+
+    nymph_bomb = {
+        name = "Nymph Love Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "nymph",
+            useEffect = {
+                type = "romantic_inspiration",
+                target = "target",
+                duration = "watch",
+                successMessage = "The victim falls romantically in love with the first creature they see.",
+            },
+        },
+    },
+
+    winter_wolf_potion = {
+        name = "Winter Wolf Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "winter_wolf",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    cold_immunity = true,
+                    ice_damage_immunity = true,
+                    comfortable_in_cold = true,
+                },
+                successMessage = "Cold and ice cannot harm you for a watch.",
+            },
+        },
+    },
+
+    winter_wolf_oil = {
+        name = "Winter Wolf Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "winter_wolf",
+            useEffect = {
+                type = "apply_properties",
+                target = "target",
+                properties = {
+                    freezing = true,
+                    freezesWater = true,
+                    createsIceWall = true,
+                    iceWallHeightFeet = 10,
+                    iceWallWidthFeet = 10,
+                    iceWallThicknessFeet = 1,
+                    opaque = true,
+                    impermeable = true,
+                },
+                successMessage = "The oil freezes into an opaque wall or sheet of ice.",
+            },
+        },
+    },
+
+    titan_potion = {
+        name = "Titan Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "titan",
+            useEffect = {
+                type = "grow_creature",
+                target = "self",
+                duration = "watch",
+                sizeMultiplier = 2,
+                heightMultiplier = 2,
+                challengeActionFavor = false,
+                successMessage = "Your body swells with Titan growth for a watch.",
+            },
+        },
+    },
+
+    titan_oil = {
+        name = "Titan Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "titan",
+            useEffect = {
+                type = "apply_properties",
+                target = "target",
+                properties = {
+                    weightMultiplier = 10,
+                    tenTimesHeavy = true,
+                    structurallyIntact = true,
+                    environmentalStructuralStress = true,
+                },
+                successMessage = "The touched object becomes ten times as heavy.",
+            },
+        },
+    },
+
+    ogre_potion = {
+        name = "Ogre Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "ogre",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    poison_immunity = true,
+                    ingestion_immunity = true,
+                    harmless_swallowing = true,
+                },
+                successMessage = "Poisons and swallowed hazards cannot harm you for a watch.",
+            },
+        },
+    },
+
+    ogre_bomb = {
+        name = "Ogre Pheromone Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "ogre",
+            useEffect = {
+                type = "rage_pheromone",
+                target = "target",
+                successMessage = "Rage-inducing pheromones make nearby creatures furious at the target.",
+            },
+        },
+    },
+
+    ogre_oil = {
+        name = "Ogre Solvent Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "ogre",
+            useEffect = {
+                type = "apply_properties",
+                target = "target",
+                properties = {
+                    universalSolvent = true,
+                    breaksAdhesives = true,
+                    softensMaterials = true,
+                    stoneToMud = true,
+                    metalBendable = true,
+                    woodPaper = true,
+                },
+                successMessage = "The solvent breaks adhesives and makes hard materials pliable.",
+            },
+        },
+    },
+
+    questing_beast_potion = {
+        name = "Questing Beast Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "questing_beast",
+            useEffect = {
+                type = "location_insight",
+                target = "self",
+                successMessage = "A prophetic insight reveals the sought location.",
+            },
+        },
+    },
+
+    questing_beast_oil = {
+        name = "Questing Beast Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "questing_beast",
+            useEffect = {
+                type = "barking_lure",
+                target = "target",
+                duration = "watch",
+                drawCount = 2,
+                successMessage = "The touched object barks like a pack of hounds.",
+            },
+        },
+    },
+
+    ungoat_potion = {
+        name = "Ungoat Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "ungoat",
+            useEffect = {
+                type = "apply_conditions",
+                target = "self",
+                duration = "watch",
+                conditions = {
+                    ungoat_spell_ward = true,
+                    spell_target_blocked = true,
+                    cannot_cast_spells = true,
+                },
+                successMessage = "Magic treats you as iron-clad for a watch.",
+            },
+        },
+    },
+
+    ungoat_bomb = {
+        name = "Ungoat Maleficence Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "ungoat",
+            useEffect = {
+                type = "trigger_maleficence",
+                target = "target",
+                successMessage = "Maleficence erupts around the target.",
+            },
+        },
+    },
+
+    ungoat_oil = {
+        name = "Ungoat Oil",
+        size = 1,
+        durability = 1,
+        properties = {
+            oil = true,
+            alchemical = true,
+            consumable = true,
+            source = "ungoat",
+            useEffect = {
+                type = "negate_spells",
+                target = "target",
+                duration = "watch",
+                successMessage = "Active magic on the touched target goes dormant.",
+            },
+        },
+    },
+
+    vampire_potion = {
+        name = "Vampire Potion",
+        size = 1,
+        durability = 1,
+        properties = {
+            potion = true,
+            alchemical = true,
+            consumable = true,
+            source = "vampire",
+            useEffect = {
+                type = "mist_form",
+                target = "self",
+                duration = "watch",
+                successMessage = "You dissolve into thick mist for a watch.",
+            },
+        },
+    },
+
+    vampire_bomb = {
+        name = "Vampire Weakness Bomb",
+        size = 1,
+        durability = 1,
+        properties = {
+            bomb = true,
+            alchemical = true,
+            consumable = true,
+            consumeOnAttempt = true,
+            offensive = true,
+            source = "vampire",
+            useEffect = {
+                type = "vampire_weaknesses",
+                target = "target",
+                duration = "watch",
+                successMessage = "The target suffers vampire weaknesses for a watch.",
+            },
+        },
+    },
+
     slime_potion = {
         name = "Slime Potion",
         size = 1,
@@ -547,6 +1419,318 @@ M.templates = {
                 potion = "brain_spider_potion",
                 bomb = "brain_spider_bomb",
                 oil = "brain_spider_oil",
+            },
+        },
+    },
+
+    devil_reagent = {
+        name = "Hermetic Bottle: Devil Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "devil",
+            saleValue = 25,
+            brewOutputs = {
+                potion = "devil_potion",
+                bomb = "devil_bomb",
+                oil = "devil_oil",
+            },
+        },
+    },
+
+    cockatrice_reagent = {
+        name = "Hermetic Bottle: Cockatrice Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "cockatrice",
+            saleValue = 25,
+            brewOutputs = {
+                bomb = "cockatrice_bomb",
+                oil = "cockatrice_oil",
+            },
+        },
+    },
+
+    face_rat_reagent = {
+        name = "Hermetic Bottle: Face Rat Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "face_rat",
+            saleValue = 10,
+            brewOutputs = {
+                potion = "face_rat_potion",
+                bomb = "face_rat_bomb",
+            },
+        },
+    },
+
+    fungoid_reagent = {
+        name = "Hermetic Bottle: Fungoid Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "fungoid",
+            saleValue = 15,
+            brewOutputs = {
+                potion = "fungoid_potion",
+                bomb = "fungoid_bomb",
+                oil = "fungoid_oil",
+            },
+        },
+    },
+
+    harpy_reagent = {
+        name = "Hermetic Bottle: Harpy Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "harpy",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "harpy_potion",
+                bomb = "harpy_bomb",
+            },
+        },
+    },
+
+    imp_reagent = {
+        name = "Hermetic Bottle: Imp Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "imp",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "imp_potion",
+                bomb = "imp_bomb",
+                oil = "imp_oil",
+            },
+        },
+    },
+
+    griffin_reagent = {
+        name = "Hermetic Bottle: Griffin Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "griffin",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "griffin_potion",
+                oil = "griffin_oil",
+            },
+        },
+    },
+
+    jinn_reagent = {
+        name = "Hermetic Bottle: Jinn Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "jinn",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "jinn_potion",
+                bomb = "jinn_bomb",
+                oil = "jinn_oil",
+            },
+        },
+    },
+
+    mimic_reagent = {
+        name = "Hermetic Bottle: Mimic Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "mimic",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "mimic_potion",
+                oil = "mimic_oil",
+            },
+        },
+    },
+
+    kelpie_reagent = {
+        name = "Hermetic Bottle: Kelpie Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "kelpie",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "kelpie_potion",
+                oil = "kelpie_oil",
+            },
+        },
+    },
+
+    nymph_reagent = {
+        name = "Hermetic Bottle: Nymph Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "nymph",
+            saleValue = 25,
+            brewOutputs = {
+                potion = "nymph_potion",
+                bomb = "nymph_bomb",
+            },
+        },
+    },
+
+    ogre_reagent = {
+        name = "Hermetic Bottle: Ogre Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "ogre",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "ogre_potion",
+                bomb = "ogre_bomb",
+                oil = "ogre_oil",
+            },
+        },
+    },
+
+    questing_beast_reagent = {
+        name = "Hermetic Bottle: Questing Beast Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "questing_beast",
+            saleValue = 25,
+            brewOutputs = {
+                potion = "questing_beast_potion",
+                oil = "questing_beast_oil",
+            },
+        },
+    },
+
+    ungoat_reagent = {
+        name = "Hermetic Bottle: Ungoat Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "ungoat",
+            saleValue = 25,
+            brewOutputs = {
+                potion = "ungoat_potion",
+                bomb = "ungoat_bomb",
+                oil = "ungoat_oil",
+            },
+        },
+    },
+
+    vampire_reagent = {
+        name = "Hermetic Bottle: Vampire Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "vampire",
+            saleValue = 25,
+            brewOutputs = {
+                potion = "vampire_potion",
+                bomb = "vampire_bomb",
+            },
+        },
+    },
+
+    winter_wolf_reagent = {
+        name = "Hermetic Bottle: Winter Wolf Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "winter_wolf",
+            saleValue = 20,
+            brewOutputs = {
+                potion = "winter_wolf_potion",
+                oil = "winter_wolf_oil",
+            },
+        },
+    },
+
+    titan_reagent = {
+        name = "Hermetic Bottle: Titan Reagent",
+        size = 1,
+        durability = 1,
+        type = "reagent",
+        properties = {
+            reagent = true,
+            alchemicalReagent = true,
+            hermeticBottle = true,
+            source = "titan",
+            saleValue = 25,
+            brewOutputs = {
+                potion = "titan_potion",
+                oil = "titan_oil",
             },
         },
     },
@@ -1459,6 +2643,7 @@ M.templates = {
         properties = {
             camping = true,
             firewood = true,
+            felledWood = true,
             campComfort = "fire",
         },
     },

@@ -66,27 +66,43 @@ end
 local function instantiateGear(gearList)
     local items = {}
     for _, template in ipairs(gearList or {}) do
-        local item = inventory.createItem({
-            name       = template.name,
-            size       = template.size or inventory.SIZE.NORMAL,
-            durability = template.durability or inventory.DURABILITY.NORMAL,
-            oversized  = template.oversized or false,
-            stackable  = template.stackable or false,
-            stackSize  = template.stackSize or 1,
-            quantity   = template.quantity or 1,
-            isArmor    = template.isArmor or false,
-            weaponType = template.weaponType,
-            isWeapon   = template.isWeapon,
-            isMelee    = template.isMelee,
-            isRanged   = template.isRanged,
-            uses_ammo  = template.uses_ammo,
-            isLoaded   = template.isLoaded,
-            keyId      = template.keyId,
-            type       = template.type,
-            isRation   = template.isRation,
-            properties = template.properties or {},
-        })
-        items[#items + 1] = item
+        local templateId = template.templateId or template.itemTemplate
+        local item
+
+        if templateId then
+            local overrides = {}
+            for key, value in pairs(template) do
+                if key ~= "templateId" and key ~= "itemTemplate" then
+                    overrides[key] = deepCopy(value)
+                end
+            end
+            item = inventory.createItemFromTemplate(templateId, next(overrides) and overrides or nil)
+        else
+            item = inventory.createItem({
+                name       = template.name,
+                size       = template.size or inventory.SIZE.NORMAL,
+                durability = template.durability or inventory.DURABILITY.NORMAL,
+                oversized  = template.oversized or false,
+                stackable  = template.stackable or false,
+                stackSize  = template.stackSize or 1,
+                quantity   = template.quantity or 1,
+                isArmor    = template.isArmor or false,
+                weaponType = template.weaponType,
+                isWeapon   = template.isWeapon,
+                isMelee    = template.isMelee,
+                isRanged   = template.isRanged,
+                uses_ammo  = template.uses_ammo,
+                isLoaded   = template.isLoaded,
+                keyId      = template.keyId,
+                type       = template.type,
+                isRation   = template.isRation,
+                properties = deepCopy(template.properties or {}),
+            })
+        end
+
+        if item then
+            items[#items + 1] = item
+        end
     end
     return items
 end
@@ -165,6 +181,19 @@ function M.createEntity(template_id, overrides)
     entity.greaterDoom = deepCopy(blueprint.greaterDoom)
     entity.social = deepCopy(blueprint.social)
     entity.alchemy = deepCopy(blueprint.alchemy)
+    entity.notes = deepCopy(blueprint.notes)
+    entity.zombie = deepCopy(blueprint.zombie)
+    entity.mimic = deepCopy(blueprint.mimic)
+    entity.nymph = deepCopy(blueprint.nymph)
+    entity.ogre = deepCopy(blueprint.ogre)
+    entity.questingBeast = deepCopy(blueprint.questingBeast)
+    entity.skeleton = deepCopy(blueprint.skeleton)
+    entity.slime = deepCopy(blueprint.slime)
+    entity.titan = deepCopy(blueprint.titan)
+    entity.ungoat = deepCopy(blueprint.ungoat)
+    entity.vampire = deepCopy(blueprint.vampire)
+    entity.wraith = deepCopy(blueprint.wraith)
+    entity.winterWolf = deepCopy(blueprint.winterWolf)
 
     -- Attach inventory
     entity.inventory = inventory.createInventory()

@@ -22,22 +22,8 @@ M.adventurers = {
                 { name = "Light Shield", durability = 1, properties = { shield = true, tags = { "shield" } } },
             },
             belt = {
-                { name = "Torch", properties = {
-                    flicker_count = 3,
-                    light_source = true,
-                    isLit = true,
-                    requires_hands = true,
-                    provides_belt_light = false,
-                    fragile_on_belt = false,
-                } },
-                { name = "Torch", properties = {
-                    flicker_count = 3,
-                    light_source = true,
-                    isLit = true,
-                    requires_hands = true,
-                    provides_belt_light = false,
-                    fragile_on_belt = false,
-                } },
+                { templateId = "torch" },
+                { templateId = "torch" },
             },
         },
     },
@@ -78,14 +64,7 @@ M.adventurers = {
                 { name = "Staff", weaponType = "staff", isWeapon = true, isMelee = true },
             },
             belt = {
-                { name = "Lantern", properties = {
-                    flicker_count = 4,
-                    light_source = true,
-                    isLit = true,
-                    requires_hands = false,
-                    provides_belt_light = true,
-                    fragile_on_belt = true,
-                } },
+                { templateId = "lantern" },
                 { name = "Chalk", properties = { tool = true, toolType = "marking" } },
             },
         },
@@ -107,15 +86,8 @@ M.adventurers = {
                 { name = "Bow", weaponType = "bow", isWeapon = true, isRanged = true, uses_ammo = true },
             },
             belt = {
-                { name = "Torch", properties = {
-                    flicker_count = 3,
-                    light_source = true,
-                    isLit = true,
-                    requires_hands = true,
-                    provides_belt_light = false,
-                    fragile_on_belt = false,
-                } },
-                { name = "Rations", stackable = true, stackSize = 3, quantity = 3, isRation = true },
+                { templateId = "torch" },
+                { templateId = "rations_3" },
             },
         },
     },
@@ -126,6 +98,32 @@ M.bonds = {
     { from = "whisper", to = "grim", status = "rivalry" },
     { from = "ember", to = "fern", status = "friendship" },
     { from = "fern", to = "ember", status = "friendship" },
+}
+
+M.restock = {
+    ammo = {
+        default = 10,
+    },
+    supplies = {
+        {
+            id = "light",
+            templateId = "torch",
+            location = "belt",
+            match = { property = "light_source" },
+        },
+        {
+            id = "rations",
+            templateId = "rations_3",
+            location = "pack",
+            match = {
+                any = {
+                    { field = "isRation", equals = true },
+                    { field = "type", equals = "ration" },
+                    { nameContains = "ration" },
+                },
+            },
+        },
+    },
 }
 
 return M

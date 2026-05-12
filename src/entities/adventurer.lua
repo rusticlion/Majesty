@@ -45,6 +45,35 @@ local function normalizeTalents(talents)
     return normalized
 end
 
+local function countWoundedTalents(talents)
+    local count = 0
+    for _, talent in pairs(talents or {}) do
+        if type(talent) == "table" and talent.wounded then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function removeWoundedTalentOrder(entity, talentId)
+    local order = entity and entity._woundedTalentOrder
+    if not order then
+        return
+    end
+
+    for i = #order, 1, -1 do
+        if order[i] == talentId then
+            table.remove(order, i)
+            return
+        end
+    end
+end
+
+local function maxTalentWounds(entity)
+    local talentCount = entity.getTalentCount and entity:getTalentCount() or 0
+    return math.min(entity.talentWoundSlots or talentCount, talentCount)
+end
+
 --------------------------------------------------------------------------------
 -- BOND STATUS CONSTANTS
 --------------------------------------------------------------------------------
@@ -256,20 +285,55 @@ function M.createAdventurer(config)
 
     --- Wound a specific talent
     function adventurer:woundTalent(talentId)
-        if self.talents[talentId] then
-            self.talents[talentId].wounded = true
+        local talent = self.talents[talentId]
+        if not talent then
+            return false
+        end
+
+        if type(talent) ~= "table" then
+            talent = normalizeTalentData(talent)
+            self.talents[talentId] = talent
+        end
+
+        if talent.wounded then
+            self.woundedTalents = countWoundedTalents(self.talents)
             return true
         end
-        return false
+
+        local woundedCount = countWoundedTalents(self.talents)
+        if woundedCount >= maxTalentWounds(self) then
+            self.woundedTalents = woundedCount
+            return false
+        end
+
+        talent.wounded = true
+        self._woundedTalentOrder = self._woundedTalentOrder or {}
+        self._woundedTalentOrder[#self._woundedTalentOrder + 1] = talentId
+        self.woundedTalents = woundedCount + 1
+        return true
     end
 
     --- Heal a specific talent
     function adventurer:healTalent(talentId)
-        if self.talents[talentId] then
-            self.talents[talentId].wounded = false
+        local talent = self.talents[talentId]
+        if not talent then
+            return false
+        end
+
+        if type(talent) ~= "table" then
+            talent = normalizeTalentData(talent)
+            self.talents[talentId] = talent
+        end
+
+        if talent.wounded then
+            talent.wounded = false
+            removeWoundedTalentOrder(self, talentId)
+            self.woundedTalents = countWoundedTalents(self.talents)
             return true
         end
-        return false
+
+        self.woundedTalents = countWoundedTalents(self.talents)
+        return true
     end
 
     --- Invest XP in a talent

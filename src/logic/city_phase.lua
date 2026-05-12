@@ -8,6 +8,7 @@ local currency = require('logic.currency')
 local constants = require('constants')
 local inventory = require('logic.inventory')
 local city_events = require('data.city_events')
+local city_layout = require('logic.city_layout')
 local item_templates = require('data.item_templates')
 local spell_registry = require('data.spell_registry')
 local fate_resolver = require('logic.resolver')
@@ -19,6 +20,7 @@ M.TRAINING_COST_PER_XP = 50
 M.BUILD_COST_PER_SYLLABLE = 50
 M.FUNERAL_COST_PER_XP = 100
 M.MAX_FAME = 5
+M.generateCityLayout = city_layout.generateCityLayout
 
 M.COMMISSION_CRAFT_RATES = {
     farmer = 1,
@@ -84,8 +86,41 @@ M.ACTIONS = {
     RESEARCH = "research",
     MENAGERIE_REAGENT_PURCHASE = "menagerie_reagent_purchase",
     HARVEST_ALCHEMICAL_REAGENTS = "harvest_alchemical_reagents",
+    BEG_FOR_SCRAPS = "beg_for_scraps",
+    COMMISSION_GARGOYLE = "commission_gargoyle",
+    COMMISSION_PUPPET = "commission_puppet",
+    FIT_PROSTHETICS = "fit_prosthetics",
+    MAKEOVER = "makeover",
+    PILLOW_TALK = "pillow_talk",
+    PURCHASE_AMULETS = "purchase_amulets",
+    PURCHASE_FATE_HONEY = "purchase_fate_honey",
+    PURCHASE_FIREWORKS = "purchase_fireworks",
+    REST_AND_RECUPERATE = "rest_and_recuperate",
+    SEND_LETTER = "send_letter",
     SELL_REAGENT = "sell_reagent",
     SELL_REAGENTS = "sell_reagents",
+    STUDY_LANGUAGE = "study_language",
+    UNDERGO_LEECHING = "undergo_leeching",
+    VISIT_GRAVE = "visit_grave",
+}
+
+M.DISTRICT_ACTION_ALIASES = {
+    beg_for_scraps = M.ACTIONS.BEG_FOR_SCRAPS,
+    commission_gargoyle = M.ACTIONS.COMMISSION_GARGOYLE,
+    commission_puppet = M.ACTIONS.COMMISSION_PUPPET,
+    fit_prosthetics = M.ACTIONS.FIT_PROSTHETICS,
+    harvest_alchemical_reagents = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
+    makeover = M.ACTIONS.MAKEOVER,
+    pillow_talk = M.ACTIONS.PILLOW_TALK,
+    purchase_amulets = M.ACTIONS.PURCHASE_AMULETS,
+    purchase_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
+    purchase_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
+    rest_and_recuperate = M.ACTIONS.REST_AND_RECUPERATE,
+    send_letter = M.ACTIONS.SEND_LETTER,
+    sell_reagents = M.ACTIONS.SELL_REAGENT,
+    study_language = M.ACTIONS.STUDY_LANGUAGE,
+    undergo_leeching = M.ACTIONS.UNDERGO_LEECHING,
+    visit_grave = M.ACTIONS.VISIT_GRAVE,
 }
 
 local ACTION_ALIASES = {
@@ -117,9 +152,42 @@ local ACTION_ALIASES = {
     menagerie_reagent_purchase = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
     harvest_alchemical_reagents = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
     harvest_reagents_menagerie = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
+    beg_for_scraps = M.ACTIONS.BEG_FOR_SCRAPS,
+    commission_gargoyle = M.ACTIONS.COMMISSION_GARGOYLE,
+    commission_puppet = M.ACTIONS.COMMISSION_PUPPET,
+    fit_prosthetics = M.ACTIONS.FIT_PROSTHETICS,
+    makeover = M.ACTIONS.MAKEOVER,
+    pillow_talk = M.ACTIONS.PILLOW_TALK,
+    purchase_amulets = M.ACTIONS.PURCHASE_AMULETS,
+    buy_amulets = M.ACTIONS.PURCHASE_AMULETS,
+    purchase_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
+    buy_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
+    purchase_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
+    buy_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
+    rest_and_recuperate = M.ACTIONS.REST_AND_RECUPERATE,
+    hospital_rest = M.ACTIONS.REST_AND_RECUPERATE,
+    send_letter = M.ACTIONS.SEND_LETTER,
     sell_reagent = M.ACTIONS.SELL_REAGENT,
     sell_reagents = M.ACTIONS.SELL_REAGENT,
+    study_language = M.ACTIONS.STUDY_LANGUAGE,
+    undergo_leeching = M.ACTIONS.UNDERGO_LEECHING,
+    leeching = M.ACTIONS.UNDERGO_LEECHING,
+    visit_grave = M.ACTIONS.VISIT_GRAVE,
 }
+
+local function districtActionAlias(actionId)
+    return M.DISTRICT_ACTION_ALIASES[actionId] or ACTION_ALIASES[actionId]
+end
+
+local function findDistrictAction(cityLayout, actionId)
+    for _, entry in ipairs(cityLayout and cityLayout.specialCityActions or {}) do
+        local action = entry.action or {}
+        if action.id == actionId then
+            return entry
+        end
+    end
+    return nil
+end
 
 M.HANGOVER_TABLE = {
     [1] = { id = "headache_windfall", title = "Headache Windfall" },
@@ -416,6 +484,37 @@ local function normalizeList(value)
         return value
     end
     return { value }
+end
+
+local function normalizeLanguage(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    local normalized = value:lower()
+    normalized = normalized:gsub("^%s+", ""):gsub("%s+$", "")
+    normalized = normalized:gsub("[%s%-]+", "_")
+    return normalized ~= "" and normalized or nil
+end
+
+local function languageListHas(source, language)
+    language = normalizeLanguage(language)
+    if not language then
+        return false
+    end
+    if type(source) == "string" then
+        return normalizeLanguage(source) == language
+    end
+    if type(source) == "table" then
+        if source[language] == true then
+            return true
+        end
+        for _, item in ipairs(source) do
+            if normalizeLanguage(item) == language then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function slugify(value)
@@ -1173,6 +1272,62 @@ local function canAddPlannedItemsToInventory(inv, plannedItems)
     return true
 end
 
+local function createPlannedTemplateItems(templateId, quantity, location)
+    local planned = {}
+    local firstItem = inventory.createItemFromTemplate(templateId)
+    if not firstItem then
+        return nil, "Unknown item"
+    end
+    if firstItem.stackable then
+        local remaining = math.max(1, math.floor(tonumber(quantity) or 1))
+        local stackSize = math.max(1, math.floor(tonumber(firstItem.stackSize) or remaining))
+        local item = firstItem
+        while remaining > 0 do
+            item.quantity = math.min(stackSize, remaining)
+            planned[#planned + 1] = {
+                item = item,
+                location = location or inventory.LOCATIONS.PACK,
+            }
+            remaining = remaining - item.quantity
+            if remaining > 0 then
+                item = inventory.createItemFromTemplate(templateId)
+                if not item then
+                    return nil, "Unknown item"
+                end
+            end
+        end
+        return planned
+    end
+
+    planned[#planned + 1] = {
+        item = firstItem,
+        location = location or inventory.LOCATIONS.PACK,
+    }
+    for _ = 2, quantity do
+        local item = inventory.createItemFromTemplate(templateId)
+        if not item then
+            return nil, "Unknown item"
+        end
+        planned[#planned + 1] = {
+            item = item,
+            location = location or inventory.LOCATIONS.PACK,
+        }
+    end
+    return planned
+end
+
+local function addPlannedItems(inv, plannedItems)
+    local added = {}
+    for _, planned in ipairs(plannedItems or {}) do
+        local ok, reason = inv:addItem(planned.item, planned.location)
+        if not ok then
+            return nil, reason or "insufficient_slots"
+        end
+        added[#added + 1] = planned.item
+    end
+    return added
+end
+
 local function minorDiscardValue(card)
     return math.floor(tonumber(card and card.value) or 0)
 end
@@ -1197,6 +1352,169 @@ local function appendActorRecord(actor, field, record)
     end
     actor[field] = actor[field] or {}
     actor[field][#actor[field] + 1] = record
+end
+
+local function getActorCityUpkeep(controller, actor)
+    local id = actorId(actor)
+    return (id and controller and controller.upkeepCompleted[id]) or (actor and actor.cityUpkeep)
+end
+
+local function actorIsDestitute(controller, actor, request)
+    if request and request.destitute ~= nil then
+        return request.destitute == true
+    end
+    local tier = request and (request.upkeepTier or request.tier)
+    if tier then
+        return normalizeUpkeepTier(tier) == "destitute"
+    end
+    local upkeep = getActorCityUpkeep(controller, actor)
+    return normalizeUpkeepTier(upkeep and upkeep.tier or actor and actor.upkeepTier) == "destitute"
+end
+
+local function findLostLimb(actor, request)
+    request = request or {}
+    local requested = request.limb or request.bodyPart or request.lostLimb or request.prostheticFor
+    if requested and tostring(requested) ~= "" then
+        return tostring(requested):lower()
+    end
+
+    local lostLimbs = actor and (actor.lostLimbs or actor.missingLimbs)
+    if type(lostLimbs) == "string" then
+        return lostLimbs:lower()
+    elseif type(lostLimbs) == "table" then
+        for key, value in pairs(lostLimbs) do
+            if value == true then
+                return tostring(key):lower()
+            elseif type(key) == "number" and value then
+                return tostring(value):lower()
+            end
+        end
+    end
+
+    for _, ailment in ipairs(actor and actor.carouseAilments or {}) do
+        if ailment and ailment.type == "missing_hand" then
+            return "hand"
+        end
+    end
+
+    return nil
+end
+
+local function findFuneralRecord(funerals, request)
+    request = request or {}
+    if type(request.funeralRecord) == "table" then
+        return request.funeralRecord
+    end
+
+    local deceased = request.deceased or request.deadAdventurer or request.comrade
+    local deceasedId = request.deceasedId or actorId(deceased)
+    local deceasedName = request.deceasedName or request.comradeName or (deceased and deceased.name)
+    for _, funeral in ipairs(funerals or {}) do
+        if deceasedId and (funeral.deceasedId == deceasedId or actorId(funeral.deceased) == deceasedId) then
+            return funeral
+        end
+        if deceasedName and (funeral.deceasedName == deceasedName or
+           (funeral.deceased and funeral.deceased.name == deceasedName)) then
+            return funeral
+        end
+    end
+
+    return nil
+end
+
+local function removeCurseFromList(curses, curseId)
+    if type(curses) ~= "table" then
+        return nil
+    end
+
+    if curseId and curses[curseId] then
+        local curse = curses[curseId]
+        curses[curseId] = nil
+        return curse
+    end
+
+    for index, curse in ipairs(curses) do
+        if not curseId or curse.id == curseId or curse.name == curseId then
+            table.remove(curses, index)
+            return curse
+        end
+    end
+
+    return nil
+end
+
+local function cureCurseEffect(controller, target, request)
+    request = request or {}
+    target = target or request.target
+    if not target then
+        return nil
+    end
+
+    local curseId = request.curseId or request.curseEffectId or request.curseEffect
+    if type(curseId) == "table" then
+        curseId = curseId.id or curseId.name
+    end
+
+    local removed = removeCurseFromList(target.curses, curseId)
+    if removed then
+        return {
+            type = "curse_record",
+            curse = removed,
+            curseId = removed.id or curseId,
+        }
+    end
+
+    if target.malediction and target.malediction.active ~= false then
+        local resolver = controller and controller.actionResolver
+        if resolver and resolver.dismissMalediction then
+            local dismissed = resolver:dismissMalediction(nil, target, "visit_grave")
+            if dismissed and dismissed.success then
+                return {
+                    type = "malediction",
+                    result = dismissed,
+                    curseId = target.malediction and target.malediction.curseId or curseId,
+                }
+            end
+        end
+
+        local malediction = target.malediction
+        target.malediction = nil
+        if target.conditions then
+            target.conditions.maledicted = false
+        end
+        return {
+            type = "malediction",
+            curse = malediction,
+            curseId = malediction.curseId or curseId,
+            partial = true,
+        }
+    end
+
+    if target.conditions and target.conditions.cursed then
+        target.conditions.cursed = false
+        return {
+            type = "condition",
+            curseId = curseId or "cursed",
+        }
+    end
+
+    return nil
+end
+
+local function findActorAffliction(actor, afflictionName)
+    if not actor or type(actor.afflictions) ~= "table" then
+        return nil, nil
+    end
+
+    if afflictionName and actor.afflictions[afflictionName] then
+        return actor.afflictions[afflictionName], afflictionName
+    end
+
+    for name, affliction in pairs(actor.afflictions) do
+        return affliction, name
+    end
+
+    return nil, nil
 end
 
 local function removeAllCarriedItems(actor)
@@ -1578,6 +1896,7 @@ function M.createCityPhaseController(config)
 
     local controller = {
         eventBus = config.eventBus or events.globalBus,
+        actionResolver = config.actionResolver,
         guild = config.guild or {},
         guildRoster = config.guildRoster or config.roster or {},
         playerDeck = config.playerDeck or config.minorDeck,
@@ -1585,6 +1904,9 @@ function M.createCityPhaseController(config)
         cityEventsTable = config.cityEventsTable or config.city_events_table or city_events.DEFAULT_EVENTS,
         signsAndPortentsTable = config.signsAndPortentsTable or config.signsTable or city_events.SIGNS_AND_PORTENTS,
         cityEventEffects = config.cityEventEffects or {},
+        cityLayout = config.cityLayout or config.cityMap,
+        districtActions = config.districtActions or
+            ((config.cityLayout or config.cityMap) and (config.cityLayout or config.cityMap).specialCityActions) or {},
         meatgrinder = config.meatgrinder,
         meatgrinderTable = config.meatgrinderTable or config.meatgrinderEntries,
         contracts = config.contracts or config.cityContracts or {},
@@ -1611,6 +1933,33 @@ function M.createCityPhaseController(config)
         return id ~= nil and self.actionsCompleted[id] ~= nil
     end
 
+    function controller:generateCityLayout(opts)
+        opts = opts or {}
+        if not opts.deck and not opts.playerDeck and not opts.minorDeck then
+            opts.playerDeck = self.playerDeck
+        end
+
+        local layout, detail = M.generateCityLayout(opts)
+        if not layout then
+            return nil, detail
+        end
+
+        self.cityLayout = layout
+        self.districtActions = layout.specialCityActions or {}
+        return layout, detail
+    end
+
+    function controller:getAvailableDistrictActions()
+        if self.cityLayout and self.cityLayout.specialCityActions then
+            return self.cityLayout.specialCityActions
+        end
+        return self.districtActions or {}
+    end
+
+    function controller:getDistrictAction(actionId)
+        return findDistrictAction({ specialCityActions = self:getAvailableDistrictActions() }, actionId)
+    end
+
     function controller:canAct(actor)
         if not isActiveAdventurer(actor) then
             return false, "No active adventurer"
@@ -1631,6 +1980,13 @@ function M.createCityPhaseController(config)
             action = actionId,
             result = result,
         }
+    end
+
+    function controller:breakPactsForRecoveryResult(actor, recoveryResult)
+        return camp_actions.breakPactsForRecoveryResult(actor, recoveryResult, {
+            eventBus = self.eventBus,
+            actionResolver = self.actionResolver,
+        })
     end
 
     function controller:canAdvance()
@@ -2261,8 +2617,10 @@ function M.createCityPhaseController(config)
 
         local healing = nil
         local resolveRefreshed = nil
+        local pactBreaks = nil
         if tier.luxurious then
             healing = healAllWounds(actor)
+            pactBreaks = self:breakPactsForRecoveryResult(actor, "all_wounds_healed")
             resolveRefreshed = refreshResolve(actor)
         end
 
@@ -2278,6 +2636,7 @@ function M.createCityPhaseController(config)
             recoveryAllowed = tier.recoveryAllowed,
             luxurious = tier.luxurious,
             healing = healing,
+            pactBreaks = pactBreaks,
             resolveRefreshed = resolveRefreshed,
             remainingGold = currency.getGold(actor),
             result = "upkeep_resolved",
@@ -2334,16 +2693,19 @@ function M.createCityPhaseController(config)
         end
 
         local result = "unknown"
+        local pactBreaks = {}
         if spendType == "clear_stress" then
             if actor.conditions then
                 actor.conditions.stressed = false
             end
             result = "stress_cleared"
+            pactBreaks = self:breakPactsForRecoveryResult(actor, result)
         elseif spendType == "heal_wound" then
             if actor.healWound then
                 local healResult, err = actor:healWound()
                 if healResult then
                     result = healResult
+                    pactBreaks = self:breakPactsForRecoveryResult(actor, result)
                 else
                     actor.bonds[bondTargetId].charged = true
                     if extraBondTargetId then
@@ -2373,6 +2735,10 @@ function M.createCityPhaseController(config)
 
         if actor.conditions and not actor.conditions.stressed and actor.conditions.staggered then
             actor.conditions.staggered = false
+            local staggeredBreaks = self:breakPactsForRecoveryResult(actor, "staggered_healed")
+            for _, pactBreak in ipairs(staggeredBreaks) do
+                pactBreaks[#pactBreaks + 1] = pactBreak
+            end
         end
 
         local detail = {
@@ -2384,6 +2750,7 @@ function M.createCityPhaseController(config)
             spendType = spendType,
             result = result,
             maledictionExtraBondRecoveryCost = extraBondTargetId ~= nil,
+            pactBreaks = pactBreaks,
         }
         upkeep.recoveryBondSpends = upkeep.recoveryBondSpends or {}
         upkeep.recoveryBondSpends[#upkeep.recoveryBondSpends + 1] = detail
@@ -3167,6 +3534,484 @@ function M.createCityPhaseController(config)
         return true, "research_complete", detail
     end
 
+    function controller:resolveDistrictItemPurchase(actor, actionData, config)
+        actionData = actionData or {}
+        config = config or {}
+        local request = actionData.request or actionData.purchase or actionData
+        if not actor or not actor.inventory or not actor.inventory.addItem then
+            return false, "No inventory for purchase"
+        end
+
+        local quantity = math.max(1, math.floor(tonumber(request.quantity or request.count) or 1))
+        local location = request.location or config.location or inventory.LOCATIONS.PACK
+        local plannedItems, itemErr = createPlannedTemplateItems(config.templateId, quantity, location)
+        if not plannedItems then
+            return false, itemErr
+        end
+
+        local canAdd, reason = canAddPlannedItemsToInventory(actor.inventory, plannedItems)
+        if not canAdd then
+            return false, reason
+        end
+
+        local costPerItem = tonumber(request.costPerItem or config.costPerItem) or 0
+        local cost = math.max(0, costPerItem * quantity)
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local items, addErr = addPlannedItems(actor.inventory, plannedItems)
+        if not items then
+            return false, addErr
+        end
+
+        return true, config.result, {
+            actor = actor,
+            action = config.action,
+            items = items,
+            templateId = config.templateId,
+            quantity = quantity,
+            cost = cost,
+            costPerItem = costPerItem,
+            location = location,
+            result = config.result,
+        }
+    end
+
+    function controller:resolvePurchaseAmulets(actor, actionData)
+        return self:resolveDistrictItemPurchase(actor, actionData, {
+            action = M.ACTIONS.PURCHASE_AMULETS,
+            templateId = "newt_row_amulet",
+            costPerItem = 10,
+            result = "amulets_purchased",
+        })
+    end
+
+    function controller:resolvePurchaseFateHoney(actor, actionData)
+        return self:resolveDistrictItemPurchase(actor, actionData, {
+            action = M.ACTIONS.PURCHASE_FATE_HONEY,
+            templateId = "fate_honey",
+            costPerItem = 0,
+            result = "fate_honey_purchased",
+        })
+    end
+
+    function controller:resolvePurchaseFireworks(actor, actionData)
+        return self:resolveDistrictItemPurchase(actor, actionData, {
+            action = M.ACTIONS.PURCHASE_FIREWORKS,
+            templateId = "firework_rocket",
+            costPerItem = 25,
+            result = "fireworks_purchased",
+        })
+    end
+
+    function controller:resolveFitProsthetics(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.prosthetic or actionData
+        local limb = findLostLimb(actor, request)
+        if not limb then
+            return false, "Lost limb required"
+        end
+
+        actor.prosthetics = actor.prosthetics or {}
+        if actor.prosthetics[limb] then
+            return false, "Prosthetic already fitted"
+        end
+
+        local prosthetic = {
+            limb = limb,
+            description = request.description or request.name or ("crude " .. limb .. " prosthetic"),
+            crude = true,
+            cost = 0,
+        }
+        actor.prosthetics[limb] = prosthetic
+        appendActorRecord(actor, "prostheticFittings", prosthetic)
+
+        return true, "prosthetic_fitted", {
+            actor = actor,
+            action = M.ACTIONS.FIT_PROSTHETICS,
+            prosthetic = prosthetic,
+            limb = limb,
+            cost = 0,
+            result = "prosthetic_fitted",
+        }
+    end
+
+    function controller:resolveVisitGrave(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.graveVisit or actionData
+        local funeral = findFuneralRecord(self.funerals, request)
+        if not funeral then
+            return false, "Funeral record required"
+        end
+
+        local target = request.target or request.recipient or actor
+        local cost = tonumber(request.cost or request.costGold) or 100
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+
+        local cured = cureCurseEffect(self, target, request)
+        if not cured then
+            return false, "No curse effect to cure"
+        end
+
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local graveVisit = {
+            funeral = funeral,
+            target = target,
+            cured = cured,
+            cost = cost,
+        }
+        appendActorRecord(actor, "graveVisits", graveVisit)
+
+        return true, "grave_visited", {
+            actor = actor,
+            action = M.ACTIONS.VISIT_GRAVE,
+            funeral = funeral,
+            target = target,
+            cured = cured,
+            cost = cost,
+            result = "grave_visited",
+        }
+    end
+
+    function controller:resolveMakeover(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.makeover or actionData
+        local appearance = request.appearance or request.newAppearance or request.description
+        if not appearance or tostring(appearance) == "" then
+            return false, "Appearance required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 10
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local previous = actor.appearance
+        actor.appearance = tostring(appearance)
+        local record = {
+            previousAppearance = previous,
+            appearance = actor.appearance,
+            cost = cost,
+        }
+        appendActorRecord(actor, "makeovers", record)
+
+        return true, "makeover_complete", {
+            actor = actor,
+            action = M.ACTIONS.MAKEOVER,
+            previousAppearance = previous,
+            appearance = actor.appearance,
+            cost = cost,
+            result = "makeover_complete",
+        }
+    end
+
+    function controller:resolveBegForScraps(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.scraps or actionData
+        if not actorIsDestitute(self, actor, request) then
+            return false, "Destitute upkeep required"
+        end
+        if not actor or not actor.inventory or not actor.inventory.addItem then
+            return false, "No inventory for scraps"
+        end
+
+        local template = item_templates.getTemplate("disgusting_ration")
+        local stackSize = math.max(1, math.floor(tonumber(template and template.stackSize) or 1))
+        local quantity = tonumber(request.quantity or request.count)
+        if not quantity then
+            quantity = math.max(1, actor.inventory:availableSlots(inventory.LOCATIONS.PACK) * stackSize)
+        end
+        quantity = math.max(1, math.floor(quantity))
+
+        local plannedItems, itemErr = createPlannedTemplateItems("disgusting_ration", quantity, inventory.LOCATIONS.PACK)
+        if not plannedItems then
+            return false, itemErr
+        end
+        local canAdd, reason = canAddPlannedItemsToInventory(actor.inventory, plannedItems)
+        if not canAdd then
+            return false, reason
+        end
+
+        local items, addErr = addPlannedItems(actor.inventory, plannedItems)
+        if not items then
+            return false, addErr
+        end
+
+        return true, "scraps_gathered", {
+            actor = actor,
+            action = M.ACTIONS.BEG_FOR_SCRAPS,
+            items = items,
+            templateId = "disgusting_ration",
+            quantity = quantity,
+            result = "scraps_gathered",
+        }
+    end
+
+    function controller:resolveFixedCommission(actor, actionData, config)
+        actionData = actionData or {}
+        config = config or {}
+        local request = actionData.request or actionData.commission or actionData
+        local description = tostring(request.description or request.subject or request.likeness or request.name or "")
+        if description == "" then
+            return false, config.requiredMessage or "Commission description required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or config.cost or 0
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+
+        local commissionId = normalizeProjectId(request.commissionId or request.id or (config.kind .. ":" .. description))
+        if self.commissions[commissionId] then
+            return false, "Commission already exists"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local commission = {
+            id = commissionId,
+            kind = config.kind,
+            name = request.name or description,
+            description = description,
+            cost = cost,
+            commissionedBy = actor,
+            commissionedById = actorId(actor),
+            complete = true,
+        }
+        for key, value in pairs(config.extra or {}) do
+            commission[key] = value
+        end
+        self.commissions[commissionId] = commission
+
+        return true, config.result, {
+            actor = actor,
+            action = config.action,
+            commission = commission,
+            commissionId = commissionId,
+            cost = cost,
+            result = config.result,
+        }
+    end
+
+    function controller:resolveCommissionGargoyle(actor, actionData)
+        return self:resolveFixedCommission(actor, actionData, {
+            action = M.ACTIONS.COMMISSION_GARGOYLE,
+            kind = "gargoyle",
+            cost = 50,
+            result = "gargoyle_commissioned",
+            requiredMessage = "Gargoyle description required",
+            extra = {
+                admiredInStone = true,
+            },
+        })
+    end
+
+    function controller:resolveCommissionPuppet(actor, actionData)
+        return self:resolveFixedCommission(actor, actionData, {
+            action = M.ACTIONS.COMMISSION_PUPPET,
+            kind = "puppet",
+            cost = 10,
+            result = "puppet_commissioned",
+            requiredMessage = "Puppet likeness required",
+            extra = {
+                lifelike = true,
+            },
+        })
+    end
+
+    function controller:resolvePillowTalk(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.pillowTalk or actionData
+        local character = request.character or request.npc or request.target
+        local characterName = request.characterName or request.name or (character and character.name)
+        if not characterName or tostring(characterName) == "" then
+            return false, "City character required"
+        end
+
+        local preference = tostring(request.preference or request.kind or "likes"):lower()
+        if preference ~= "likes" and preference ~= "dislikes" then
+            return false, "Choose likes or dislikes"
+        end
+
+        local social = character and (character.social or character) or {}
+        local options = social[preference] or {}
+        local rumor = request.rumor or options[1]
+        if not rumor or tostring(rumor) == "" then
+            return false, "Preference rumor required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 10
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local record = {
+            characterName = characterName,
+            preference = preference,
+            rumor = rumor,
+            cost = cost,
+        }
+        appendActorRecord(actor, "cityRumors", record)
+
+        return true, "pillow_talk_complete", {
+            actor = actor,
+            action = M.ACTIONS.PILLOW_TALK,
+            characterName = characterName,
+            preference = preference,
+            rumor = rumor,
+            cost = cost,
+            result = "pillow_talk_complete",
+        }
+    end
+
+    function controller:resolveRestAndRecuperate(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.rest or actionData
+        if actorIsDestitute(self, actor, request) then
+            return false, "Non-destitute upkeep required"
+        end
+
+        local healing = healAllWounds(actor)
+        appendActorRecord(actor, "hospitalCare", {
+            type = "rest_and_recuperate",
+            healing = healing,
+            cost = 0,
+        })
+
+        return true, "rested_and_recuperated", {
+            actor = actor,
+            action = M.ACTIONS.REST_AND_RECUPERATE,
+            healing = healing,
+            cost = 0,
+            result = "rested_and_recuperated",
+        }
+    end
+
+    function controller:resolveUndergoLeeching(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.leeching or actionData
+        local afflictionName = request.affliction or request.afflictionName or request.targetAffliction
+        local affliction, resolvedName = findActorAffliction(actor, afflictionName)
+        if not affliction then
+            return false, "No affliction to heal"
+        end
+
+        local stages = math.max(1, math.floor(tonumber(request.stages or request.stageCount or affliction.stage) or 1))
+        local costPerStage = tonumber(request.costPerStage or request.costGoldPerStage) or 20
+        local cost = math.max(0, stages * costPerStage)
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        actor.afflictions[resolvedName] = nil
+        appendActorRecord(actor, "hospitalCare", {
+            type = "undergo_leeching",
+            affliction = resolvedName,
+            stages = stages,
+            cost = cost,
+        })
+
+        return true, "affliction_leeched", {
+            actor = actor,
+            action = M.ACTIONS.UNDERGO_LEECHING,
+            affliction = resolvedName,
+            stages = stages,
+            cost = cost,
+            costPerStage = costPerStage,
+            result = "affliction_leeched",
+        }
+    end
+
+    function controller:resolveSendLetter(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.letter or actionData
+        local recipient = request.recipient or request.to
+        if not recipient or tostring(recipient) == "" then
+            return false, "Letter recipient required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 10
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local roll = math.floor(tonumber(request.deliveryRoll or request.roll) or math.random(1, 14))
+        local arrived = roll ~= 1
+        local letter = {
+            recipient = recipient,
+            destination = request.destination or request.location or "Wide World",
+            message = request.message,
+            cost = cost,
+            deliveryRoll = roll,
+            arrived = arrived,
+        }
+        actor.sentLetters = actor.sentLetters or {}
+        actor.sentLetters[#actor.sentLetters + 1] = letter
+
+        return true, "letter_sent", {
+            actor = actor,
+            action = M.ACTIONS.SEND_LETTER,
+            letter = letter,
+            cost = cost,
+            deliveryRoll = roll,
+            arrived = arrived,
+            result = "letter_sent",
+        }
+    end
+
+    function controller:resolveStudyLanguage(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.study or actionData
+        local language = normalizeLanguage(request.language or request.lang)
+        if not language then
+            return false, "Choose a language"
+        end
+        if languageListHas(actor.languages or actor.knownLanguages, language) then
+            return false, "Language already known"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 200
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        actor.languages = actor.languages or {}
+        actor.languages[#actor.languages + 1] = language
+
+        return true, "language_studied", {
+            actor = actor,
+            action = M.ACTIONS.STUDY_LANGUAGE,
+            language = language,
+            cost = cost,
+            result = "language_studied",
+        }
+    end
+
     function controller:resolveAction(actor, actionData)
         actionData = actionData or {}
         actor = actor or actionData.actor
@@ -3185,6 +4030,8 @@ function M.createCityPhaseController(config)
         local ok, result, detail
         if actionId == M.ACTIONS.BANKING then
             ok, result, detail = self:resolveBanking(actor, actionData)
+        elseif actionId == M.ACTIONS.BEG_FOR_SCRAPS then
+            ok, result, detail = self:resolveBegForScraps(actor, actionData)
         elseif actionId == M.ACTIONS.BEG_AND_BUSK then
             ok, result, detail = self:resolveBegAndBusk(actor, actionData)
         elseif actionId == M.ACTIONS.BUILD then
@@ -3193,10 +4040,20 @@ function M.createCityPhaseController(config)
             ok, result, detail = self:resolveCampAction(actor, actionData)
         elseif actionId == M.ACTIONS.CAROUSE then
             ok, result, detail = self:resolveCarouse(actor, actionData)
+        elseif actionId == M.ACTIONS.COMMISSION_GARGOYLE then
+            ok, result, detail = self:resolveCommissionGargoyle(actor, actionData)
+        elseif actionId == M.ACTIONS.COMMISSION_PUPPET then
+            ok, result, detail = self:resolveCommissionPuppet(actor, actionData)
         elseif actionId == M.ACTIONS.COMMISSION_CRAFT then
             ok, result, detail = self:resolveCommissionCraft(actor, actionData)
+        elseif actionId == M.ACTIONS.FIT_PROSTHETICS then
+            ok, result, detail = self:resolveFitProsthetics(actor, actionData)
         elseif actionId == M.ACTIONS.HOLD_FUNERAL then
             ok, result, detail = self:resolveHoldFuneral(actor, actionData)
+        elseif actionId == M.ACTIONS.MAKEOVER then
+            ok, result, detail = self:resolveMakeover(actor, actionData)
+        elseif actionId == M.ACTIONS.PILLOW_TALK then
+            ok, result, detail = self:resolvePillowTalk(actor, actionData)
         elseif actionId == M.ACTIONS.PREPARE_COMPONENTS then
             ok, result, detail = self:resolvePrepareComponents(actor, actionData)
         elseif actionId == M.ACTIONS.PRAY_AT_MYTHRAEUM then
@@ -3211,6 +4068,16 @@ function M.createCityPhaseController(config)
             ok, result, detail = alchemy.resolveMenagerieReagentPurchase(actor, actionData, {
                 eventBus = self.eventBus,
             })
+        elseif actionId == M.ACTIONS.PURCHASE_AMULETS then
+            ok, result, detail = self:resolvePurchaseAmulets(actor, actionData)
+        elseif actionId == M.ACTIONS.PURCHASE_FATE_HONEY then
+            ok, result, detail = self:resolvePurchaseFateHoney(actor, actionData)
+        elseif actionId == M.ACTIONS.PURCHASE_FIREWORKS then
+            ok, result, detail = self:resolvePurchaseFireworks(actor, actionData)
+        elseif actionId == M.ACTIONS.REST_AND_RECUPERATE then
+            ok, result, detail = self:resolveRestAndRecuperate(actor, actionData)
+        elseif actionId == M.ACTIONS.SEND_LETTER then
+            ok, result, detail = self:resolveSendLetter(actor, actionData)
         elseif actionId == M.ACTIONS.SELL_REAGENT then
             ok, result, detail = alchemy.resolveReagentSale(actor, actionData, {
                 eventBus = self.eventBus,
@@ -3218,6 +4085,12 @@ function M.createCityPhaseController(config)
                 value = actionData.value,
                 gold = actionData.gold,
             })
+        elseif actionId == M.ACTIONS.STUDY_LANGUAGE then
+            ok, result, detail = self:resolveStudyLanguage(actor, actionData)
+        elseif actionId == M.ACTIONS.UNDERGO_LEECHING then
+            ok, result, detail = self:resolveUndergoLeeching(actor, actionData)
+        elseif actionId == M.ACTIONS.VISIT_GRAVE then
+            ok, result, detail = self:resolveVisitGrave(actor, actionData)
         else
             return false, "Unknown City Action"
         end
@@ -3244,6 +4117,43 @@ function M.createCityPhaseController(config)
         })
 
         return true, result, detail
+    end
+
+    function controller:resolveDistrictAction(actor, districtActionId, actionData)
+        actionData = actionData or {}
+        local requestedActionId = districtActionId or actionData.districtAction or actionData.districtActionId or
+            actionData.specialCityAction or actionData.action or actionData.type or actionData.id
+        if not requestedActionId then
+            return false, "Choose a district City Action"
+        end
+
+        local districtEntry = self:getDistrictAction(requestedActionId)
+        if not districtEntry then
+            return false, "District City Action unavailable"
+        end
+
+        local actionId = districtActionAlias(requestedActionId)
+        if not actionId then
+            return false, "District City Action not implemented"
+        end
+
+        local request = {}
+        for key, value in pairs(actionData) do
+            request[key] = value
+        end
+        request.type = actionId
+        request.action = actionId
+        request.districtAction = requestedActionId
+        request.districtId = districtEntry.districtId
+        request.districtName = districtEntry.districtName
+
+        local ok, result, detail = self:resolveAction(actor, request)
+        if ok and detail then
+            detail.districtId = districtEntry.districtId
+            detail.districtName = districtEntry.districtName
+            detail.districtAction = districtEntry.action
+        end
+        return ok, result, detail
     end
 
     return controller

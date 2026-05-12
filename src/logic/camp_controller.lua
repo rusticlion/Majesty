@@ -89,6 +89,7 @@ function M.createCampController(config)
         watchManager = config.watchManager,
         meatgrinder  = config.meatgrinder,
         playerDeck   = config.playerDeck,
+        actionResolver = config.actionResolver,
 
         -- State tracking
         state        = M.STATES.INACTIVE,
@@ -108,6 +109,7 @@ function M.createCampController(config)
         hasBedrolls  = false,
         hasTent      = false,
         hasFire      = false,
+        fireViolatesForegoWood = false,
     }
 
     ----------------------------------------------------------------------------
@@ -131,6 +133,7 @@ function M.createCampController(config)
             hasBedrolls = false,
             hasTent = false,
             hasFire = false,
+            fireViolatesForegoWood = false,
         }
 
         local function scanItem(item)
@@ -146,6 +149,9 @@ function M.createCampController(config)
             end
             if templateId == "firewood" or name == "Firewood" or props.firewood or props.campComfort == "fire" then
                 detected.hasFire = true
+                if props.felledWood ~= false and props.archwood ~= true and props.willingWood ~= true then
+                    detected.fireViolatesForegoWood = true
+                end
             end
         end
 
@@ -200,6 +206,17 @@ function M.createCampController(config)
         if self.hasTent == nil then self.hasTent = detectedComfort.hasTent end
         self.hasFire = campConfig.hasFire
         if self.hasFire == nil then self.hasFire = detectedComfort.hasFire end
+        self.fireViolatesForegoWood = campConfig.fireViolatesForegoWood
+        if self.fireViolatesForegoWood == nil then
+            self.fireViolatesForegoWood = campConfig.firewoodBoughtWithGold or campConfig.fireBoughtWithGold or
+                campConfig.fireIsFelledWood
+        end
+        if self.fireViolatesForegoWood == nil then
+            self.fireViolatesForegoWood = detectedComfort.fireViolatesForegoWood
+        end
+        if not self.hasFire then
+            self.fireViolatesForegoWood = false
+        end
 
         -- Emit start event
         self.eventBus:emit(M.EVENTS.CAMP_START, {
@@ -208,6 +225,7 @@ function M.createCampController(config)
             hasBedrolls = self.hasBedrolls,
             hasTent = self.hasTent,
             hasFire = self.hasFire,
+            fireViolatesForegoWood = self.fireViolatesForegoWood,
         })
 
         -- Move to setup
@@ -805,6 +823,48 @@ function M.createCampController(config)
         return true
     end
 
+    local function activeGluttonyPact(entity)
+        return campActions.findUnbrokenActivePact(entity, "gluttony")
+    end
+
+    local function activeDevourLivingPact(entity)
+        return campActions.findUnbrokenActivePact(entity, "devour_living")
+    end
+
+    local function breakPactWithReason(controllerRef, entity, pact, reason)
+        if not pact then
+            return nil
+        end
+
+        local ok, result, detail = campActions.breakPact(entity, pact, {
+            eventBus = controllerRef.eventBus,
+            actionResolver = controllerRef.actionResolver,
+            reason = reason,
+        })
+        if not ok then
+            return {
+                result = result,
+            }
+        end
+
+        return detail
+    end
+
+    local function breakGluttonyPact(controllerRef, entity, pact)
+        return breakPactWithReason(controllerRef, entity, pact, "gluttony_underfed")
+    end
+
+    local function breakDevourLivingPact(controllerRef, entity, pact)
+        return breakPactWithReason(controllerRef, entity, pact, "devour_living_forbidden_food")
+    end
+
+    local function breakPactsForRecoveryResult(controllerRef, entity, recoveryResult)
+        return campActions.breakPactsForRecoveryResult(entity, recoveryResult, {
+            eventBus = controllerRef.eventBus,
+            actionResolver = controllerRef.actionResolver,
+        })
+    end
+
     function controller:markAdventurerUnfed(entity, opts)
         opts = opts or {}
         entity.starvationCount = (entity.starvationCount or 0) + 1
@@ -858,8 +918,47 @@ function M.createCampController(config)
 
         local canUseHaleAndHearty = hasUsableTalent(entity, "hale_and_hearty") and
             canChargeBond(entity, opts.chargeBondTargetId)
+        local explicitRationCount = opts.rationCount ~= nil or opts.rations ~= nil
+        local gluttonyPact = activeGluttonyPact(entity)
+        local devourPact = activeDevourLivingPact(entity)
+        local devourLivingFood = opts.livingFood == true or opts.devourLivingFood == true or
+            entity.devourLivingMealAvailable == true
+        local devourForbiddenFood = opts.consumeForbiddenRation == true or opts.eatForbiddenRation == true or
+            opts.allowForbiddenRation == true
+
+        if devourPact and devourLivingFood then
+            entity.starvationCount = 0
+            if entity.conditions and entity.conditions.starving then
+                entity.conditions.starving = false
+            end
+            entity.devourLivingMealAvailable = false
+            entity.devourLivingForageFailed = false
+
+            self.rationsConsumed[entity.id] = true
+            self.eventBus:emit(M.EVENTS.RATION_CONSUMED, {
+                entity = entity,
+                count = 0,
+                livingFood = true,
+                pact = devourPact,
+                result = "living_food_consumed",
+            })
+
+            print("[CAMP] " .. entity.name .. " ate living vermin")
+            self:resolveAnimalFeedsForOwner(entity)
+            return true, "living_food_consumed"
+        end
+
+        if devourPact and not devourForbiddenFood then
+            return self:markAdventurerUnfed(entity, {
+                result = entity.devourLivingForageFailed and "devour_living_starving" or "devour_living_no_food",
+            })
+        end
+
         local requestedRations = opts.rationCount or opts.rations or (canUseHaleAndHearty and 2 or 1)
         requestedRations = math.max(1, tonumber(requestedRations) or 1)
+        if gluttonyPact and not explicitRationCount then
+            requestedRations = math.max(requestedRations, 2)
+        end
 
         local consumedItems = {}
         local nourishingItems = {}
@@ -907,6 +1006,29 @@ function M.createCampController(config)
                 bondCharged = chargeBond(entity, opts.chargeBondTargetId)
             end
 
+            local pactBreak = nil
+            local pactBroken = nil
+            local pactBreaks = {}
+            if gluttonyPact and #nourishingItems < 2 then
+                pactBreak = breakGluttonyPact(self, entity, gluttonyPact)
+                pactBroken = gluttonyPact
+                pactBreaks[#pactBreaks + 1] = {
+                    pact = gluttonyPact,
+                    detail = pactBreak,
+                }
+            end
+            if devourPact then
+                local devourBreak = breakDevourLivingPact(self, entity, devourPact)
+                if not pactBreak then
+                    pactBreak = devourBreak
+                    pactBroken = devourPact
+                end
+                pactBreaks[#pactBreaks + 1] = {
+                    pact = devourPact,
+                    detail = devourBreak,
+                }
+            end
+
             self.rationsConsumed[entity.id] = true
 
             self.eventBus:emit(M.EVENTS.RATION_CONSUMED, {
@@ -917,6 +1039,10 @@ function M.createCampController(config)
                 wastedItems = ashedItems,
                 wastedCount = #ashedItems,
                 bondTargetId = bondCharged and opts.chargeBondTargetId or nil,
+                requiredCount = gluttonyPact and 2 or nil,
+                pactBroken = pactBroken,
+                pactBreak = pactBreak,
+                pactBreaks = #pactBreaks > 0 and pactBreaks or nil,
             })
 
             local firstProps = nourishingItems[1] and nourishingItems[1].properties or {}
@@ -925,6 +1051,9 @@ function M.createCampController(config)
                 (#nourishingItems .. " " .. foodName .. "s")
             print("[CAMP] " .. entity.name .. " ate " .. rationLabel)
             self:resolveAnimalFeedsForOwner(entity)
+            if pactBreak then
+                return true, "ration_consumed_pact_broken"
+            end
             return true, bondCharged and "ration_consumed_bond_charged" or "ration_consumed"
         elseif #consumedItems > 0 then
             return self:markAdventurerUnfed(entity, {
@@ -1456,6 +1585,7 @@ function M.createCampController(config)
 
         if entity.conditions and not entity.conditions.stressed and entity.conditions.staggered then
             entity.conditions.staggered = false
+            breakPactsForRecoveryResult(self, entity, "staggered_healed")
             print("[CAMP] " .. entity.name .. " clears Staggered")
         end
 
@@ -1519,17 +1649,20 @@ function M.createCampController(config)
 
         -- Apply benefit
         local result = "unknown"
+        local pactBreaks = {}
         if spendType == "clear_stress" then
             if entity.conditions then
                 entity.conditions.stressed = false
             end
             result = "stress_cleared"
+            pactBreaks = breakPactsForRecoveryResult(self, entity, result)
         elseif spendType == "heal_wound" then
             -- Use entity's healWound method (respects injury gate)
             if entity.healWound then
                 local healResult, err = entity:healWound()
                 if healResult then
                     result = healResult
+                    pactBreaks = breakPactsForRecoveryResult(self, entity, result)
                 else
                     -- Refund the bond if healing failed
                     entity.bonds[bondTargetId].charged = true
@@ -1568,6 +1701,7 @@ function M.createCampController(config)
             result = result,
             affliction = opts.affliction or opts.afflictionName or opts.targetAffliction,
             maledictionExtraBondRecoveryCost = extraBondTargetId ~= nil,
+            pactBreaks = pactBreaks,
         })
 
         print("[CAMP] " .. entity.name .. " spent bond with " .. bondTargetId .. " for: " .. result)
@@ -1676,7 +1810,7 @@ function M.createCampController(config)
         print("[CAMP] Camp phase ended - returning to crawl")
     end
 
-    function controller:hasAdequateCampComfort()
+    function controller:hasAdequateCampComfort(entity)
         if self.hasShelter then
             return true
         end
@@ -1684,7 +1818,12 @@ function M.createCampController(config)
         local comfort = 0
         if self.hasBedrolls then comfort = comfort + 1 end
         if self.hasTent then comfort = comfort + 1 end
-        if self.hasFire then comfort = comfort + 1 end
+        local fireCounts = self.hasFire
+        if fireCounts and self.fireViolatesForegoWood and
+           campActions.findUnbrokenActivePact(entity, "forego_wood") then
+            fireCounts = false
+        end
+        if fireCounts then comfort = comfort + 1 end
 
         return comfort >= 2
     end
@@ -1738,7 +1877,7 @@ function M.createCampController(config)
         -- 2. Check camp comfort: shelter, or at least two of bedroll/tent/fire.
         if isStarvingEntity(entity) then
             print("[CAMP] " .. entity.name .. " skips end-of-camp comfort checks (starving)")
-        elseif not self:hasAdequateCampComfort() then
+        elseif not self:hasAdequateCampComfort(entity) then
             entity.conditions.stressed = true
             print("[CAMP] " .. entity.name .. " wakes Stressed (poor camp comfort)")
         end

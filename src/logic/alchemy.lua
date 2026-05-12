@@ -11,7 +11,24 @@ local M = {}
 M.MENAGERIE_REAGENT_COST = 25
 M.MENAGERIE_REAGENTS = {
     brain_spider = "brain_spider_reagent",
+    cockatrice = "cockatrice_reagent",
+    devil = "devil_reagent",
+    face_rat = "face_rat_reagent",
+    fungoid = "fungoid_reagent",
+    griffin = "griffin_reagent",
+    harpy = "harpy_reagent",
+    imp = "imp_reagent",
+    jinn = "jinn_reagent",
+    kelpie = "kelpie_reagent",
+    mimic = "mimic_reagent",
+    nymph = "nymph_reagent",
+    ogre = "ogre_reagent",
+    questing_beast = "questing_beast_reagent",
     slime = "slime_reagent",
+    titan = "titan_reagent",
+    ungoat = "ungoat_reagent",
+    vampire = "vampire_reagent",
+    winter_wolf = "winter_wolf_reagent",
 }
 
 local function normalizeTalentId(talentId)

@@ -330,7 +330,8 @@ function M.createRoomManager(config)
             return nil, "room_not_found"
         end
 
-        if not entity or entity.isPC or not entity.alchemy then
+        local alchemyData = entity and entity.alchemy
+        if not entity or entity.isPC or not alchemyData or alchemyData.noReagent or not alchemyData.reagentTemplateId then
             return nil, "no_harvestable_reagents"
         end
 

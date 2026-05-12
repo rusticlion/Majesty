@@ -16,6 +16,7 @@ local inventory = require('logic.inventory')
 local camp_controller = require('logic.camp_controller')
 local app_bootstrap = require('app.bootstrap')
 local starting_guild = require('data.starting_guild')
+local guild_restock = require('logic.guild_restock')
 
 -- UI systems
 local floating_text = require('ui.floating_text')
@@ -268,51 +269,7 @@ function returnToCity()
     end
 
     -- 3. Refill arrows/torches/rations (Shopping simulation)
-    for _, pc in ipairs(gameState.guild) do
-        -- Refill ammo
-        if pc.ammo ~= nil then
-            pc.ammo = 10
-        end
-
-        -- Add torches and rations to inventory if they have one
-        if pc.inventory then
-            -- Clear and refill with fresh supplies
-            -- For simplicity, just ensure they have light and food
-            local hasTorch = pc.inventory:findItemByPredicate(function(item)
-                return item.properties and item.properties.light_source
-            end)
-            if not hasTorch then
-                local torch = inventory.createItem({
-                    name = "Torch",
-                    size = inventory.SIZE.NORMAL,
-                    properties = {
-                        flicker_count = 3,
-                        light_source = true,
-                        isLit = true,
-                        requires_hands = true,
-                        provides_belt_light = false,
-                        fragile_on_belt = false,
-                    },
-                })
-                pc.inventory:addItem(torch, inventory.LOCATIONS.BELT)
-            end
-
-            local hasRation = pc.inventory:findItemByPredicate(function(item)
-                return item.isRation or item.type == "ration" or
-                       (item.name and item.name:lower():find("ration"))
-            end)
-            if not hasRation then
-                local ration = inventory.createItem({
-                    name = "Ration",
-                    stackable = true,
-                    stackSize = 3,
-                    quantity = 3,
-                    isRation = true,
-                })
-                pc.inventory:addItem(ration, inventory.LOCATIONS.PACK)
-            end
-        end
-    end
+    guild_restock.restockGuild(gameState.guild, starting_guild.restock)
 
     -- 4. Reset dungeon state
     gameState.dungeon:reset()

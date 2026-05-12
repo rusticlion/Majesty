@@ -12,6 +12,33 @@ local constants = require('constants')
 
 local M = {}
 
+local function normalizeActionTalentId(talentId)
+    return tostring(talentId or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+end
+
+local function hasUsableActionTalent(entity, talentId)
+    local talents = entity and entity.talents
+    if type(talents) ~= "table" then
+        return false
+    end
+
+    local requested = normalizeActionTalentId(talentId)
+    for key, talent in pairs(talents) do
+        local matches = normalizeActionTalentId(key) == requested
+        if not matches and type(talent) == "table" then
+            matches = normalizeActionTalentId(talent.id or talent.name or talent.talentId) == requested
+        end
+        if matches then
+            if type(talent) == "table" then
+                return talent.wounded ~= true
+            end
+            return talent == true
+        end
+    end
+
+    return false
+end
+
 --------------------------------------------------------------------------------
 -- CAMP ACTION CATEGORIES
 --------------------------------------------------------------------------------
@@ -109,6 +136,23 @@ M.ACTIONS = {
         description = "Use a talent that is available during the Camp Phase.",
         requiresTarget = false,
         requiresCampTalent = true,
+    },
+    {
+        id = "make_pact",
+        name = "Make a Pact",
+        category = M.CATEGORIES.SOCIAL,
+        description = "Observe one or more pacts to charge spell components.",
+        requiresTarget = false,
+        requiresTalent = "gramarye",
+    },
+    {
+        id = "devour_living",
+        name = "Devour the Living",
+        category = M.CATEGORIES.EXPLORATION,
+        description = "Test Cups to find living vermin for a Devour the Living pact.",
+        requiresTarget = false,
+        requiresActivePact = "devour_living",
+        testSuit = "cups",
     },
     {
         id = "heal_companion",
@@ -252,6 +296,14 @@ function M.getAvailableActions(entity, guild)
             canUse = false
         end
 
+        if action.requiresTalent and not hasUsableActionTalent(entity, action.requiresTalent) then
+            canUse = false
+        end
+
+        if action.requiresActivePact and not M.findUnbrokenActivePact(entity, action.requiresActivePact) then
+            canUse = false
+        end
+
         -- Check if targeting PC but no other PCs available
         if action.targetType == "pc" and action.id ~= "tend_affliction" then
             local hasOtherPCs = false
@@ -319,6 +371,10 @@ function M.resolveAction(actionData, context)
         return M.resolveTrain(actor, target, actionData, context, eventBus)
     elseif actionData.type == "use_talent" then
         return M.resolveUseTalent(actor, actionData, context, eventBus)
+    elseif actionData.type == "make_pact" then
+        return M.resolveMakePact(actor, actionData, context, eventBus)
+    elseif actionData.type == "devour_living" then
+        return M.resolveDevourLiving(actor, actionData, context, eventBus)
     elseif actionData.type == "rest" then
         return M.resolveRest(actor, eventBus)
     elseif actionData.type == "heal_companion" then
@@ -391,6 +447,167 @@ local function actorCarriesItem(actor, item)
 
     local carried = inv:findItem(item.id)
     return carried ~= nil
+end
+
+local PACT_DEFINITIONS = {
+    devour_living = {
+        name = "Devour the Living",
+        obligation = "Eat only creatures that are yet living.",
+    },
+    forego_armor = {
+        name = "Forego Armor",
+        obligation = "Wear no armor, helm, or shield.",
+    },
+    forego_skins = {
+        name = "Forego Skins",
+        obligation = "Wear nothing made from skins, furs, or leather.",
+    },
+    forego_weapons = {
+        name = "Forego Weapons",
+        obligation = "Do not touch, manipulate, or wield weapons; wands are exempt.",
+    },
+    forego_wood = {
+        name = "Forego Wood",
+        obligation = "Do not wield, touch, or carry felled wood.",
+    },
+    gluttony = {
+        name = "Gluttony",
+        obligation = "Eat double portions whenever consuming rations.",
+    },
+    hide_face = {
+        name = "Hide Your Face",
+        obligation = "Keep the face hidden behind a mask.",
+        socialDisfavor = true,
+    },
+    self_mortification = {
+        name = "Self-mortification",
+        obligation = "Wear a hair shirt and remain Stressed.",
+        causesStressed = true,
+    },
+    self_mutilation = {
+        name = "Self-mutilation",
+        obligation = "Bear pact runes as a Wound that must not be healed.",
+        causesWound = true,
+    },
+    silence = {
+        name = "Silence",
+        obligation = "Speak only in whispers.",
+    },
+    verity = {
+        name = "Verity",
+        obligation = "Tell no knowing lie.",
+    },
+}
+
+local PACT_ALIASES = {
+    devour_the_living = "devour_living",
+    hide_your_face = "hide_face",
+}
+
+local function normalizePactId(pactId)
+    local normalized = normalizeActionTalentId(pactId)
+    return PACT_ALIASES[normalized] or normalized
+end
+
+local function resolvePactDefinition(pact)
+    if type(pact) == "table" then
+        local pactId = normalizePactId(pact.id or pact.pactId or pact.name)
+        local definition = PACT_DEFINITIONS[pactId]
+        if definition then
+            return pactId, definition
+        end
+        if pact.name then
+            return pactId, {
+                name = pact.name,
+                obligation = pact.obligation,
+                custom = true,
+            }
+        end
+        return nil, nil
+    end
+
+    local pactId = normalizePactId(pact)
+    return pactId, PACT_DEFINITIONS[pactId]
+end
+
+local function normalizeList(value)
+    if value == nil then
+        return {}
+    end
+    if type(value) == "table" then
+        if #value == 0 then
+            return { value }
+        end
+        return value
+    end
+    return { value }
+end
+
+local function isSpellComponent(item)
+    local props = item and item.properties or {}
+    return props.spellComponent == true or props.componentFor ~= nil or item.spellComponent == true
+end
+
+local function findSpellComponentForPact(actor, componentRef)
+    local inv = actor and actor.inventory
+    if not inv then
+        return nil, nil
+    end
+    if type(componentRef) == "table" then
+        local carried, location = inv.findItem and inv:findItem(componentRef.id)
+        if carried then
+            return carried, location
+        end
+        if actorCarriesItem(actor, componentRef) then
+            return componentRef
+        end
+        return nil, nil
+    end
+    if componentRef and inv.findItem then
+        local byId, location = inv:findItem(componentRef)
+        if byId then
+            return byId, location
+        end
+    end
+    if componentRef and inv.findItemByPredicate then
+        local wanted = normalizeActionTalentId(componentRef)
+        return inv:findItemByPredicate(function(item)
+            local props = item.properties or {}
+            return normalizeActionTalentId(item.templateId or item.id or item.name) == wanted or
+                normalizeActionTalentId(props.componentFor) == wanted
+        end)
+    end
+    if inv.findItemByPredicate then
+        return inv:findItemByPredicate(function(item)
+            local props = item.properties or {}
+            return isSpellComponent(item) and not props.pactCharged and item.pactCharge == nil
+        end)
+    end
+
+    return nil, nil
+end
+
+local function applyImmediatePactEffect(actor, pact)
+    if not actor or not pact then
+        return nil
+    end
+
+    if pact.causesStressed then
+        actor.conditions = actor.conditions or {}
+        actor.conditions.stressed = true
+        actor.stressed = true
+        return "stressed"
+    end
+
+    if pact.causesWound then
+        if actor.takeWound then
+            return actor:takeWound("normal", { source = "make_pact", pactId = pact.id })
+        end
+        actor.pactWounds = (actor.pactWounds or 0) + 1
+        return "wound_recorded"
+    end
+
+    return nil
 end
 
 local function cloneArray(items)
@@ -738,6 +955,8 @@ end
 local CAMP_TALENTS = {
     beast_master = true,
     bookworm = true,
+    chirurgeon = true,
+    high_chant = true,
     war_stories = true,
 }
 
@@ -1362,6 +1581,369 @@ local function resolveWarStoriesTalent(actor, actionData, context, eventBus)
     return true, "war_stories_shared", applied
 end
 
+local function getHighChantDiscardPile(actionData, context)
+    local deck = actionData.deck or actionData.playerDeck or actionData.minorDeck or
+        context.playerDeck or context.minorDeck
+    if deck and deck.discard_pile then
+        return deck.discard_pile, deck
+    end
+    return actionData.discardPile or actionData.discard_pile or context.discardPile or context.discard_pile, deck
+end
+
+local function findCardIndex(cards, card)
+    for i, candidate in ipairs(cards or {}) do
+        if candidate == card then
+            return i
+        end
+    end
+    return nil
+end
+
+local function resolveHighChantTalent(actor, actionData, context, eventBus)
+    context = context or {}
+    actionData = actionData or {}
+
+    if actionData.performed == false then
+        return false, "High Chant performance required"
+    end
+
+    local discardPile = nil
+    discardPile = getHighChantDiscardPile(actionData, context)
+    if type(discardPile) ~= "table" or #discardPile == 0 then
+        return false, "No minor discard cards"
+    end
+
+    local maxCards = math.max(0, actor and actor.cups or 0)
+    if maxCards <= 0 then
+        return false, "No Cups for High Chant"
+    end
+
+    local selected = actionData.cards or actionData.selectedCards or {}
+    if #selected == 0 then
+        local count = math.min(maxCards, #discardPile)
+        for i = 0, count - 1 do
+            selected[#selected + 1] = discardPile[#discardPile - i]
+        end
+    end
+
+    if #selected == 0 then
+        return false, "No inspiration cards selected"
+    end
+    if #selected > maxCards then
+        return false, "Too many inspiration cards"
+    end
+
+    local recipients = actionData.recipients or actionData.targets or { actor }
+    if #recipients < #selected then
+        return false, "Not enough inspiration recipients"
+    end
+
+    local granted = {}
+    local removals = {}
+    for i, card in ipairs(selected) do
+        local discardIndex = findCardIndex(discardPile, card)
+        if not discardIndex then
+            return false, "Card not in minor discard"
+        end
+
+        local recipient = recipients[i] or actor
+        if not recipient then
+            return false, "Missing inspiration recipient"
+        end
+        if recipient.inspirationCard then
+            return false, "Recipient already has inspiration"
+        end
+
+        removals[#removals + 1] = discardIndex
+        granted[#granted + 1] = {
+            recipient = recipient,
+            card = card,
+        }
+    end
+
+    table.sort(removals, function(a, b)
+        return a > b
+    end)
+    for _, index in ipairs(removals) do
+        table.remove(discardPile, index)
+    end
+
+    for _, grant in ipairs(granted) do
+        local card = grant.card
+        card.inspiration = {
+            source = "high_chant",
+            performerId = actor.id,
+            expires = "session_end",
+        }
+        grant.recipient.inspirationCard = card
+        grant.recipient.inspirationSource = actor.id
+    end
+
+    eventBus:emit("camp_action_resolved", {
+        action = "use_talent",
+        talentId = "high_chant",
+        actor = actor,
+        result = "high_chant_performed",
+        inspirationCards = granted,
+    })
+
+    return true, "high_chant_performed", granted
+end
+
+function M.resolveMakePact(actor, actionData, context, eventBus)
+    context = context or {}
+    actionData = actionData or {}
+    eventBus = eventBus or context.eventBus or events.globalBus
+
+    if not hasUsableActionTalent(actor, "gramarye") then
+        return false, "Requires Gramarye"
+    end
+
+    local pactSpecs = normalizeList(actionData.pacts or actionData.pactIds or actionData.pact or actionData.pactId)
+    if #pactSpecs == 0 then
+        return false, "Choose at least one pact"
+    end
+
+    local componentRefs = normalizeList(actionData.components or actionData.componentIds or
+        actionData.component or actionData.componentId)
+    local prepared = {}
+    local usedComponents = {}
+
+    for index, pactSpec in ipairs(pactSpecs) do
+        local pactId, definition = resolvePactDefinition(pactSpec)
+        if not pactId or not definition then
+            return false, "Unknown pact"
+        end
+
+        local componentRef = componentRefs[index] or componentRefs[1]
+        local component = nil
+        local location = nil
+        if componentRef then
+            component, location = findSpellComponentForPact(actor, componentRef)
+        else
+            component, location = findSpellComponentForPact(actor)
+        end
+
+        if not component or not isSpellComponent(component) then
+            return false, "Choose a carried spell component"
+        end
+        if usedComponents[component] or (component.id and usedComponents[component.id]) then
+            return false, "Each pact needs a different component"
+        end
+
+        local props = component.properties or {}
+        if props.pactCharged or component.pactCharge then
+            return false, "Component already charged"
+        end
+
+        usedComponents[component] = true
+        if component.id then
+            usedComponents[component.id] = true
+        end
+        prepared[#prepared + 1] = {
+            pactId = pactId,
+            definition = definition,
+            component = component,
+            location = location,
+        }
+    end
+
+    actor._pactCounter = actor._pactCounter or 0
+    actor.activePacts = actor.activePacts or {}
+    actor.pacts = actor.pacts or {}
+
+    local made = {}
+    for _, entry in ipairs(prepared) do
+        actor._pactCounter = actor._pactCounter + 1
+        local component = entry.component
+        component.properties = component.properties or {}
+        local pact = {
+            id = actionData.pactRecordId or
+                string.format("pact_%s_%d", tostring(actor.id or "actor"), actor._pactCounter),
+            pactId = entry.pactId,
+            name = entry.definition.name,
+            obligation = entry.definition.obligation,
+            actor = actor,
+            actorId = actor.id,
+            component = component,
+            componentId = component.id,
+            componentName = component.name,
+            componentFor = component.properties.componentFor,
+            componentLocation = entry.location,
+            active = true,
+            source = "make_pact",
+            socialDisfavor = entry.definition.socialDisfavor == true,
+            causesStressed = entry.definition.causesStressed == true,
+            causesWound = entry.definition.causesWound == true,
+        }
+
+        component.properties.pactCharged = true
+        component.properties.pactCharge = pact
+        component.pactCharge = pact
+
+        pact.immediateEffect = applyImmediatePactEffect(actor, pact)
+        actor.activePacts[#actor.activePacts + 1] = pact
+        actor.pacts[#actor.pacts + 1] = pact
+        made[#made + 1] = pact
+    end
+
+    eventBus:emit("camp_action_resolved", {
+        action = "make_pact",
+        actor = actor,
+        result = "pacts_made",
+        pacts = made,
+    })
+
+    return true, "pacts_made", made
+end
+
+function M.findActivePact(actor, pactRef)
+    if type(pactRef) == "table" then
+        return pactRef
+    end
+    if not actor or not pactRef then
+        return nil
+    end
+
+    local key = tostring(pactRef)
+    for _, pact in ipairs(actor.activePacts or {}) do
+        if tostring(pact.id) == key or tostring(pact.pactId) == key then
+            return pact
+        end
+    end
+
+    return nil
+end
+
+function M.isPactActive(pact)
+    return pact ~= nil and pact.active ~= false and not pact.broken and not pact.spent
+end
+
+function M.findUnbrokenActivePact(actor, pactRef)
+    local pact = M.findActivePact(actor, pactRef)
+    if M.isPactActive(pact) then
+        return pact
+    end
+    return nil
+end
+
+function M.breakPact(actor, pactRef, opts)
+    opts = opts or {}
+    local eventBus = opts.eventBus or events.globalBus
+    local pact = M.findActivePact(actor, pactRef)
+    if not pact or pact.active == false then
+        return false, "Pact not active"
+    end
+
+    pact.active = false
+    pact.broken = true
+    pact.breakReason = opts.reason or "pact_broken"
+
+    local component = pact.component
+    if component then
+        component.pactCharge = nil
+        if component.properties then
+            component.properties.pactCharged = false
+            component.properties.pactCharge = nil
+        end
+    end
+
+    local branch = opts.branch or (component and component.properties and component.properties.branch) or "unknown"
+    local resolver = opts.actionResolver or opts.resolver
+    local maleficence = nil
+    if resolver and resolver.triggerMaleficence then
+        maleficence = resolver:triggerMaleficence(actor, branch, "pact_broken", {
+            source = pact,
+            spellId = pact.componentFor,
+            card = opts.maleficenceCard,
+            value = opts.maleficenceValue,
+            resolve = opts.resolveMaleficence == true or opts.maleficenceCard ~= nil or
+                opts.maleficenceValue ~= nil,
+        })
+    else
+        maleficence = {
+            actor = actor,
+            branch = branch,
+            reason = "pact_broken",
+            source = pact,
+            spellId = pact.componentFor,
+        }
+        if actor then
+            actor.pendingMaleficence = maleficence
+            actor.maleficenceHistory = actor.maleficenceHistory or {}
+            actor.maleficenceHistory[#actor.maleficenceHistory + 1] = maleficence
+        end
+        eventBus:emit(events.EVENTS.MALEFICENCE_TRIGGERED, maleficence)
+    end
+
+    return true, "pact_broken", {
+        pact = pact,
+        maleficence = maleficence,
+    }
+end
+
+local selfMutilationHealResults = {
+    armor_notched = "armor_healed",
+    talent_wounded = "talent_healed",
+    staggered = "staggered_healed",
+    injured = "injured_healed",
+    deaths_door = "deaths_door_healed",
+    wound_recorded = "heal_wound",
+}
+
+local function recoveryResultHealsSelfMutilation(pact, recoveryResult)
+    if not pact or not recoveryResult then
+        return false
+    end
+    if recoveryResult == "all_wounds_healed" then
+        return true
+    end
+
+    local immediate = pact.immediateEffect
+    return selfMutilationHealResults[immediate] == recoveryResult
+end
+
+function M.breakPactsForRecoveryResult(actor, recoveryResult, opts)
+    opts = opts or {}
+    local breaks = {}
+
+    local function breakObligation(pactId, reason)
+        local pact = M.findUnbrokenActivePact(actor, pactId)
+        if not pact then
+            return
+        end
+
+        local ok, result, detail = M.breakPact(actor, pact, {
+            eventBus = opts.eventBus,
+            actionResolver = opts.actionResolver or opts.resolver,
+            reason = reason,
+            branch = opts.branch,
+            maleficenceCard = opts.maleficenceCard,
+            maleficenceValue = opts.maleficenceValue,
+            resolveMaleficence = opts.resolveMaleficence,
+        })
+        breaks[#breaks + 1] = {
+            ok = ok,
+            result = result,
+            detail = detail,
+            pact = pact,
+            pactId = pactId,
+            reason = reason,
+        }
+    end
+
+    if recoveryResult == "stress_cleared" then
+        breakObligation("self_mortification", "self_mortification_stress_cleared")
+    end
+
+    local selfMutilation = M.findUnbrokenActivePact(actor, "self_mutilation")
+    if recoveryResultHealsSelfMutilation(selfMutilation, recoveryResult) then
+        breakObligation("self_mutilation", "self_mutilation_wound_healed")
+    end
+
+    return breaks
+end
+
 function M.recordBookwormReading(actor, book)
     local props = book and book.properties or {}
     if not M.hasCampTalent(actor) or not findCampTalent(actor, "bookworm") then
@@ -1386,6 +1968,96 @@ function M.recordBookwormReading(actor, book)
     return true, entry
 end
 
+local function isRestAction(action)
+    return type(action) == "table" and (action.type == "rest" or action.id == "rest")
+end
+
+local function targetIsRestingForChirurgery(target, actionData, context)
+    if actionData.targetResting == true or actionData.restAndRecover == true or actionData.targetUsesRest == true then
+        return true
+    end
+    if isRestAction(actionData.targetAction or actionData.restAction) then
+        return true
+    end
+
+    local actionsCompleted = context.actionsCompleted or {}
+    return target and target.id and isRestAction(actionsCompleted[target.id])
+end
+
+local function healAllWounds(target)
+    local healed = {
+        armorNotches = target.armorNotches or 0,
+        woundedTalents = target.woundedTalents or 0,
+        staggered = target.conditions and target.conditions.staggered == true,
+        injured = target.conditions and target.conditions.injured == true,
+        deathsDoor = target.conditions and target.conditions.deaths_door == true,
+    }
+
+    target.armorNotches = 0
+    target.woundedTalents = 0
+    target._woundedTalentOrder = {}
+
+    for _, talent in pairs(target.talents or {}) do
+        if type(talent) == "table" then
+            talent.wounded = false
+        end
+    end
+
+    if target.conditions then
+        target.conditions.staggered = false
+        target.conditions.injured = false
+        target.conditions.deaths_door = false
+    end
+
+    return healed
+end
+
+local function resolveChirurgeryTalent(actor, actionData, context, eventBus)
+    local target = actionData.target or actionData.patient or actionData.guildMate
+    if not target then
+        return false, "Choose a guild-mate"
+    end
+    if target == actor or (target.id ~= nil and actor and target.id == actor.id) then
+        return false, "Chirurgery targets a guild-mate"
+    end
+    if target.isPC == false then
+        return false, "Chirurgery targets a guild-mate"
+    end
+    if target.conditions and target.conditions.dead then
+        return false, "Target is dead"
+    end
+    if target.conditions and target.conditions.stressed then
+        return false, "Target is Stressed"
+    end
+    if not targetIsRestingForChirurgery(target, actionData, context) then
+        return false, "Target must use Rest and Recover"
+    end
+
+    local healing = healAllWounds(target)
+    local pactBreaks = M.breakPactsForRecoveryResult(target, "all_wounds_healed", {
+        eventBus = eventBus,
+        actionResolver = context.actionResolver or context.resolver,
+    })
+
+    local detail = {
+        target = target,
+        healing = healing,
+        pactBreaks = pactBreaks,
+    }
+
+    eventBus:emit("camp_action_resolved", {
+        action = "use_talent",
+        talentId = "chirurgeon",
+        actor = actor,
+        target = target,
+        result = "chirurgery_performed",
+        healing = healing,
+        pactBreaks = pactBreaks,
+    })
+
+    return true, "chirurgery_performed", detail
+end
+
 function M.resolveUseTalent(actor, actionData, context, eventBus)
     context = context or {}
     eventBus = eventBus or context.eventBus or events.globalBus
@@ -1399,8 +2071,12 @@ function M.resolveUseTalent(actor, actionData, context, eventBus)
 
     if normalizedTalentId == "beast_master" then
         return resolveBeastMasterTalent(actor, actionData, eventBus)
+    elseif normalizedTalentId == "chirurgeon" then
+        return resolveChirurgeryTalent(actor, actionData, context, eventBus)
     elseif normalizedTalentId == "war_stories" then
         return resolveWarStoriesTalent(actor, actionData, context, eventBus)
+    elseif normalizedTalentId == "high_chant" then
+        return resolveHighChantTalent(actor, actionData, context, eventBus)
     elseif normalizedTalentId == "bookworm" then
         local book = actionData.book or actionData.target
         if not book then
@@ -1632,6 +2308,57 @@ local function normalizeOutcome(outcome)
     outcome = tostring(outcome or "failure"):lower()
     outcome = outcome:gsub("%s+", "_")
     return outcome
+end
+
+function M.resolveDevourLiving(actor, actionData, context, eventBus)
+    context = context or {}
+    actionData = actionData or {}
+    eventBus = eventBus or context.eventBus or events.globalBus
+
+    if not M.findUnbrokenActivePact(actor, "devour_living") then
+        return false, "Requires Devour the Living pact"
+    end
+
+    local outcome = actionData.outcome or actionData.testResult or actionData.result
+    if outcome == nil then
+        eventBus:emit("camp_action_resolved", {
+            action = "devour_living",
+            actor = actor,
+            result = "devour_living_test_required",
+            requiresTest = true,
+            testSuit = "cups",
+        })
+        return true, "devour_living_test_required"
+    end
+
+    local result = normalizeOutcome(outcome)
+    local success = result == "success" or result == "great_success" or result == "great_successes"
+    actor.devourLivingForage = {
+        result = result,
+        success = success,
+    }
+
+    if success then
+        actor.devourLivingMealAvailable = true
+        actor.devourLivingForageFailed = false
+        eventBus:emit("camp_action_resolved", {
+            action = "devour_living",
+            actor = actor,
+            result = "living_food_found",
+            outcome = result,
+        })
+        return true, "living_food_found", actor.devourLivingForage
+    end
+
+    actor.devourLivingMealAvailable = false
+    actor.devourLivingForageFailed = true
+    eventBus:emit("camp_action_resolved", {
+        action = "devour_living",
+        actor = actor,
+        result = "no_living_food",
+        outcome = result,
+    })
+    return false, "no_living_food", actor.devourLivingForage
 end
 
 function M.resolveScout(actor, context, eventBus)

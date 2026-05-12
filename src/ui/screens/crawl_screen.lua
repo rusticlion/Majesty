@@ -166,6 +166,11 @@ function M.createCrawlScreen(config)
 
     --- Initialize the screen (call once after creation)
     function screen:init()
+        if self.equipmentBar and self.equipmentBar.destroy then
+            self.equipmentBar:destroy()
+        end
+        self:unsubscribeEvents()
+
         -- Create input manager
         self.inputManager = input_manager.createInputManager({
             eventBus = self.eventBus,

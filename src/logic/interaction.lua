@@ -346,7 +346,10 @@ function M.createInteractionSystem(config)
                 actions[#actions + 1] = { action = M.ACTIONS.SEARCH, level_required = M.LEVELS.INVESTIGATE }
             end
 
-            if target.alchemy or target.alchemyReagent or target.reagentTemplateId then
+            local alchemyData = target.alchemy
+            local hasHarvestableAlchemy = target.alchemyReagent or target.reagentTemplateId or
+                (alchemyData and not alchemyData.noReagent and alchemyData.reagentTemplateId)
+            if hasHarvestableAlchemy then
                 actions[#actions + 1] = {
                     action = M.ACTIONS.HARVEST_REAGENT,
                     level_required = M.LEVELS.SCRUTINIZE,

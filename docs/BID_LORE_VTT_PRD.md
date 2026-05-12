@@ -1,8 +1,8 @@
 # Bid Lore VTT Subsystem PRD
 
-Status: Implemented v1 / expansion backlog
+Status: Implemented v1 / crawl expansion backlog
 Owner: Gameplay Systems  
-Date: 2026-02-05  
+Date: 2026-05-11
 Scope: Challenge-phase and crawl/investigation `Bid Lore` for solo/GM-less VTT play.
 
 ## 1. Problem Statement
@@ -34,13 +34,14 @@ This subsystem must preserve the following rules intent:
 3. Make adjudication explainable to players (why accepted/rejected/rephrase).
 4. Return useful, tactical, subject-specific answers quickly (single modal interaction).
 5. Support authored lore from the sourcebook and dungeon content in repo.
+6. Reuse the same structured lore loop for keyed crawl/investigation and social-room procedures.
 
 ## 4. Non-Goals (v1)
 
 1. Fully open-ended natural-language GM simulation.
 2. Dynamic AI-generated lore text.
-3. Full talent exception coverage on day one (e.g., all path-specific lore overrides).
-4. Crawl-phase freeform lore questioning outside Challenge action flow.
+3. Dedicated UI for every lore-relevant talent exception.
+4. Freeform lore questioning outside structured subject/question/motif flows.
 
 ## 5. VTT Adaptation Principles
 
@@ -67,6 +68,14 @@ This subsystem must preserve the following rules intent:
    - `rephrase`: explain why too broad/misaligned and offer constrained alternatives (no lore spend).
    - `rejected`: explicit motif/subject mismatch (no lore spend).
 6. Action resolves and returns to normal challenge flow.
+
+### 6.1a Crawl / Investigation Flow
+
+1. A lore-keyed POI focus menu exposes `Act: Bid Lore` when the current room has available subjects.
+2. The same modal opens with room-filtered subjects and the active adventurer's motifs.
+3. Accepted answers spend a lore bid, or Loremaster Resolve when elected and available.
+4. The result is written back to crawl narration without discarding a Challenge card.
+5. The Tomb Guardian social room uses this path for keyed social-preference answers.
 
 ### 6.2 Modal Inputs (v1)
 
@@ -126,6 +135,8 @@ Data availability override:
 2. `loreBids` decreases only on `accepted`.
 3. `rephrase_needed` does not spend lore bid.
 4. `rejected*` does not spend lore bid.
+5. Crawl/investigation `Bid Lore` uses the same accepted-only lore spend rule, but does not charge a Challenge card.
+6. Loremaster can pay for an accepted answer with Resolve when explicitly elected.
 
 This preserves `CoreRules` action-cost and lore-use semantics.
 
@@ -186,6 +197,7 @@ Fallback behavior:
 
 1. `src/logic/bid_lore_engine.lua` - implemented.
 2. `src/ui/bid_lore_modal.lua` - implemented.
+3. `src/ui/focus_menu.lua` and `src/ui/screens/crawl_screen.lua` - implemented for room-keyed crawl entry points.
 
 ### 9.2 Event Additions
 
@@ -204,6 +216,8 @@ Implemented in `src/logic/action_resolver.lua`:
 3. Return `pendingBidLore = true` in result to gate challenge continuation (same pattern as Test of Fate).
 4. Add `resolveBidLoreOutcome(action, bidLoreResult)` to finalize description/effects and lore spend.
 5. Enforce `requiresLoreBid` at resolver validation so zero-bid actions are blocked before the modal opens.
+6. Add non-challenge crawl resolution that preserves accepted-only spend semantics without Challenge card cost.
+7. Add backend talent exceptions for Loremaster, Weird/Wise/Ancient, Uncanny Knowledge, Con Artist, Foretell, and generated Hunter motifs.
 
 ### 9.4 Bootstrap Wiring
 
@@ -245,7 +259,7 @@ Implemented in `src/controllers/key_input_router.lua` and `src/controllers/mouse
 4. Multiple motifs appear relevant:
    - player chooses one motif in v1 for deterministic auditability.
 5. Talent exceptions:
-   - v1 defer; keep extension hooks in engine.
+   - backend support exists for the first high-value exceptions; dedicated prompts remain backlog.
 
 ## 12. Telemetry and Debugging
 
@@ -277,6 +291,7 @@ This enables rapid balancing of motif/tag mappings.
 3. Card is always discarded for Bid Lore action.
 4. `loreBids` decrements only on accepted outcomes.
 5. Input routers block underlying gameplay while modal open.
+6. Crawl/investigation POI flow opens the same modal, filters room subjects, and resolves without Challenge card cost.
 
 ## 14. Implementation Status
 
@@ -292,10 +307,10 @@ Phase B: Content Expansion - Started
 2. Add motif tag map for starter guild motifs. **Started.**
 3. Add richer answer details and implication text. **Ongoing.**
 
-Phase C: Exceptions and Depth - Backlog
+Phase C: Exceptions and Depth - Started
 
 1. Add talent-based overrides. **Started; Loremaster Resolve payment, Weird, Wise, Ancient free follow-up, Uncanny Knowledge no-motif fallback, Con Artist likes/dislikes, and Foretell yes/no hunches are implemented. Dedicated UI for special-talent prompts remains.**
-2. Add context-aware subject filtering (room/faction/encounter).
+2. Add context-aware subject filtering (room/faction/encounter). **Started for room-keyed crawl and Tomb Guardian social content.**
 3. Add QA pass for answer quality and parity.
 
 ## 15. Acceptance Criteria (Definition of Done)
@@ -308,7 +323,7 @@ Phase C: Exceptions and Depth - Backlog
 
 ## 16. Open Decisions
 
-1. Should v1 allow `Bid Lore` without motif selection (strict rules mode says no, except talent overrides)?
+1. Should v1 allow ordinary `Bid Lore` without motif selection (strict rules mode says no, except talent overrides)?
 2. Should `rephrase_needed` allow unlimited retries inside one action, or cap retries at 1-2 prompts?
 3. Should unknown/no-authored-data subjects fail as `rephrase_needed` (current spec) or hard `rejected`?
 4. Should we expose score internals to players, or keep them as debug-only telemetry?

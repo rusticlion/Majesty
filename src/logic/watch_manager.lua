@@ -76,6 +76,26 @@ local function createForcedEncounterResult(encounter)
     }
 end
 
+local function clearAlchemicalSizeChange(member)
+    if not member or not member.changeSize or member.changeSize.source ~= "alchemy" then
+        return
+    end
+
+    if member.conditions then
+        member.conditions.sizeChanged = false
+        member.conditions.sizeGrown = false
+        member.conditions.sizeShrunk = false
+        member.conditions.titan_growth = false
+    end
+    member.changeSize.active = false
+    member.changeSize.ended = true
+    member.changeSize.endReason = "watch_expired"
+    member.changeSize = nil
+    member.sizeMultiplier = 1
+    member.heightMultiplier = 1
+    member.sizeChanged = false
+end
+
 --------------------------------------------------------------------------------
 -- WATCH MANAGER FACTORY
 --------------------------------------------------------------------------------
@@ -286,6 +306,19 @@ function M.createWatchManager(config)
                         member.conditions[condition] = false
                         if member[condition] == true then
                             member[condition] = false
+                        end
+                        if condition == "second_sight" and member.secondSight then
+                            local secondSight = member.secondSight
+                            secondSight.active = false
+                            secondSight.ended = true
+                            secondSight.endReason = "watch_expired"
+                            for _, entry in ipairs(secondSight.previousFields or {}) do
+                                member[entry.key] = entry.value
+                            end
+                            member.secondSight = nil
+                        end
+                        if condition == "sizeChanged" or condition == "sizeGrown" or condition == "titan_growth" then
+                            clearAlchemicalSizeChange(member)
                         end
                         durations[condition] = nil
 

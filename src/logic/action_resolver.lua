@@ -19,6 +19,9 @@ local maleficence_tables = require('data.maleficence_tables')
 local entity_factory = require('entities.factory')
 local fate_resolver = require('logic.resolver')
 local inventory = require('logic.inventory')
+local item_templates = require('data.item_templates')
+local camp_actions = require('logic.camp_actions')
+local city_events = require('data.city_events')
 
 local M = {}
 
@@ -49,6 +52,8 @@ M.ACTION_TYPES = {
     BANTER     = "banter",      -- Attack morale
     SPEAK_INCANTATION = "speak_incantation", -- Rulebook spellcasting action
     CAST       = "cast",        -- Legacy alias for Speak Incantation
+    COUNTER_SPELL = "counter_spell", -- Talent interrupt/negation for sorcery
+    DWIMMERCRAFT = "dwimmercraft", -- Talent: minor magic/second sight
     RECOVER    = "recover",     -- S7.4: Clear negative status effects
 
     -- Special
@@ -82,6 +87,7 @@ M.ACTION_TYPES = {
 
 M.ACTION_ALIASES = {
     cast = M.ACTION_TYPES.SPEAK_INCANTATION,
+    counterspell = M.ACTION_TYPES.COUNTER_SPELL,
     root = M.ACTION_TYPES.ROUGHHOUSE,
 }
 
@@ -225,6 +231,29 @@ local function entityHasNormalizedTag(entity, tag)
         normalizedTableContains(entity.aiTags, tag) or
         normalizedTableContains(entity.traits, tag)
 end
+
+local UP_MY_SLEEVE_TEMPLATE_ALIASES = {
+    empty_vial = "hermetic_bottle",
+    vial = "hermetic_bottle",
+    bottle = "hermetic_bottle",
+    lockpick = "lockpicks",
+    lock_picks = "lockpicks",
+    rope_50ft = "rope",
+    rope_50_ft = "rope",
+}
+
+local UP_MY_SLEEVE_COMMON_TEMPLATES = {
+    candles = true,
+    chalk = true,
+    dagger = true,
+    grappling_hook = true,
+    hermetic_bottle = true,
+    lard = true,
+    lockpicks = true,
+    ration = true,
+    rope = true,
+    torch = true,
+}
 
 local HUNTER_TALENT_IDS = {
     "monster_hunter",
@@ -683,6 +712,91 @@ local function applyMaledictionSocialModifier(action, result, target)
     return modifier
 end
 
+local function getPactSocialModifier(actor)
+    if camp_actions.findUnbrokenActivePact(actor, "hide_face") then
+        return -3, "hide_face_social_disfavor"
+    end
+    return 0, nil
+end
+
+local function applyPactSocialModifier(action, result)
+    local modifier, effect = getPactSocialModifier(action and action.actor)
+    if modifier == 0 then
+        return 0
+    end
+
+    result.effects = result.effects or {}
+    result.effects[#result.effects + 1] = "pact_social_disfavor"
+    if effect then
+        result.effects[#result.effects + 1] = effect
+    end
+    result.testValue = (result.testValue or 0) + modifier
+    result.socialModifier = (result.socialModifier or 0) + modifier
+    result.pactSocialModifier = (result.pactSocialModifier or 0) + modifier
+    return modifier
+end
+
+local function normalizeSpeechVolume(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    return value:lower():gsub("^%s+", ""):gsub("%s+$", ""):gsub("[%s%-]+", "_")
+end
+
+local function actionUsesLoudSpeech(action)
+    if not action then
+        return false
+    end
+    local volume = normalizeSpeechVolume(action.speechVolume or action.voiceVolume or action.volume)
+    return action.loudSpeech == true or action.shouts == true or action.shout == true or
+        action.yells == true or action.yell == true or volume == "loud" or volume == "shout" or
+        volume == "shouting" or volume == "yell" or volume == "yelling"
+end
+
+local function actionTellsKnowingLie(action)
+    if not action then
+        return false
+    end
+    return action.knowinglyLies == true or action.knownLie == true or action.lie == true or
+        action.lies == true or action.deception == true or action.falsehood == true
+end
+
+local function breakSocialPact(resolver, action, result, pactId, reason)
+    local actor = action and action.actor
+    local pact = camp_actions.findUnbrokenActivePact(actor, pactId)
+    if not pact then
+        return nil
+    end
+
+    local ok, breakResult, detail = camp_actions.breakPact(actor, pact, {
+        eventBus = resolver and resolver.eventBus,
+        actionResolver = resolver,
+        reason = reason,
+    })
+    result.pactBreaks = result.pactBreaks or {}
+    result.pactBreaks[#result.pactBreaks + 1] = {
+        ok = ok,
+        result = breakResult,
+        detail = detail,
+        pact = pact,
+        pactId = pactId,
+        reason = reason,
+    }
+    result.effects = result.effects or {}
+    result.effects[#result.effects + 1] = "pact_broken_" .. pactId
+    return detail
+end
+
+local function applySocialPactBreaks(resolver, action, result)
+    if actionUsesLoudSpeech(action) then
+        breakSocialPact(resolver, action, result, "silence", "silence_loud_speech")
+    end
+    if actionTellsKnowingLie(action) then
+        breakSocialPact(resolver, action, result, "verity", "verity_knowing_lie")
+    end
+    return result.pactBreaks
+end
+
 local function normalizeLanguage(value)
     if type(value) ~= "string" then
         return nil
@@ -1107,6 +1221,70 @@ local function itemMatchesMaterial(item, material)
     return false
 end
 
+local function itemIsArchwoodWand(item)
+    if not item then
+        return false
+    end
+    local props = item.properties or {}
+    if props.wand and props.archwood then
+        return true
+    end
+    local id = normalizeSocialTag(item.templateId or item.id or item.name)
+    return id == "wand_archwood" or id == "wand_of_archwood"
+end
+
+local function itemIsWeaponForPact(item)
+    if not item or itemIsArchwoodWand(item) then
+        return false
+    end
+    local props = item.properties or {}
+    return item.isWeapon == true or props.weapon == true or item.weaponType ~= nil or
+        props.weaponType ~= nil or item.isMelee == true or item.isRanged == true
+end
+
+local function itemIsArmorOrShieldForPact(item)
+    if not item then
+        return false
+    end
+    local props = item.properties or {}
+    return item.isArmor == true or props.armor == true or item.armorType ~= nil or
+        props.armorType ~= nil or itemHasMarker(item, "shield")
+end
+
+local function itemIsFelledWoodForPact(item)
+    return item ~= nil and not itemIsArchwoodWand(item) and itemMatchesMaterial(item, "wood")
+end
+
+local SKIN_MATERIAL_TAGS = {
+    skin = true,
+    skins = true,
+    hide = true,
+    hides = true,
+    leather = true,
+    fur = true,
+    furs = true,
+    calfskin = true,
+}
+
+local function itemIsSkinOrFurForPact(item)
+    if not item then
+        return false
+    end
+    local props = item.properties or {}
+    for marker in pairs(SKIN_MATERIAL_TAGS) do
+        if itemHasMarker(item, marker) or materialValueMatches(item.material, marker) or
+           materialValueMatches(props.material, marker) or materialValueMatches(props.materials, marker) then
+            return true
+        end
+    end
+
+    local name = normalizeSocialTag(item.name)
+    return name and (name:find("leather", 1, true) ~= nil or
+        name:find("fur", 1, true) ~= nil or
+        name:find("skin", 1, true) ~= nil or
+        name:find("hide", 1, true) ~= nil)
+end
+
 local function itemHasMaleficenceTag(item, tag)
     if not tag then
         return true
@@ -1461,6 +1639,554 @@ local function createMaleficenceAreaCondition(effect)
     }
 end
 
+local function entityHasTagValue(entity, tag)
+    if not entity or not tag then
+        return false
+    end
+
+    local tags = entity.tags or entity.aiTags or entity.traits or {}
+    if type(tags) ~= "table" then
+        return false
+    end
+
+    if tags[tag] == true then
+        return true
+    end
+
+    for _, value in pairs(tags) do
+        if value == tag then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function isInspirationImmuneTarget(target)
+    if not target then
+        return true
+    end
+    local conditions = target.conditions or {}
+    return target.immuneToInspiration == true or target.inspirationImmune == true or
+        target.emotionless == true or target.noEmotions == true or conditions.inspire_immune == true or
+        conditions.inspired_immune == true or conditions.nymph_beauty == true or
+        conditions.emotionless == true or entityHasTagValue(target, "emotionless") or
+        entityHasTagValue(target, "mindless")
+end
+
+local function isControlImmuneTarget(target)
+    if not target then
+        return true
+    end
+    local conditions = target.conditions or {}
+    return target.immuneToControl == true or target.controlImmune == true or
+        conditions.control_immune == true or conditions.controlImmune == true or
+        conditions.cannot_be_controlled == true or conditions.nymph_beauty == true
+end
+
+local invisibleFireFlammableMaterials = {
+    wood = true,
+    cloth = true,
+    paper = true,
+    parchment = true,
+    fabric = true,
+    canvas = true,
+    linen = true,
+}
+
+local function hasMaterialValue(value, material)
+    if type(value) == "string" then
+        return string.lower(value) == material
+    elseif type(value) == "table" then
+        if value[material] == true then
+            return true
+        end
+        for _, entry in pairs(value) do
+            if type(entry) == "string" and string.lower(entry) == material then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function targetHasMaterial(target, material)
+    local props = target and target.properties or {}
+    return hasMaterialValue(target and target.material, material)
+        or hasMaterialValue(target and target.substance, material)
+        or hasMaterialValue(props.material, material)
+        or hasMaterialValue(props.materials, material)
+        or hasMaterialValue(props.substance, material)
+end
+
+local function isFlammableTarget(target)
+    local props = target and target.properties or {}
+    if target and (target.flammable == true or props.flammable == true) then
+        return true
+    end
+
+    for material in pairs(invisibleFireFlammableMaterials) do
+        if targetHasMaterial(target, material) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function isWeaponTarget(target)
+    local props = target and target.properties or {}
+    return target and (target.isWeapon == true or target.weaponType ~= nil or
+        props.weapon == true or props.isWeapon == true or entityHasTagValue(target, "weapon"))
+end
+
+local function notchItemTarget(target)
+    target.notches = target.notches or 0
+    target.durability = target.durability or inventory.DURABILITY.NORMAL
+    return inventory.addNotch(target)
+end
+
+local function isPetrifiedTarget(target)
+    if not target then
+        return false
+    end
+    local conditions = target.conditions or {}
+    return target.petrified == true or target.curseOfPetrification == true or
+        target.petrificationCurse == true or conditions.petrified == true or
+        conditions.petrification == true or conditions.turned_to_stone == true
+end
+
+local function isStoneTarget(target)
+    if not target then
+        return false
+    end
+    local props = target.properties or {}
+    local conditions = target.conditions or {}
+    return target.stone == true or props.stone == true or conditions.stone == true or
+        targetHasMaterial(target, "stone") or isPetrifiedTarget(target) or
+        entityHasTagValue(target, "stone") or entityHasTagValue(target, "gargoyle") or
+        entityHasTagValue(target, "animate_stone") or entityHasTagValue(target, "animate_statue")
+end
+
+local function isStoneCreatureTarget(target)
+    return target and target.takeWound ~= nil and isStoneTarget(target)
+end
+
+local function isPersonSizedStoneTarget(target, effect)
+    local props = target and target.properties or {}
+    if target and (target.personSized == true or props.personSized == true) then
+        return true
+    end
+    if target and (target.large == true or props.large == true or props.largerThanPerson == true) then
+        return false
+    end
+
+    local size = target and (target.size or target.slots or props.size or props.slots)
+    return not size or size <= ((effect and effect.personSizeLimit) or 2)
+end
+
+local function clearPetrification(target)
+    if not target then
+        return false
+    end
+
+    local cured = isPetrifiedTarget(target)
+    target.conditions = target.conditions or {}
+    for _, condition in ipairs({ "petrified", "petrification", "turned_to_stone", "stone" }) do
+        if target.conditions[condition] then
+            cured = true
+            target.conditions[condition] = false
+        end
+    end
+
+    if target.petrified or target.curseOfPetrification or target.petrificationCurse then
+        cured = true
+    end
+    target.petrified = false
+    target.curseOfPetrification = nil
+    target.petrificationCurse = nil
+
+    local malediction = target.malediction
+    local curse = malediction and malediction.curse
+    local curseId = malediction and (malediction.curseId or (curse and curse.id))
+    if curseId == "petrification" or (malediction and malediction.petrification == true) then
+        malediction.active = false
+        malediction.ended = true
+        malediction.endReason = "cockatrice_oil"
+        cured = true
+    end
+
+    return cured
+end
+
+local impPotionAlchemicalConditions = {
+    "poisoned",
+    "poison",
+    "harpy_wings",
+    "flying",
+    "flight",
+    "arms_are_wings",
+    "cannot_hold_items",
+    "cannot_hover",
+    "must_keep_flying",
+    "fire_immunity",
+    "heat_immunity",
+    "gear_still_burns",
+    "face_rat_illusion",
+    "illusion_duplicate_pending",
+    "visual_illusion",
+    "water_breathing",
+    "underwater_breathing",
+    "gills",
+    "nymph_beauty",
+    "disposition_influence_favor",
+    "inspire_immune",
+    "control_immune",
+    "poison_immunity",
+    "ingestion_immunity",
+    "harmless_swallowing",
+    "shapeless_body",
+    "no_fall_damage",
+    "squeeze_through_gaps",
+    "cold_immunity",
+    "ice_damage_immunity",
+    "comfortable_in_cold",
+    "ungoat_spell_ward",
+    "spell_target_blocked",
+    "cannot_cast_spells",
+    "mist_form",
+    "vampire_mist",
+    "hazard_resistant",
+    "can_pass_cracks",
+    "vampire_weaknesses",
+    "sunlight_stuns",
+    "wholesome_herbs_stun",
+    "silver_stuns",
+    "running_water_stuns",
+    "sizeChanged",
+    "sizeGrown",
+    "titan_growth",
+    "inspired",
+    "inspiredJoy",
+    "inspiredRomanticJoy",
+    "inLove",
+    "inspiredDistaste",
+    "inHate",
+    "inspiredAnger",
+    "enraged",
+}
+
+local function clearImpPotionAlchemy(target)
+    local cleared = {}
+    if not target then
+        return cleared
+    end
+
+    target.conditions = target.conditions or {}
+    for _, condition in ipairs(impPotionAlchemicalConditions) do
+        if target.conditions[condition] then
+            target.conditions[condition] = false
+            cleared[#cleared + 1] = condition
+        end
+        if target.conditionDurations then
+            target.conditionDurations[condition] = nil
+        end
+    end
+
+    if target.poisoned then
+        target.poisoned = false
+        cleared[#cleared + 1] = "poisoned"
+    end
+    target.poison = nil
+
+    for _, field in ipairs({
+        "romanticInspiration",
+        "romanticInspirationTarget",
+        "distasteInspiration",
+        "distasteInspirationTarget",
+        "ogrePheromone",
+        "recklessAttackTarget",
+        "mistForm",
+        "vampireWeaknesses",
+        "changeSize",
+    }) do
+        if target[field] ~= nil then
+            target[field] = nil
+        end
+    end
+
+    return cleared
+end
+
+local griffinOilCleanFlags = {
+    "rust",
+    "rusted",
+    "dirty",
+    "filthy",
+    "filth",
+    "impure",
+    "impurities",
+    "minorFlaw",
+    "minor_flaw",
+    "minor_flaws",
+    "foul",
+    "stink",
+}
+
+local function clearCleanseFlag(container, key, cleaned)
+    if container and container[key] then
+        container[key] = false
+        cleaned[#cleaned + 1] = key
+    end
+end
+
+local function cleanseTargetWithGriffinOil(target, action)
+    local cleaned = {}
+    if not target then
+        return cleaned
+    end
+
+    local props = target.properties or {}
+    target.properties = props
+    for _, key in ipairs(griffinOilCleanFlags) do
+        clearCleanseFlag(target, key, cleaned)
+        clearCleanseFlag(props, key, cleaned)
+    end
+
+    local conditions = target.conditions or {}
+    if conditions.imp_stink or conditions.choking_stink or target.impStink then
+        conditions.imp_stink = false
+        conditions.choking_stink = false
+        cleaned[#cleaned + 1] = "imp_stink"
+        if target.impStink and target.impStink.stressedUntilWashed and conditions.stressed then
+            conditions.stressed = false
+            cleaned[#cleaned + 1] = "imp_stink_stress"
+        end
+        target.impStink = nil
+    end
+
+    props.cleaned = true
+    props.griffinOilClean = true
+    target.cleaned = true
+    if action and (action.dungeonBath == true or action.bath == true or target == action.actor) then
+        target.griffinOilBath = true
+    end
+
+    return cleaned
+end
+
+local function rememberContainerField(container, key)
+    if not container then
+        return { present = false }
+    end
+
+    return {
+        present = container[key] ~= nil,
+        value = container[key],
+    }
+end
+
+local function restoreContainerField(container, key, record)
+    if not container or not record then
+        return
+    end
+
+    if record.present then
+        container[key] = record.value
+    else
+        container[key] = nil
+    end
+end
+
+local function applyJinnPotionShroud(target, item, effect)
+    target.conditions = target.conditions or {}
+    local previous = {
+        fields = {
+            canSeeShrouded = rememberContainerField(target, "canSeeShrouded"),
+            canSeeInvisible = rememberContainerField(target, "canSeeInvisible"),
+            shroudedBy = rememberContainerField(target, "shroudedBy"),
+        },
+        conditions = {
+            shrouded = rememberContainerField(target.conditions, "shrouded"),
+            invisible = rememberContainerField(target.conditions, "invisible"),
+            see_shrouded = rememberContainerField(target.conditions, "see_shrouded"),
+            jinn_shroud = rememberContainerField(target.conditions, "jinn_shroud"),
+        },
+    }
+
+    target.conditions.shrouded = true
+    target.conditions.invisible = true
+    target.conditions.see_shrouded = true
+    target.conditions.jinn_shroud = true
+    target.canSeeShrouded = true
+    target.canSeeInvisible = true
+    target.shroudedBy = target
+
+    target.jinnShroud = {
+        sourceItemId = item.id,
+        sourceItemName = item.name,
+        duration = effect.duration or "visible_interaction",
+        endsOnVisibleObjectInteraction = true,
+        previous = previous,
+    }
+    target.shroud = {
+        caster = target,
+        source = "jinn_potion",
+        sourceItemId = item.id,
+        sourceItemName = item.name,
+        duration = effect.duration or "visible_interaction",
+        potion = true,
+        canSeeShrouded = true,
+        visibleObjectsEndEffect = true,
+        visibleObjectsRequireResolve = false,
+        previous = previous,
+    }
+
+    return target.shroud
+end
+
+local function clearJinnPotionShroud(target, reason)
+    if not target or not target.shroud then
+        return nil
+    end
+    local shroud = target.shroud
+    if shroud.source ~= "jinn_potion" and shroud.visibleObjectsEndEffect ~= true then
+        return nil
+    end
+
+    local previous = (target.jinnShroud and target.jinnShroud.previous) or shroud.previous or {}
+    restoreContainerField(target, "canSeeShrouded", previous.fields and previous.fields.canSeeShrouded)
+    restoreContainerField(target, "canSeeInvisible", previous.fields and previous.fields.canSeeInvisible)
+    restoreContainerField(target, "shroudedBy", previous.fields and previous.fields.shroudedBy)
+
+    target.conditions = target.conditions or {}
+    restoreContainerField(target.conditions, "shrouded", previous.conditions and previous.conditions.shrouded)
+    restoreContainerField(target.conditions, "invisible", previous.conditions and previous.conditions.invisible)
+    restoreContainerField(target.conditions, "see_shrouded", previous.conditions and previous.conditions.see_shrouded)
+    restoreContainerField(target.conditions, "jinn_shroud", previous.conditions and previous.conditions.jinn_shroud)
+
+    target.shroud = nil
+    target.jinnShroud = nil
+
+    return {
+        target = target,
+        reason = reason or "visible_object_interaction",
+        source = "jinn_potion",
+    }
+end
+
+local function isIntangibleTarget(target)
+    if not target then
+        return false
+    end
+
+    local conditions = target.conditions or {}
+    local props = target.properties or {}
+    return target.intangible == true or target.incorporeal == true or target.ethereal == true or
+        target.tangible == false or target.visible == false or target.invisible == true or
+        conditions.intangible == true or conditions.incorporeal == true or conditions.ethereal == true or
+        conditions.tangible == false or conditions.visible == false or conditions.invisible == true or
+        props.intangible == true or props.incorporeal == true or props.ethereal == true or
+        props.tangible == false or props.visible == false or props.invisible == true
+end
+
+local function materializeWithJinnBomb(target, item)
+    target.conditions = target.conditions or {}
+    target.properties = target.properties or {}
+
+    target.intangible = false
+    target.incorporeal = false
+    target.ethereal = false
+    target.invisible = false
+    target.visible = true
+    target.tangible = true
+
+    target.conditions.intangible = false
+    target.conditions.incorporeal = false
+    target.conditions.ethereal = false
+    target.conditions.invisible = false
+    target.conditions.visible = true
+    target.conditions.tangible = true
+
+    target.properties.intangible = false
+    target.properties.incorporeal = false
+    target.properties.ethereal = false
+    target.properties.invisible = false
+    target.properties.visible = true
+    target.properties.tangible = true
+
+    target.materializedByJinnBomb = {
+        sourceItemId = item.id,
+        sourceItemName = item.name,
+        visible = true,
+        tangible = true,
+    }
+
+    return target.materializedByJinnBomb
+end
+
+local function isNonLivingObjectTarget(target)
+    if not target then
+        return false
+    end
+
+    local props = target.properties or {}
+    local conditions = target.conditions or {}
+    local living = target.isPC == true or target.living == true or target.alive == true or
+        target.creature == true or target.isCreature == true or target.health ~= nil or
+        target.baseMorale ~= nil or target.takeWound ~= nil or conditions.living == true or
+        conditions.alive == true or props.living == true or props.alive == true or
+        entityHasTagValue(target, "creature") or entityHasTagValue(target, "living")
+    if living then
+        return false
+    end
+
+    return target.templateId ~= nil or target.durability ~= nil or target.notches ~= nil or
+        target.itemType ~= nil or target.type ~= nil or props.object == true or props.isObject == true or
+        props.material ~= nil or props.materials ~= nil or target.material ~= nil
+end
+
+local function awakenObjectAsMimic(target, item)
+    target.conditions = target.conditions or {}
+    target.properties = target.properties or {}
+
+    local originalName = target.name or "object"
+    target.isMimic = true
+    target.alive = true
+    target.construct = true
+    target.loyal = false
+    target.loyalToActor = false
+    target.conditions.mimic = true
+    target.properties.mimic = true
+    target.properties.alive = true
+    target.properties.construct = true
+    target.properties.camouflagedAsObject = true
+    target.properties.notLoyal = true
+
+    target.mimic = {
+        sourceItemId = item.id,
+        sourceItemName = item.name,
+        originalName = originalName,
+        notLoyal = true,
+        camouflagedAsObject = true,
+        construct = true,
+        treatsNotchesAsWounds = 2,
+        mustExceedInitiative = true,
+        attributes = {
+            swords = 4,
+            pentacles = 0,
+            cups = 1,
+            wands = 1,
+        },
+        health = 2,
+        defense = 6,
+        likes = { "sleeping" },
+        hates = { "itself" },
+    }
+
+    return target.mimic
+end
+
 local function getMaleficenceInspiredDisposition(effect, opts)
     opts = opts or {}
 
@@ -1499,13 +2225,18 @@ local function applyMaleficenceInspiredDisposition(target, disposition, severity
         return nil
     end
 
+    if isInspirationImmuneTarget(target) then
+        return nil
+    end
+
     local oldDisposition = target.getDisposition and target:getDisposition() or target.disposition
     local oldSeverity = target.getDispositionSeverity and target:getDispositionSeverity() or target.dispositionSeverity
 
-    target.conditions = target.conditions or {}
-    target.conditions.inspired = true
-    target.conditions.inspiredRandomDisposition = true
-    target.conditions["inspired_" .. tostring(disposition)] = true
+    local conditions = target.conditions or {}
+    target.conditions = conditions
+    conditions.inspired = true
+    conditions.inspiredRandomDisposition = true
+    conditions["inspired_" .. tostring(disposition)] = true
     target.inspiredDisposition = disposition
     target.maleficenceInspiration = {
         source = "maleficence",
@@ -3005,6 +3736,27 @@ function M.createActionResolver(config)
             end
             result.effects[#result.effects + 1] = "bloody_tears_vision_disfavor"
         end
+        local sizeFavor = self:getChangeSizeActionFavor(action.actor, M.ACTION_TYPES.TEST_FATE, action)
+        if sizeFavor ~= nil then
+            if favor == nil then
+                favor = sizeFavor
+            elseif favor ~= sizeFavor then
+                favor = nil
+            end
+            if sizeFavor == true then
+                result.effects[#result.effects + 1] = "change_size_action_favor"
+            else
+                result.effects[#result.effects + 1] = "change_size_action_disfavor"
+            end
+        end
+        if self:getNymphDispositionInfluenceFavor(action.actor, action) then
+            if favor == nil then
+                favor = true
+            elseif favor == false then
+                favor = nil
+            end
+            result.effects[#result.effects + 1] = "nymph_beauty_disposition_favor"
+        end
         if action.disfavor == true then
             favor = false
         end
@@ -3324,6 +4076,221 @@ function M.createActionResolver(config)
         return self:spendResolveForFavor(actor)
     end
 
+    function resolver:getUpMySleeveUses(actor)
+        return actor and (actor.upMySleeveUses or actor.upMySleeveCrawlUses or 0) or 0
+    end
+
+    function resolver:normalizeUpMySleeveTemplateId(value)
+        local normalized = normalizeTalentKey(value)
+        if normalized == "" then
+            return nil
+        end
+        return UP_MY_SLEEVE_TEMPLATE_ALIASES[normalized] or normalized
+    end
+
+    function resolver:createUpMySleeveItem(itemSpec)
+        if type(itemSpec) == "string" then
+            local templateId = self:normalizeUpMySleeveTemplateId(itemSpec)
+            if templateId and item_templates.hasTemplate(templateId) then
+                return inventory.createItemFromTemplate(templateId), templateId, nil
+            end
+            return nil, templateId, "unknown_item"
+        end
+
+        if type(itemSpec) ~= "table" then
+            return nil, nil, "missing_item"
+        end
+
+        local templateId = itemSpec.templateId or itemSpec.itemTemplate
+        if not templateId and not itemSpec.name then
+            templateId = itemSpec.id
+        end
+        templateId = templateId and self:normalizeUpMySleeveTemplateId(templateId) or nil
+        if templateId and item_templates.hasTemplate(templateId) then
+            return inventory.createItemFromTemplate(templateId, itemSpec.overrides), templateId, nil
+        end
+
+        if itemSpec.name then
+            return inventory.createItem(itemSpec), nil, nil
+        end
+
+        return nil, templateId, templateId and "unknown_item" or "missing_item"
+    end
+
+    function resolver:isUpMySleeveItemAllowed(item, itemSpec, templateId)
+        if not item then
+            return false, "missing_item"
+        end
+        if item.oversized or (item.size or 1) > 1 then
+            return false, "not_one_slot"
+        end
+
+        local props = item.properties or {}
+        if props.magical or props.artifact or props.relic or props.treasure or props.rare or item.rare then
+            return false, "not_common"
+        end
+
+        if templateId then
+            return UP_MY_SLEEVE_COMMON_TEMPLATES[templateId] == true, "not_common"
+        end
+
+        if type(itemSpec) == "table" and (itemSpec.common == true or props.common == true) then
+            return true, nil
+        end
+
+        return false, "not_common"
+    end
+
+    function resolver:resolveUpMySleeve(actor, itemSpec, opts)
+        opts = opts or {}
+        local result = {
+            success = false,
+            actor = actor,
+            effects = { "up_my_sleeve" },
+        }
+
+        if not entityHasUsableTalent(actor, "up_my_sleeve") then
+            result.reason = "requires_up_my_sleeve"
+            result.effects[#result.effects + 1] = "talent_missing_or_wounded"
+            result.description = "Up My Sleeve requires a usable Up My Sleeve talent."
+            return result
+        end
+
+        local maxUses = opts.maxUses or 2
+        local uses = self:getUpMySleeveUses(actor)
+        if uses >= maxUses then
+            result.reason = "uses_exhausted"
+            result.effects[#result.effects + 1] = "up_my_sleeve_uses_exhausted"
+            result.description = "Both sleeves have already been used this Crawl."
+            return result
+        end
+
+        local item, templateId, createReason = self:createUpMySleeveItem(itemSpec)
+        if not item then
+            result.reason = createReason or "missing_item"
+            result.effects[#result.effects + 1] = "up_my_sleeve_item_invalid"
+            result.description = "No valid common item was declared."
+            return result
+        end
+
+        local allowed, itemReason = self:isUpMySleeveItemAllowed(item, itemSpec, templateId)
+        if not allowed then
+            result.reason = itemReason
+            result.effects[#result.effects + 1] = "up_my_sleeve_item_invalid"
+            result.description = "Up My Sleeve can only produce a common one-slot item."
+            return result
+        end
+
+        local canCheckResolve = false
+        local hasResolve = false
+        if actor.hasResolve then
+            canCheckResolve = true
+            hasResolve = actor:hasResolve(1)
+        elseif actor.resolve ~= nil then
+            canCheckResolve = true
+            hasResolve = getResolveAmount(actor) >= 1
+        end
+        if canCheckResolve and not hasResolve then
+            result.reason = "not_enough_resolve"
+            result.effects[#result.effects + 1] = "resolve_missing"
+            result.description = "Cannot spend Resolve for Up My Sleeve."
+            return result
+        end
+
+        actor.inventory = actor.inventory or inventory.createInventory()
+        local location = opts.location or inventory.LOCATIONS.HANDS
+        local added, addReason = actor.inventory:addItem(item, location)
+        if not added then
+            result.reason = addReason
+            result.effects[#result.effects + 1] = "inventory_full"
+            result.description = "No room to produce the item."
+            return result
+        end
+
+        local spent, spendReason = self:spendResolveForFavor(actor)
+        if not spent then
+            actor.inventory:removeItem(item.id)
+            result.reason = spendReason
+            result.effects[#result.effects + 1] = "resolve_missing"
+            result.description = "Cannot spend Resolve for Up My Sleeve."
+            return result
+        end
+
+        actor.upMySleeveUses = uses + 1
+        actor.upMySleeveCrawlUses = actor.upMySleeveUses
+
+        item.properties = item.properties or {}
+        item.properties.upMySleeve = true
+        item.properties.producedBy = actor.id
+
+        result.success = true
+        result.item = item
+        result.location = location
+        result.templateId = templateId
+        result.uses = actor.upMySleeveUses
+        result.usesRemaining = math.max(0, maxUses - actor.upMySleeveUses)
+        result.effects[#result.effects + 1] = "resolve_spent_for_up_my_sleeve"
+        result.effects[#result.effects + 1] = "item_produced"
+        result.description = (actor.name or actor.id or "An adventurer") ..
+            " had " .. (item.name or "an item") .. " up their sleeve."
+
+        self.eventBus:emit("up_my_sleeve_item_created", result)
+        return result
+    end
+
+    function resolver:spendInspirationCard(actor, card, opts)
+        opts = opts or {}
+        if not actor or not card then
+            return false, "missing_inspiration"
+        end
+        if actor.inspirationCard ~= card then
+            return false, "inspiration_card_mismatch"
+        end
+
+        actor.inspirationCard = nil
+        actor.spentInspirationCards = actor.spentInspirationCards or {}
+        actor.spentInspirationCards[#actor.spentInspirationCards + 1] = card
+
+        card.inspiration = card.inspiration or {}
+        card.inspiration.spent = true
+        card.inspiration.spentFor = opts.usage or opts.reason or "action"
+
+        local discardDeck = opts.deck or opts.playerDeck or self.playerDeck
+        if discardDeck and discardDeck.discard then
+            discardDeck:discard(card)
+        end
+
+        local detail = {
+            actor = actor,
+            card = card,
+            usage = card.inspiration.spentFor,
+            discarded = discardDeck ~= nil,
+        }
+        self.eventBus:emit("inspiration_card_spent", detail)
+
+        return true, detail
+    end
+
+    function resolver:spendActionInspirationCard(action, result)
+        if not action or not action.actor or not action.card then
+            return
+        end
+        if action.useInspirationCard ~= true and action.card ~= action.actor.inspirationCard then
+            return
+        end
+
+        local ok, detailOrReason = self:spendInspirationCard(action.actor, action.card, {
+            usage = action.inspirationUsage or "action",
+            deck = action.inspirationDiscardDeck or action.playerDeck,
+        })
+        if ok then
+            result.inspirationSpent = detailOrReason
+            result.effects[#result.effects + 1] = "inspiration_spent"
+        else
+            result.inspirationSpendFailed = detailOrReason
+        end
+    end
+
     function resolver:wantsAreteAutoSuccess(action)
         return action and (action.useAreteAutoSuccess == true or
             action.spendResolveForArete == true or
@@ -3616,6 +4583,9 @@ function M.createActionResolver(config)
         if actionType == M.ACTION_TYPES.MELEE or actionType == M.ACTION_TYPES.MISSILE then
             return nil
         end
+        if actor.changeSize.testOfFateOnly and actionType ~= M.ACTION_TYPES.TEST_FATE then
+            return nil
+        end
 
         if action and (action.changeSizeAdvantage == true or action.sizeAdvantage == true) then
             return true
@@ -3641,6 +4611,34 @@ function M.createActionResolver(config)
         end
 
         return nil
+    end
+
+    function resolver:getNymphDispositionInfluenceFavor(actor, action)
+        local conditions = actor and actor.conditions or {}
+        if not (conditions.nymph_beauty or conditions.disposition_influence_favor) then
+            return nil
+        end
+        action = action or {}
+        local intent = normalizeSizeValue(action.intent or action.socialIntent or action.context or
+            action.challengeContext or action.testContext)
+        local influenceDisposition = action.influenceDisposition == true or
+            action.dispositionInfluence == true or action.favorablyInfluenceDisposition == true or
+            action.improveDisposition == true or action.targetDisposition ~= nil or
+            intent == "influence_disposition" or intent == "improve_disposition" or
+            intent == "favorable_disposition" or intent == "parley"
+        if not influenceDisposition then
+            return nil
+        end
+
+        local target = action.target or action.socialTarget or action.creature
+        local attracted = action.targetAttracted == true or action.creatureAttracted == true or
+            action.attracted == true or (target and (target.attractedToActor == true or
+            target.attractedToNymphBeauty == true or target.attracted == true or
+            target.conditions and target.conditions.attracted == true))
+        if not attracted then
+            return nil
+        end
+        return true
     end
 
     function resolver:isEntityShrouded(entity)
@@ -3697,7 +4695,24 @@ function M.createActionResolver(config)
                 reason = "shroud_missing",
             }
         end
-        if opts.visibleObject == false or opts.requiresResolve == false then
+        if opts.visibleObject == false then
+            return {
+                success = true,
+                shroud = target.shroud,
+                resolveSpent = 0,
+            }
+        end
+        if target.shroud.visibleObjectsEndEffect == true then
+            local ended = clearJinnPotionShroud(target, "visible_object_interaction")
+            return {
+                success = false,
+                reason = "visible_object_interaction",
+                endedShroud = ended,
+                resolveSpent = 0,
+                effects = { "jinn_shroud_ended", "shroud_ended" },
+            }
+        end
+        if opts.requiresResolve == false then
             return {
                 success = true,
                 shroud = target.shroud,
@@ -3724,6 +4739,59 @@ function M.createActionResolver(config)
             endedSpell = ended,
             effects = { "shroud_ended" },
         }
+    end
+
+    function resolver:askObjectWithMimicPotion(actor, object, opts)
+        opts = opts or {}
+        local speech = actor and actor.objectSpeech
+        if not speech or speech.active == false then
+            return {
+                success = false,
+                reason = "object_speech_missing",
+            }
+        end
+        if not isNonLivingObjectTarget(object) then
+            return {
+                success = false,
+                reason = "object_target_required",
+            }
+        end
+
+        local props = object.properties or {}
+        local topic = tostring(opts.topic or opts.questionType or opts.question or "purpose"):lower()
+        local answerType = "limited"
+        local answer = opts.answer
+
+        if not answer and (topic:find("purpose", 1, true) or topic:find("created", 1, true) or
+           topic:find("task", 1, true)) then
+            answerType = "created_purpose"
+            answer = object.purpose or props.purpose or props.createdFor or props.createdToPerform or
+                "This object knows the task it was created to perform."
+        elseif not answer and (topic:find("history", 1, true) or topic:find("done", 1, true) or
+           topic:find("past", 1, true) or topic:find("opened", 1, true) or topic:find("killed", 1, true)) then
+            answerType = "object_history"
+            answer = object.history or props.history or props.done or props.hasDone or
+                "This object can describe what it has done."
+        elseif not answer then
+            answer = "The object does not know much about that."
+        end
+
+        local response = {
+            success = true,
+            actor = actor,
+            object = object,
+            answer = answer,
+            answerType = answerType,
+            objectSpeech = speech,
+            realTimeMinutes = speech.realTimeMinutes,
+            knowsCreatedPurpose = true,
+            knowsOwnHistory = true,
+            limitedOtherwise = true,
+            gmBeerExtendsConversation = true,
+        }
+        actor.objectSpeechConversations = actor.objectSpeechConversations or {}
+        actor.objectSpeechConversations[#actor.objectSpeechConversations + 1] = response
+        return response
     end
 
     function resolver:applyChallengeActionFavor(action, result, actionDef, actionType)
@@ -4829,7 +5897,7 @@ function M.createActionResolver(config)
             self:resolveCupsAction(action, result)
         -- Wands actions (magic/perception)
         elseif actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.SPEAK_INCANTATION or
-               actionType == M.ACTION_TYPES.RECOVER then
+               actionType == M.ACTION_TYPES.COUNTER_SPELL or actionType == M.ACTION_TYPES.RECOVER then
             self:resolveWandsAction(action, result)
         -- Movement and misc
         elseif actionType == M.ACTION_TYPES.MOVE then
@@ -4840,6 +5908,8 @@ function M.createActionResolver(config)
             self:resolveHeavyMetalMachine(action, result)
         elseif actionType == M.ACTION_TYPES.VIGILANCE then
             self:resolveVigilance(action, result)
+        elseif actionType == M.ACTION_TYPES.DWIMMERCRAFT then
+            self:resolveDwimmercraft(action, result)
         elseif actionType == M.ACTION_TYPES.FLEE then
             self:resolveGenericAction(action, result)
         elseif actionType == M.ACTION_TYPES.BID_LORE or
@@ -4880,6 +5950,13 @@ function M.createActionResolver(config)
         if actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.PARLEY then
             self:applyRoomSocialEncounterOutcome(action, result)
         end
+
+        if action.isQuickInterrupt or action.quickInterrupt then
+            result.quickInterrupt = true
+            result.effects[#result.effects + 1] = "quick_interrupt"
+        end
+
+        self:spendActionInspirationCard(action, result)
 
         -- Attach result to action for event emission
         action.result = result
@@ -5152,6 +6229,81 @@ function M.createActionResolver(config)
         return id == "wand_archwood" or id == "wand_of_archwood"
     end
 
+    function resolver:breakPactForItemContact(action, result, item, pactId, reason)
+        local actor = action and action.actor
+        local pact = camp_actions.findUnbrokenActivePact(actor, pactId)
+        if not pact then
+            return nil
+        end
+
+        local ok, breakResult, detail = camp_actions.breakPact(actor, pact, {
+            eventBus = self.eventBus,
+            actionResolver = self,
+            reason = reason,
+        })
+        result.pactBreaks = result.pactBreaks or {}
+        result.pactBreaks[#result.pactBreaks + 1] = {
+            ok = ok,
+            result = breakResult,
+            detail = detail,
+            pact = pact,
+            pactId = pactId,
+            reason = reason,
+            item = item,
+        }
+        result.effects[#result.effects + 1] = "pact_broken_" .. pactId
+        return detail
+    end
+
+    function resolver:applyPactItemObligations(action, result, item, reason)
+        if not item or not action or not action.actor then
+            return {}
+        end
+
+        local breaks = {}
+        if itemIsArmorOrShieldForPact(item) then
+            local detail = self:breakPactForItemContact(action, result, item, "forego_armor",
+                reason or "forego_armor_item_contact")
+            if detail then
+                breaks[#breaks + 1] = detail
+            end
+        end
+        if itemIsWeaponForPact(item) then
+            local detail = self:breakPactForItemContact(action, result, item, "forego_weapons",
+                reason or "forego_weapons_item_contact")
+            if detail then
+                breaks[#breaks + 1] = detail
+            end
+        end
+        if itemIsFelledWoodForPact(item) then
+            local detail = self:breakPactForItemContact(action, result, item, "forego_wood",
+                reason or "forego_wood_item_contact")
+            if detail then
+                breaks[#breaks + 1] = detail
+            end
+        end
+        if itemIsSkinOrFurForPact(item) then
+            local detail = self:breakPactForItemContact(action, result, item, "forego_skins",
+                reason or "forego_skins_item_contact")
+            if detail then
+                breaks[#breaks + 1] = detail
+            end
+        end
+
+        return breaks
+    end
+
+    function resolver:getActionWeapon(action)
+        if not action then
+            return nil
+        end
+        if action.weapon then
+            return action.weapon
+        end
+        local inv = action.actor and action.actor.inventory
+        return inv and inv.getWieldedWeapon and inv:getWieldedWeapon() or nil
+    end
+
     function resolver:getGramaryWand(action)
         if not action then
             return nil
@@ -5325,6 +6477,7 @@ function M.createActionResolver(config)
         end
 
         self:breakLightSourceWeaponIfNeeded(action, result)
+        self:applyPactItemObligations(action, result, self:getActionWeapon(action), "weapon_attack")
 
         -- S4.9: Check for and handle defensive actions
         local riposteTriggered = false
@@ -5502,6 +6655,8 @@ function M.createActionResolver(config)
             result.doomEyeAutoHit = true
             result.effects[#result.effects + 1] = "doom_eye_auto_hit"
         end
+
+        self:applyPactItemObligations(action, result, self:getActionWeapon(action), "weapon_attack")
 
         -- Dodge can negate missile attacks
         local defense = self:consumeIncomingDefense(action, target)
@@ -6476,6 +7631,8 @@ function M.createActionResolver(config)
 
         -- Parley requires exceeding the social difficulty, matching Banter semantics.
         applyMaledictionSocialModifier(action, result, target)
+        applyPactSocialModifier(action, result)
+        applySocialPactBreaks(self, action, result)
         result.success = result.testValue > result.difficulty
 
         self.eventBus:emit("social_discovery", {
@@ -7165,11 +8322,1079 @@ function M.createActionResolver(config)
             target.conditions = target.conditions or {}
             for condition, value in pairs(effect.conditions or {}) do
                 target.conditions[condition] = value
+                if effect.duration and value then
+                    target.conditionDurations = target.conditionDurations or {}
+                    target.conditionDurations[condition] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
                 result.effects[#result.effects + 1] = condition
             end
 
-            result.itemEffect = { type = "apply_conditions", conditions = effect.conditions }
+            result.itemEffect = {
+                type = "apply_conditions",
+                conditions = effect.conditions,
+                duration = effect.duration,
+            }
             result.description = effect.successMessage or ((item.name or "Item") .. " effect lands.")
+            return true
+        elseif effect.type == "apply_properties" then
+            local props = target.properties or {}
+            target.properties = props
+            for property, value in pairs(effect.properties or {}) do
+                props[property] = value
+                if effect.duration and value then
+                    props.effectDurations = props.effectDurations or {}
+                    props.effectDurations[property] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
+                result.effects[#result.effects + 1] = property
+            end
+
+            result.itemEffect = {
+                type = "apply_properties",
+                target = target,
+                properties = effect.properties,
+                duration = effect.duration,
+            }
+            result.description = effect.successMessage or ((item.name or "Item") .. " changes the target.")
+            return true
+        elseif effect.type == "purge_poison_alchemy" then
+            local cleared = clearImpPotionAlchemy(target)
+            local controller = action.challengeController or self.challengeController
+            local challengeActive = action.inChallenge == true or action.challenge == true or
+                action.phase == "challenge" or (controller and controller.isActive and controller:isActive())
+            if challengeActive then
+                target.conditions = target.conditions or {}
+                target.conditions.exhausted = true
+                target.impPotionExhausted = true
+                result.effects[#result.effects + 1] = "exhausted"
+            end
+
+            result.itemEffect = {
+                type = "purge_poison_alchemy",
+                target = target,
+                cleared = cleared,
+                exhausted = challengeActive == true,
+            }
+            result.clearedAlchemy = cleared
+            result.effects[#result.effects + 1] = "poison_alchemy_purged"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " purges poison and alchemy.")
+            return true
+        elseif effect.type == "dungeon_bird_rumor" then
+            local rumor = action.rumor or action.dungeonRumor or action.questRumor
+            if not rumor then
+                local event = city_events.getEvent(action.rumorValue or effect.defaultRumorValue or 11)
+                if event then
+                    rumor = {
+                        category = event.category,
+                        title = event.title,
+                        summary = event.summary,
+                        cityEvent = event,
+                    }
+                end
+            end
+
+            local birdRumor = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                arrivesInWatches = effect.arrivesInWatches or 1,
+                rumor = rumor,
+                pending = action.resolveRumorNow ~= true,
+                dungeonBird = true,
+                looksLikeOwl = true,
+                isOwl = false,
+            }
+            if action.resolveRumorNow then
+                birdRumor.delivered = true
+            end
+
+            target.pendingDungeonBirdRumors = target.pendingDungeonBirdRumors or {}
+            target.pendingDungeonBirdRumors[#target.pendingDungeonBirdRumors + 1] = birdRumor
+            target.dungeonBirdRumor = birdRumor
+
+            result.itemEffect = {
+                type = "dungeon_bird_rumor",
+                target = target,
+                rumor = rumor,
+                arrivesInWatches = birdRumor.arrivesInWatches,
+                pending = birdRumor.pending,
+            }
+            result.dungeonBirdRumor = birdRumor
+            result.effects[#result.effects + 1] = "dungeon_bird_summoned"
+            result.effects[#result.effects + 1] = birdRumor.pending and "rumor_pending" or "rumor_delivered"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " calls a dungeon bird with a rumor.")
+            return true
+        elseif effect.type == "jinn_shroud" then
+            local shroud = applyJinnPotionShroud(target, item, effect)
+            result.itemEffect = {
+                type = "jinn_shroud",
+                target = target,
+                shroud = shroud,
+                duration = shroud.duration,
+                canSeeShrouded = true,
+                endsOnVisibleObjectInteraction = true,
+            }
+            result.shroud = shroud
+            result.effects[#result.effects + 1] = "shrouded"
+            result.effects[#result.effects + 1] = "jinn_shroud"
+            result.effects[#result.effects + 1] = "see_shrouded"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " makes the drinker Shrouded.")
+            return true
+        elseif effect.type == "object_speech" then
+            target.conditions = target.conditions or {}
+            target.conditions.object_speech = true
+            target.canTalkToObjects = true
+            target.objectSpeech = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                duration = effect.duration or "three_minutes_real_time",
+                realTimeMinutes = effect.realTimeMinutes or 3,
+                active = true,
+                knowsCreatedPurpose = true,
+                knowsOwnHistory = true,
+                limitedOtherwise = true,
+                gmBeerExtendsConversation = true,
+            }
+            target.conditionDurations = target.conditionDurations or {}
+            target.conditionDurations.object_speech = {
+                duration = target.objectSpeech.duration,
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+            }
+
+            result.itemEffect = {
+                type = "object_speech",
+                target = target,
+                objectSpeech = target.objectSpeech,
+            }
+            result.objectSpeech = target.objectSpeech
+            result.effects[#result.effects + 1] = "object_speech"
+            result.effects[#result.effects + 1] = "talk_to_objects"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " lets the drinker talk to objects.")
+            return true
+        elseif effect.type == "grow_creature" then
+            local multiplier = effect.sizeMultiplier or 2
+            target.conditions = target.conditions or {}
+            target.conditions.sizeChanged = true
+            target.conditions.sizeGrown = true
+            target.conditions.sizeShrunk = false
+            target.conditions.titan_growth = true
+            target.changeSize = {
+                source = "alchemy",
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                active = true,
+                mode = "grow",
+                duration = effect.duration,
+                heightMultiplier = effect.heightMultiplier or multiplier,
+                sizeMultiplier = multiplier,
+                attackValuesUnaffected = true,
+                challengeActionFavor = effect.challengeActionFavor ~= false,
+                testOfFateOnly = effect.challengeActionFavor == false,
+            }
+            target.sizeMultiplier = multiplier
+            target.heightMultiplier = effect.heightMultiplier or multiplier
+            target.sizeChanged = true
+
+            if effect.duration then
+                target.conditionDurations = target.conditionDurations or {}
+                for _, condition in ipairs({ "sizeChanged", "sizeGrown", "titan_growth" }) do
+                    target.conditionDurations[condition] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
+            end
+
+            result.changeSize = target.changeSize
+            result.itemEffect = {
+                type = "grow_creature",
+                target = target,
+                duration = effect.duration,
+                sizeMultiplier = multiplier,
+            }
+            result.effects[#result.effects + 1] = "size_grown"
+            result.effects[#result.effects + 1] = "titan_growth"
+            result.description = effect.successMessage or ((item.name or "Item") .. " makes the target grow.")
+            return true
+        elseif effect.type == "location_insight" then
+            local subject = action.locationSubject or action.subject or action.person or action.place or action.thing
+            if not subject or tostring(subject) == "" then
+                result.success = false
+                result.description = "Choose one person, place, or thing to locate."
+                result.effects[#result.effects + 1] = "location_subject_required"
+                return false
+            end
+
+            local insight = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                subject = subject,
+                answer = action.locationAnswer or action.gmAnswer,
+                prophetic = true,
+            }
+            target.locationInsights = target.locationInsights or {}
+            target.locationInsights[#target.locationInsights + 1] = insight
+            target.latestLocationInsight = insight
+            result.locationInsight = insight
+            result.itemEffect = {
+                type = "location_insight",
+                target = target,
+                insight = insight,
+            }
+            result.effects[#result.effects + 1] = "location_insight"
+            result.effects[#result.effects + 1] = "prophetic_insight"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " grants a flash of prophetic location insight.")
+            return true
+        elseif effect.type == "barking_lure" then
+            local props = target.properties or {}
+            target.properties = props
+            props.barkingLure = true
+            props.questingBeastBark = true
+            props.effectDurations = props.effectDurations or {}
+            props.effectDurations.barkingLure = {
+                duration = effect.duration or "watch",
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+            }
+
+            local manager = action.watchManager or self.watchManager
+            local draws = {}
+            local encounters = {}
+            local drawCount = effect.drawCount or 2
+            if manager and manager.drawMeatgrinder then
+                for _ = 1, drawCount do
+                    local draw = manager:drawMeatgrinder()
+                    if draw then
+                        draw.questingBeastLure = true
+                        draw.lureTarget = target
+                        draw.lureTargetId = target.id
+                        draws[#draws + 1] = draw
+                        if draw.category == "random_encounter" then
+                            encounters[#encounters + 1] = draw
+                        end
+                    end
+                end
+            else
+                props.pendingMeatgrinderDraws = (props.pendingMeatgrinderDraws or 0) + drawCount
+            end
+
+            result.itemEffect = {
+                type = "barking_lure",
+                target = target,
+                duration = effect.duration,
+                draws = draws,
+                encounters = encounters,
+            }
+            result.meatgrinderDraws = draws
+            result.questingBeastEncounters = encounters
+            result.effects[#result.effects + 1] = "barking_lure"
+            result.effects[#result.effects + 1] = "meatgrinder_draw_twice"
+            if #encounters > 0 then
+                result.effects[#result.effects + 1] = "encounters_drawn_to_lure"
+            elseif not manager or not manager.drawMeatgrinder then
+                result.effects[#result.effects + 1] = "meatgrinder_draws_pending"
+            end
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " begins barking like many hounds.")
+            return true
+        elseif effect.type == "trigger_maleficence" then
+            local branches = { "wastes", "weald", "weird", "welkin" }
+            local branchIndex = action.maleficenceTableIndex or (action.card and action.card.suit) or 1
+            local branch = action.maleficenceBranch or action.branch or
+                branches[((branchIndex - 1) % #branches) + 1]
+            local opts = {
+                resolve = true,
+                card = action.maleficenceCard or action.maleficenceDraw,
+                value = action.maleficenceValue,
+                suit = action.maleficenceSuit,
+                source = item,
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                allEntities = action.allEntities,
+                roomEntities = action.roomEntities,
+                environmentManager = action.environmentManager,
+                watchManager = action.watchManager,
+                roomManager = action.roomManager,
+            }
+            local record = self:triggerMaleficence(target, branch, "ungoat_bomb", opts)
+            local maleficenceResult = record and record.resolution
+            if not maleficenceResult or not maleficenceResult.success then
+                result.success = false
+                result.description = "Maleficence could not be resolved."
+                result.effects[#result.effects + 1] = "maleficence_draw_missing"
+                result.itemEffect = {
+                    type = "trigger_maleficence",
+                    target = target,
+                    branch = branch,
+                    record = record,
+                    result = maleficenceResult,
+                }
+                return false
+            end
+
+            result.itemEffect = {
+                type = "trigger_maleficence",
+                target = target,
+                branch = branch,
+                record = record,
+                result = maleficenceResult,
+            }
+            result.maleficence = maleficenceResult
+            result.effects[#result.effects + 1] = "ungoat_maleficence"
+            result.effects[#result.effects + 1] = "maleficence_" .. branch
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " centers maleficence on the target.")
+            return true
+        elseif effect.type == "negate_spells" then
+            local props = target.properties or {}
+            target.properties = props
+            props.magicSuppressed = true
+            props.spellsNegated = true
+            props.effectDurations = props.effectDurations or {}
+            props.effectDurations.magicSuppressed = {
+                duration = effect.duration or "watch",
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+            }
+
+            local negated = {}
+            local function spellAffectsTarget(spellEntry)
+                if not spellEntry then
+                    return false
+                end
+                if spellEntry.target == target or spellEntry.circleProtection == target or
+                   spellEntry.mirrorMeld == target or spellEntry.portableHole == target then
+                    return true
+                end
+                for _, spellTarget in ipairs(spellEntry.targets or {}) do
+                    if spellTarget == target then
+                        return true
+                    end
+                end
+                return false
+            end
+
+            for _, caster in ipairs(action.allEntities or action.casters or {}) do
+                if caster and type(caster.activeSpells) == "table" then
+                    for index = #caster.activeSpells, 1, -1 do
+                        local spellEntry = caster.activeSpells[index]
+                        if spellAffectsTarget(spellEntry) then
+                            local ended = self:endOngoingSpell(caster, spellEntry, "ungoat_oil")
+                            negated[#negated + 1] = ended or spellEntry
+                        end
+                    end
+                end
+            end
+
+            if type(target.activeEnchantments) == "table" then
+                target.pausedEnchantments = target.pausedEnchantments or {}
+                for _, enchantment in ipairs(target.activeEnchantments) do
+                    enchantment.paused = true
+                    enchantment.pausedUntil = effect.duration or "watch"
+                    target.pausedEnchantments[#target.pausedEnchantments + 1] = enchantment
+                    negated[#negated + 1] = enchantment
+                end
+            elseif target.enchanted or props.enchanted or props.magical then
+                props.enchantmentPaused = true
+                props.enchantmentPausedUntil = effect.duration or "watch"
+            end
+
+            result.itemEffect = {
+                type = "negate_spells",
+                target = target,
+                duration = effect.duration,
+                negated = negated,
+            }
+            result.negatedSpells = negated
+            result.effects[#result.effects + 1] = "spells_negated"
+            result.effects[#result.effects + 1] = "magic_suppressed"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " negates active magic on the target.")
+            return true
+        elseif effect.type == "mist_form" then
+            local dropped = {}
+            if target.inventory and target.inventory.getAllItems then
+                local entries = target.inventory:getAllItems()
+                for _, entry in ipairs(entries) do
+                    local carriedItem = entry.item
+                    if carriedItem and carriedItem.id and carriedItem.id ~= item.id then
+                        local droppedItem = self:dropCarriedItem(target, carriedItem, "mist_form")
+                        if droppedItem then
+                            dropped[#dropped + 1] = droppedItem
+                        end
+                    end
+                end
+            end
+
+            target.conditions = target.conditions or {}
+            target.conditions.mist_form = true
+            target.conditions.vampire_mist = true
+            target.conditions.hazard_resistant = true
+            target.conditions.can_pass_cracks = true
+            target.mistForm = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                duration = effect.duration or "watch",
+                walkingPace = true,
+                equipmentDropped = dropped,
+                vulnerableToStrongWindOrExtremeCold = true,
+            }
+            if effect.duration then
+                target.conditionDurations = target.conditionDurations or {}
+                for _, condition in ipairs({ "mist_form", "vampire_mist", "hazard_resistant", "can_pass_cracks" }) do
+                    target.conditionDurations[condition] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
+            end
+
+            result.itemEffect = {
+                type = "mist_form",
+                target = target,
+                duration = effect.duration,
+                droppedItems = dropped,
+            }
+            result.droppedItems = dropped
+            result.effects[#result.effects + 1] = "mist_form"
+            result.effects[#result.effects + 1] = "equipment_dropped"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " transforms the drinker into mist.")
+            return true
+        elseif effect.type == "vampire_weaknesses" then
+            target.conditions = target.conditions or {}
+            target.conditions.vampire_weaknesses = true
+            target.conditions.sunlight_stuns = true
+            target.conditions.wholesome_herbs_stun = true
+            target.conditions.silver_stuns = true
+            target.conditions.running_water_stuns = true
+            target.vampireWeaknesses = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                duration = effect.duration or "watch",
+                triggers = { "sunlight", "wholesome_herbs", "silver", "running_water" },
+            }
+            if effect.duration then
+                target.conditionDurations = target.conditionDurations or {}
+                for _, condition in ipairs({
+                    "vampire_weaknesses",
+                    "sunlight_stuns",
+                    "wholesome_herbs_stun",
+                    "silver_stuns",
+                    "running_water_stuns",
+                }) do
+                    target.conditionDurations[condition] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
+            end
+
+            local exposure = action.exposure or action.exposedTo or action.trigger
+            if exposure == "sunlight" or exposure == "wholesome_herbs" or exposure == "garlic" or
+               exposure == "wolfsbane" or exposure == "wild_rose" or exposure == "silver" or
+               exposure == "running_water" then
+                target.conditions.stunned = true
+                target.vampireWeaknesses.lastExposure = exposure
+                result.effects[#result.effects + 1] = "vampire_weakness_stunned"
+            end
+
+            result.itemEffect = {
+                type = "vampire_weaknesses",
+                target = target,
+                duration = effect.duration,
+                exposure = exposure,
+            }
+            result.effects[#result.effects + 1] = "vampire_weaknesses"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " gives the target vampire weaknesses.")
+            return true
+        elseif effect.type == "romantic_inspiration" then
+            local conditions = target.conditions or {}
+            local emotionless = target.emotionless == true or target.noEmotions == true or
+                conditions.emotionless == true or conditions.inspire_immune == true or
+                conditions.inspired_immune == true or conditions.nymph_beauty == true or
+                hasTag(target, "emotionless") or hasTag(target, "mindless")
+            if emotionless then
+                result.itemEffect = {
+                    type = "romantic_inspiration",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "romantic_inspiration_no_effect"
+                result.effects[#result.effects + 1] = "emotionless_unaffected"
+                result.description = (item.name or "Item") .. " has no effect on the target."
+                return true
+            end
+
+            local loveTarget = action.firstSeenCreature or action.firstSeen or action.seenCreature or
+                action.loveTarget or action.romanticTarget or action.actor
+            target.conditions = conditions
+            conditions.inspired = true
+            conditions.inspiredJoy = true
+            conditions.inspiredRomanticJoy = true
+            conditions.inLove = true
+            if effect.duration then
+                target.conditionDurations = target.conditionDurations or {}
+                for _, condition in ipairs({ "inspired", "inspiredJoy", "inspiredRomanticJoy", "inLove" }) do
+                    target.conditionDurations[condition] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
+            end
+
+            target.romanticInspiration = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                target = loveTarget,
+                targetId = loveTarget and (loveTarget.id or loveTarget.name),
+                duration = effect.duration or "watch",
+                inspiredWithJoy = true,
+                romantic = true,
+            }
+            target.romanticInspirationTarget = loveTarget
+
+            result.itemEffect = {
+                type = "romantic_inspiration",
+                target = target,
+                loveTarget = loveTarget,
+                duration = effect.duration,
+            }
+            result.romanticInspiration = target.romanticInspiration
+            result.effects[#result.effects + 1] = "romantic_inspiration"
+            result.effects[#result.effects + 1] = "inspired_romantic_joy"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " inspires romantic joy.")
+            return true
+        elseif effect.type == "distaste_inspiration" then
+            if isInspirationImmuneTarget(target) then
+                result.itemEffect = {
+                    type = "distaste_inspiration",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "distaste_inspiration_no_effect"
+                result.effects[#result.effects + 1] = "emotionless_unaffected"
+                result.description = (item.name or "Item") .. " has no effect on the target."
+                return true
+            end
+
+            local hateTarget = action.firstSeenCreature or action.firstSeen or action.seenCreature or
+                action.hateTarget or action.distasteTarget or action.actor
+            target.conditions = target.conditions or {}
+            local conditions = target.conditions
+            conditions.inspired = true
+            conditions.inspiredDistaste = true
+            conditions.inHate = true
+            if effect.duration then
+                target.conditionDurations = target.conditionDurations or {}
+                for _, condition in ipairs({ "inspired", "inspiredDistaste", "inHate" }) do
+                    target.conditionDurations[condition] = {
+                        duration = effect.duration,
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                    }
+                end
+            end
+
+            target.disposition = "distaste"
+            target.distasteInspiration = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                target = hateTarget,
+                targetId = hateTarget and (hateTarget.id or hateTarget.name),
+                duration = effect.duration or "watch",
+                inspiredWithDistaste = true,
+            }
+            target.distasteInspirationTarget = hateTarget
+
+            result.itemEffect = {
+                type = "distaste_inspiration",
+                target = target,
+                hateTarget = hateTarget,
+                duration = effect.duration,
+            }
+            result.distasteInspiration = target.distasteInspiration
+            result.effects[#result.effects + 1] = "distaste_inspiration"
+            result.effects[#result.effects + 1] = "inspired_distaste"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " inspires hateful distaste.")
+            return true
+        elseif effect.type == "imp_stink" then
+            target.conditions = target.conditions or {}
+            local stunDiscard = self:applyStun(target, { action = action })
+            target.conditions.imp_stink = true
+            target.conditions.choking_stink = true
+            target.impStink = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                requiresWashing = true,
+            }
+            if target.isPC then
+                target.conditions.stressed = true
+                target.impStink.stressedUntilWashed = true
+                result.effects[#result.effects + 1] = "stressed_until_washed"
+            end
+
+            result.itemEffect = {
+                type = "imp_stink",
+                target = target,
+                stunDiscard = stunDiscard,
+                stressed = target.isPC == true,
+            }
+            result.stunDiscard = stunDiscard
+            result.effects[#result.effects + 1] = "stunned"
+            result.effects[#result.effects + 1] = "imp_stink"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " stuns the target with a terrible stink.")
+            return true
+        elseif effect.type == "compel_confession" then
+            if isControlImmuneTarget(target) then
+                result.itemEffect = {
+                    type = "compel_confession",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "compelled_confession_no_effect"
+                result.effects[#result.effects + 1] = "control_immune"
+                result.description = (item.name or "Item") .. " has no effect on the target."
+                return true
+            end
+
+            local orderText = tostring(action.confessionOrder or action.controlOrder or "confess gravest sin")
+            local wordCount = 0
+            for _ in string.gmatch(orderText, "%S+") do
+                wordCount = wordCount + 1
+            end
+
+            target.conditions = target.conditions or {}
+            target.conditions.controlled = true
+            target.controlledBy = action.actor
+            target.controlOrder = {
+                text = orderText,
+                wordCount = wordCount,
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                fulfilled = false,
+                singleTask = true,
+            }
+            target.controlCommandsRemaining = 1
+            target.confessionControl = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                controller = action.actor,
+                order = orderText,
+                gravestSin = true,
+                confession = action.confession or action.gravestSin or target.gravestSin,
+                fulfilled = false,
+            }
+
+            result.itemEffect = {
+                type = "compel_confession",
+                target = target,
+                order = target.controlOrder,
+            }
+            result.controlOrder = target.controlOrder
+            result.confessionControl = target.confessionControl
+            result.effects[#result.effects + 1] = "controlled"
+            result.effects[#result.effects + 1] = "compelled_confession"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " controls the target into confession.")
+            return true
+        elseif effect.type == "invisible_fire" then
+            local targetProps = target.properties or {}
+            target.properties = targetProps
+            targetProps.invisibleFire = true
+            targetProps.castsLight = false
+            targetProps.shedsLight = false
+            targetProps.generatesHeat = true
+            targetProps.notQuenchedByWater = true
+            targetProps.extinguishedBySmothering = true
+            target.invisibleFire = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                castsLight = false,
+                generatesHeat = true,
+                notQuenchedByWater = true,
+                extinguishedBySmothering = true,
+            }
+
+            local flammableConsumed = false
+            local weaponNotchResult = nil
+            if isFlammableTarget(target) and action.consumeFlammable ~= false then
+                target.destroyed = true
+                targetProps.consumedByInvisibleFire = true
+                flammableConsumed = true
+                result.effects[#result.effects + 1] = "flammable_consumed"
+            elseif action.dipWeapon == true or action.invisibleFireWeapon == true or isWeaponTarget(target) then
+                targetProps.invisibleFireWeapon = true
+                targetProps.burnsHotAsTorch = true
+                targetProps.fireWeaknessBonus = true
+                targetProps.fireDamagePotential = true
+                weaponNotchResult = notchItemTarget(target)
+                result.weaponNotchResult = weaponNotchResult
+                result.effects[#result.effects + 1] = "invisible_fire_weapon"
+                result.effects[#result.effects + 1] = "weapon_notched"
+                if weaponNotchResult == "destroyed" then
+                    result.effects[#result.effects + 1] = "weapon_destroyed"
+                end
+            end
+
+            result.itemEffect = {
+                type = "invisible_fire",
+                target = target,
+                flammableConsumed = flammableConsumed,
+                weaponNotchResult = weaponNotchResult,
+            }
+            result.effects[#result.effects + 1] = "invisible_fire"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " burns with invisible heat.")
+            return true
+        elseif effect.type == "cockatrice_stone_smoke" then
+            if not isStoneTarget(target) then
+                result.itemEffect = {
+                    type = "cockatrice_stone_smoke",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "cockatrice_smoke_no_effect"
+                result.description = (item.name or "Item") .. " has no effect on non-stone targets."
+                return true
+            end
+
+            if isStoneCreatureTarget(target) then
+                local damageEffects = { "critical", "cockatrice_stone_smoke" }
+                result.damageDealt = (result.damageDealt or 0) + 1
+                for _, damageEffect in ipairs(damageEffects) do
+                    result.effects[#result.effects + 1] = damageEffect
+                end
+                result.effects[#result.effects + 1] = "stone_creature_critical"
+                self:applyDamage(target, 1, damageEffects, nil, action.allEntities,
+                    self:getActionWoundOptions(action, target))
+                result.itemEffect = {
+                    type = "cockatrice_stone_smoke",
+                    target = target,
+                    damage = 1,
+                    critical = true,
+                }
+                result.description = effect.creatureMessage or
+                    ((item.name or "Item") .. " deals Critical damage to the stone creature.")
+                return true
+            end
+
+            local targetProps = target.properties or {}
+            target.properties = targetProps
+            if isPersonSizedStoneTarget(target, effect) then
+                target.destroyed = true
+                targetProps.dissolvedByCockatrice = true
+                result.effects[#result.effects + 1] = "stone_item_destroyed"
+                result.itemEffect = {
+                    type = "cockatrice_stone_smoke",
+                    target = target,
+                    destroyed = true,
+                }
+                result.description = effect.successMessage or
+                    ((item.name or "Item") .. " destroys the stone object.")
+            else
+                targetProps.holeMelted = true
+                targetProps.cockatriceMeltedHole = true
+                targetProps.passageOpen = action.openPassage ~= false
+                target.holeMelted = true
+                result.effects[#result.effects + 1] = "stone_hole_melted"
+                result.itemEffect = {
+                    type = "cockatrice_stone_smoke",
+                    target = target,
+                    holeMelted = true,
+                }
+                result.description = effect.largeObjectMessage or
+                    ((item.name or "Item") .. " melts a hole in the stone object.")
+            end
+            return true
+        elseif effect.type == "cockatrice_stone_flesh" then
+            if not isStoneTarget(target) then
+                result.itemEffect = {
+                    type = "cockatrice_stone_flesh",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "cockatrice_oil_no_effect"
+                result.description = (item.name or "Item") .. " has no effect on non-stone targets."
+                return true
+            end
+
+            local targetProps = target.properties or {}
+            target.properties = targetProps
+            local cured = clearPetrification(target)
+            targetProps.formerMaterial = targetProps.formerMaterial or targetProps.material or target.material or "stone"
+            targetProps.material = "flesh"
+            targetProps.fleshyStone = true
+            targetProps.stoneMadeFlesh = true
+            if target.material == "stone" then
+                target.material = "flesh"
+            end
+            target.fleshyStone = true
+
+            result.itemEffect = {
+                type = "cockatrice_stone_flesh",
+                target = target,
+                curedPetrification = cured,
+            }
+            result.effects[#result.effects + 1] = "stone_fleshified"
+            if cured then
+                result.effects[#result.effects + 1] = "petrification_cured"
+            end
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " turns touched stone into flesh.")
+            return true
+        elseif effect.type == "rage_pheromone" then
+            local candidates = action.zoneEntities or action.creaturesInZone or action.allEntities or {}
+            local targetZone = action.targetZone or (target and target.zone)
+            local affected = {}
+            local skipped = {}
+
+            for _, creature in ipairs(candidates) do
+                local sameZone = action.zoneEntities ~= nil or targetZone == nil or creature.zone == targetZone
+                local conditions = creature and creature.conditions or {}
+                local emotionless = creature and (
+                    creature.emotionless == true or creature.noEmotions == true or
+                    conditions.emotionless == true or conditions.inspire_immune == true or
+                    conditions.inspired_immune == true or conditions.nymph_beauty == true or
+                    hasTag(creature, "emotionless") or hasTag(creature, "mindless")
+                )
+                if creature and creature ~= target and sameZone and not emotionless then
+                    creature.conditions = creature.conditions or {}
+                    creature.conditions.inspired = true
+                    creature.conditions.inspiredAnger = true
+                    creature.conditions.enraged = true
+                    creature.disposition = "anger"
+                    creature.recklessAttackTarget = target
+                    creature.ogrePheromone = {
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                        target = target,
+                        targetId = target and target.id,
+                    }
+                    affected[#affected + 1] = creature
+                elseif creature and creature ~= target and sameZone and emotionless then
+                    skipped[#skipped + 1] = creature
+                end
+            end
+
+            result.itemEffect = {
+                type = "rage_pheromone",
+                target = target,
+                affected = affected,
+                skipped = skipped,
+            }
+            result.pheromoneAffected = affected
+            result.pheromoneSkipped = skipped
+            result.effects[#result.effects + 1] = "rage_pheromone"
+            if #affected > 0 then
+                result.effects[#result.effects + 1] = "inspired_anger"
+            else
+                result.effects[#result.effects + 1] = "rage_pheromone_no_effect"
+            end
+            if #skipped > 0 then
+                result.effects[#result.effects + 1] = "emotionless_unaffected"
+            end
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " makes nearby creatures furious at the target.")
+            return true
+        elseif effect.type == "cleanse_surface" then
+            local cleaned = cleanseTargetWithGriffinOil(target, action)
+            result.itemEffect = {
+                type = "cleanse_surface",
+                target = target,
+                cleaned = cleaned,
+                dungeonBath = target and target.griffinOilBath == true,
+            }
+            result.cleaned = cleaned
+            result.effects[#result.effects + 1] = "cleaned"
+            result.effects[#result.effects + 1] = "griffin_oil_cleanse"
+            for _, flag in ipairs(cleaned) do
+                if flag == "imp_stink_stress" then
+                    result.effects[#result.effects + 1] = "washed_stress_cleared"
+                    break
+                end
+            end
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " cleans the touched target.")
+            return true
+        elseif effect.type == "materialize_intangible" then
+            if not isIntangibleTarget(target) then
+                result.itemEffect = {
+                    type = "materialize_intangible",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "jinn_bomb_no_effect"
+                result.description = (item.name or "Item") .. " has no special effect on material targets."
+                return true
+            end
+
+            local materialized = materializeWithJinnBomb(target, item)
+            result.itemEffect = {
+                type = "materialize_intangible",
+                target = target,
+                materialized = materialized,
+            }
+            result.materialized = materialized
+            result.effects[#result.effects + 1] = "intangible_visible_tangible"
+            result.effects[#result.effects + 1] = "materialized"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " forces the target into the material realm.")
+            return true
+        elseif effect.type == "frictionless_surface" then
+            local props = target.properties or {}
+            target.properties = props
+            props.frictionless = true
+            props.utterlyFrictionless = true
+            target.frictionless = true
+            local pouredOut = action.pouredOut == true or action.createPuddle == true or
+                action.puddle == true or target.type == "floor" or props.floor == true
+            if pouredOut then
+                props.slipperyPuddle = true
+                props.puddleDiameterFeet = effect.puddleDiameterFeet or 10
+                target.slipperyPuddle = {
+                    sourceItemId = item.id,
+                    sourceItemName = item.name,
+                    diameterFeet = props.puddleDiameterFeet,
+                    frictionless = true,
+                }
+                result.effects[#result.effects + 1] = "slippery_puddle"
+            end
+
+            result.itemEffect = {
+                type = "frictionless_surface",
+                target = target,
+                puddle = pouredOut,
+                diameterFeet = props.puddleDiameterFeet,
+            }
+            result.effects[#result.effects + 1] = "frictionless"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " makes the touched surface frictionless.")
+            return true
+        elseif effect.type == "city_portal" then
+            local targetProps = target.properties or {}
+            target.properties = targetProps
+            targetProps.cityPortal = true
+            targetProps.fieryRealityHole = true
+            targetProps.portalOpen = true
+            targetProps.portalDestination = "city"
+            targetProps.portalDuration = effect.duration or "one_minute"
+
+            target.cityPortal = {
+                sourceItemId = item.id,
+                sourceItemName = item.name,
+                destination = "city",
+                manholeArrival = true,
+                beginsCityPhase = true,
+                openFor = effect.duration or "one_minute",
+                fieryRealityHole = true,
+            }
+            target.fieryRealityHole = true
+
+            result.itemEffect = {
+                type = "city_portal",
+                target = target,
+                portal = target.cityPortal,
+            }
+            result.cityPortal = target.cityPortal
+            result.effects[#result.effects + 1] = "city_portal_opened"
+            result.effects[#result.effects + 1] = "fiery_reality_hole"
+
+            if action.enterPortal == true or action.teleportActor == true then
+                local actor = action.actor
+                if actor then
+                    actor.location = "city"
+                    actor.teleportedToCity = true
+                    actor.cityPortalArrival = {
+                        sourceItemId = item.id,
+                        sourceItemName = item.name,
+                        arrival = "manhole",
+                    }
+                end
+                result.phaseChange = {
+                    oldPhase = action.currentPhase or action.phase or "crawl",
+                    newPhase = "city",
+                    reason = "jinn_oil_city_portal",
+                }
+                result.effects[#result.effects + 1] = "teleported_to_city"
+                result.effects[#result.effects + 1] = "city_phase_begins"
+                if self.eventBus then
+                    self.eventBus:emit(events.EVENTS.PHASE_CHANGED, result.phaseChange)
+                end
+            end
+
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " opens a fiery portal to the City.")
+            return true
+        elseif effect.type == "awaken_mimic" then
+            if not isNonLivingObjectTarget(target) then
+                result.itemEffect = {
+                    type = "awaken_mimic",
+                    target = target,
+                    noEffect = true,
+                }
+                result.effects[#result.effects + 1] = "mimic_oil_no_effect"
+                result.description = (item.name or "Item") .. " only awakens non-living objects."
+                return true
+            end
+
+            local mimic = awakenObjectAsMimic(target, item)
+            result.itemEffect = {
+                type = "awaken_mimic",
+                target = target,
+                mimic = mimic,
+            }
+            result.mimic = mimic
+            result.effects[#result.effects + 1] = "mimic_awakened"
+            result.effects[#result.effects + 1] = "not_loyal"
+            result.description = effect.successMessage or
+                ((item.name or "Item") .. " turns the object into a mimic.")
+            return true
+        elseif effect.type == "mushroom_patch" then
+            local props = target.properties or {}
+            target.properties = props
+            local discardCard = action.minorDiscardCard or action.topMinorDiscardCard or action.discardCard or {}
+            local mushroom = (effect.mushroomsBySuit or {})[discardCard.suit] or
+                { id = "unknown_mushroom", name = "unknown giant mushroom" }
+            props.mushroomPatch = {
+                source = item.name,
+                suit = discardCard.suit,
+                card = discardCard,
+                mushroom = mushroom,
+                duration = effect.duration or "watch",
+            }
+            result.itemEffect = {
+                type = "mushroom_patch",
+                target = target,
+                suit = discardCard.suit,
+                mushroom = mushroom,
+                duration = effect.duration,
+            }
+            result.effects[#result.effects + 1] = "mushroom_patch"
+            if mushroom.id then
+                result.effects[#result.effects + 1] = "mushroom_" .. mushroom.id
+            end
+            result.description = effect.successMessage or ((item.name or "Item") .. " creates a mushroom patch.")
             return true
         elseif effect.type == "adhere" then
             local props = target.properties or {}
@@ -7265,6 +9490,8 @@ function M.createActionResolver(config)
             result.effects[#result.effects + 1] = "item_not_held"
             return
         end
+
+        self:applyPactItemObligations(action, result, item, "use_item")
 
         local effect = self:getItemUseEffect(item)
         self:applyItemUseAttribute(action, result, effect)
@@ -7423,6 +9650,7 @@ function M.createActionResolver(config)
             result.description = result.description .. " Swapped out " .. (held.name or "held item") .. "."
         end
         result.effects[#result.effects + 1] = "item_pulled_" .. sourceLocation
+        self:applyPactItemObligations(action, result, pulled, "pull_item")
     end
 
     function resolver:resolvePullItemFromPack(action, result)
@@ -7600,6 +9828,8 @@ function M.createActionResolver(config)
             self:resolveBanter(action, result)
         elseif actionType == M.ACTION_TYPES.SPEAK_INCANTATION then
             self:resolveSpeakIncantation(action, result)
+        elseif actionType == M.ACTION_TYPES.COUNTER_SPELL then
+            self:resolveCounterSpell(action, result)
         elseif actionType == M.ACTION_TYPES.RECOVER then
             -- S7.4: Recover action
             self:resolveRecover(action, result)
@@ -7656,12 +9886,36 @@ function M.createActionResolver(config)
         elseif conditions.prone then
             conditions.prone = false
             cleared = "prone"
-        elseif conditions.blind then
+        elseif conditions.blind or conditions.blinded then
             conditions.blind = false
+            conditions.blinded = false
+            if actor.conditionDurations then
+                actor.conditionDurations.blind = nil
+                actor.conditionDurations.blinded = nil
+            end
             cleared = "blind"
-        elseif conditions.deaf then
+        elseif conditions.deaf or conditions.deafened then
             conditions.deaf = false
+            conditions.deafened = false
+            if actor.conditionDurations then
+                actor.conditionDurations.deaf = nil
+                actor.conditionDurations.deafened = nil
+            end
             cleared = "deaf"
+        elseif conditions.silenced then
+            conditions.silenced = false
+            actor.silenced = false
+            if actor.conditionDurations then
+                actor.conditionDurations.silenced = nil
+            end
+            cleared = "silenced"
+        elseif conditions.exhausted and not (actor.nonRecoverableConditions and actor.nonRecoverableConditions.exhausted) then
+            conditions.exhausted = false
+            actor.exhausted = false
+            if actor.conditionDurations then
+                actor.conditionDurations.exhausted = nil
+            end
+            cleared = "exhausted"
         elseif conditions.burning or conditions.onFire then
             conditions.burning = false
             conditions.onFire = false
@@ -7768,6 +10022,8 @@ function M.createActionResolver(config)
         result.difficulty = targetMorale + dispositionMod
         result.testValue = result.testValue + favorModifier
         result.socialModifier = favorModifier
+        applyPactSocialModifier(action, result)
+        applySocialPactBreaks(self, action, result)
         result.socialFavorTag = likedTag
         result.socialDisfavorTag = dislikedTag
 
@@ -8485,6 +10741,46 @@ function M.createActionResolver(config)
         return nil, nil
     end
 
+    function resolver:getPactChargeForSpell(component, spell)
+        if not component or not spell then
+            return nil
+        end
+
+        local props = component.properties or {}
+        local charge = component.pactCharge or props.pactCharge
+        if type(charge) ~= "table" or charge.active == false or charge.spent then
+            return nil
+        end
+        if props.pactCharged == false then
+            return nil
+        end
+
+        local componentFor = charge.componentFor or props.componentFor
+        if componentFor and componentFor ~= "any" and componentFor ~= spell.id then
+            return nil
+        end
+
+        return charge
+    end
+
+    function resolver:spendPactCharge(component, charge, spell, actor)
+        if not component or not charge then
+            return nil
+        end
+
+        charge.spent = true
+        charge.active = false
+        charge.spentForSpell = spell and spell.id
+        charge.spentBy = actor and actor.id
+
+        component.pactCharge = nil
+        component.properties = component.properties or {}
+        component.properties.pactCharged = false
+        component.properties.pactCharge = nil
+
+        return charge
+    end
+
     local function itemHasSignificantIron(item)
         if not item then
             return false
@@ -8508,6 +10804,12 @@ function M.createActionResolver(config)
     function resolver:hasSignificantIron(entity)
         if not entity then
             return false
+        end
+
+        local conditions = entity.conditions or {}
+        if entity.spellTargetBlocked or entity.cannotBeTargetedBySpells or entity.cannotCastSpells or
+           conditions.spell_target_blocked or conditions.ungoat_spell_ward or conditions.cannot_cast_spells then
+            return true
         end
 
         if entity.hasSignificantIron or entity.carriesSignificantIron or entity.wearingIronArmor then
@@ -8560,8 +10862,23 @@ function M.createActionResolver(config)
         if not actor then
             return false, "missing_actor"
         end
+        if amount <= 0 then
+            return true, nil
+        end
+        if actor.spendResolve then
+            local ok, reason = actor:spendResolve(amount)
+            if ok then
+                return true, nil
+            end
+            return false, reason or "not_enough_resolve"
+        end
 
-        if actor.resolve ~= nil then
+        if type(actor.resolve) == "table" then
+            if (actor.resolve.current or 0) < amount then
+                return false, "not_enough_resolve"
+            end
+            actor.resolve.current = actor.resolve.current - amount
+        elseif actor.resolve ~= nil then
             if actor.resolve < amount then
                 return false, "not_enough_resolve"
             end
@@ -8569,6 +10886,451 @@ function M.createActionResolver(config)
         end
 
         return true, nil
+    end
+
+    function resolver:getCounterSpellIncomingValue(action)
+        if not action then
+            return 0
+        end
+
+        if action.enemyValue ~= nil then
+            return action.enemyValue
+        end
+        if action.incomingValue ~= nil then
+            return action.incomingValue
+        end
+        if action.spellValue ~= nil then
+            return action.spellValue
+        end
+
+        local incoming = action.incomingAction or action.spellAction or action.targetAction
+        local incomingResult = action.incomingResult or (incoming and incoming.result)
+        if incomingResult then
+            return incomingResult.testValue or incomingResult.spellValue or incomingResult.value or 0
+        end
+
+        if incoming then
+            if incoming.testValue ~= nil then
+                return incoming.testValue
+            end
+            if incoming.spellValue ~= nil then
+                return incoming.spellValue
+            end
+            local cardValue = incoming.card and incoming.card.value or 0
+            local modifier = incoming.modifier
+            if modifier == nil and incoming.actor then
+                modifier = incoming.actor.wands or 0
+            end
+            return cardValue + (modifier or 0)
+        end
+
+        return 0
+    end
+
+    function resolver:getCounterSpellBranch(action, spell)
+        if not action then
+            return spell and spell.branch or "unknown"
+        end
+
+        local incoming = action.incomingAction or action.spellAction or action.targetAction
+        local incomingSpell = spell or (incoming and self:getSpellFromAction(incoming))
+        return action.branch or action.spellBranch or
+            (incoming and (incoming.branch or incoming.spellBranch)) or
+            (incomingSpell and incomingSpell.branch) or
+            (action.activeSpell and action.activeSpell.branch) or
+            "unknown"
+    end
+
+    function resolver:markCounteredSpellAction(action, result, incomingSpell)
+        local incoming = action and (action.incomingAction or action.spellAction or action.targetAction)
+        if not incoming then
+            return
+        end
+
+        incoming.countered = true
+        incoming.fizzled = true
+        incoming.counterSpellResult = result
+
+        if incoming.result then
+            incoming.result.success = false
+            incoming.result.countered = true
+            incoming.result.fizzled = true
+            incoming.result.counterSpell = result
+            incoming.result.effects = incoming.result.effects or {}
+            incoming.result.effects[#incoming.result.effects + 1] = "counter_spell_fizzled"
+            incoming.result.description = (incomingSpell and incomingSpell.name or "Spell") .. " fizzles."
+        end
+    end
+
+    function resolver:resolveCounterSpell(action, result)
+        action = action or {}
+        result = result or {
+            success = false,
+            effects = {},
+            description = "",
+            testValue = action.counterValue or 0,
+        }
+        result.effects = result.effects or {}
+        local actor = action.actor
+        result.counterSpell = true
+
+        if not entityHasUsableTalent(actor, "counter_spell") then
+            result.success = false
+            result.description = "Requires Counter-spell."
+            result.effects[#result.effects + 1] = "requires_counter_spell"
+            return result
+        end
+
+        if not self:canSpeakSpell(actor) then
+            result.success = false
+            result.description = "Cannot counter-spell without speaking."
+            result.effects[#result.effects + 1] = "counter_spell_silenced"
+            return result
+        end
+
+        if action.canPerceiveCasting == false or action.canPerceiveCaster == false then
+            result.success = false
+            result.description = "Cannot perceive the spell being cast."
+            result.effects[#result.effects + 1] = "counter_spell_caster_unseen"
+            return result
+        end
+
+        local mode = action.mode or action.counterSpellMode
+        local activeSpell = action.activeSpell or action.spellEntry or action.ongoingSpell
+        local spellCaster = action.spellCaster or action.targetCaster or action.caster or
+            (activeSpell and activeSpell.caster) or action.target
+        if mode == "ongoing" or mode == "negate" or mode == "active" or activeSpell then
+            if not activeSpell then
+                result.success = false
+                result.description = "No ongoing spell selected."
+                result.effects[#result.effects + 1] = "counter_spell_missing_ongoing_spell"
+                return result
+            end
+            if not spellCaster then
+                result.success = false
+                result.description = "No caster found for the ongoing spell."
+                result.effects[#result.effects + 1] = "counter_spell_missing_caster"
+                return result
+            end
+        elseif not action.incomingAction and not action.spellAction and not action.targetAction and
+               action.enemyValue == nil and action.incomingValue == nil and action.spellValue == nil then
+            result.success = false
+            result.description = "No incoming spell selected."
+            result.effects[#result.effects + 1] = "counter_spell_missing_incoming_spell"
+            return result
+        end
+
+        local spent, spendReason = self:spendResolveForFavor(actor)
+        if not spent then
+            result.success = false
+            result.description = "Cannot counter-spell: " .. (spendReason or "resolve unavailable") .. "."
+            result.effects[#result.effects + 1] = "resolve_missing"
+            return result
+        end
+
+        result.resolveSpent = 1
+        result.effects[#result.effects + 1] = "resolve_spent_for_counter_spell"
+
+        if mode == "ongoing" or mode == "negate" or mode == "active" or activeSpell then
+
+            result.success = true
+            result.spellFizzled = true
+            result.endedSpell = self:endOngoingSpell(spellCaster, activeSpell, "countered", {
+                source = action,
+            })
+            result.effects[#result.effects + 1] = "counter_spell_negated"
+            result.effects[#result.effects + 1] = "ongoing_spell_ended"
+            result.description = (activeSpell.name or "Ongoing spell") .. " is negated."
+            self.eventBus:emit("counter_spell_resolved", result)
+            return result
+        end
+
+        local incoming = action.incomingAction or action.spellAction or action.targetAction
+        local incomingSpell = action.incomingSpell or (incoming and self:getSpellFromAction(incoming))
+        if type(incomingSpell) ~= "table" then
+            incomingSpell = spell_registry.getSpell(incomingSpell)
+        end
+        if not incomingSpell and type(action.spell) == "table" then
+            incomingSpell = action.spell
+        elseif not incomingSpell and type(action.spell) == "string" then
+            incomingSpell = spell_registry.getSpell(action.spell)
+        end
+        local enemyValue = self:getCounterSpellIncomingValue(action)
+        local counterValue = action.counterValue or result.testValue or 0
+        local branch = self:getCounterSpellBranch(action, incomingSpell)
+
+        result.success = true
+        result.spellFizzled = true
+        result.enemyValue = enemyValue
+        result.counterValue = counterValue
+        result.counterSpellWon = counterValue > enemyValue
+        result.branch = branch
+        result.effects[#result.effects + 1] = "counter_spell_fizzled"
+
+        self:markCounteredSpellAction(action, result, incomingSpell)
+
+        if result.counterSpellWon then
+            result.description = (incomingSpell and incomingSpell.name or "Spell") .. " fizzles."
+        else
+            result.description = (incomingSpell and incomingSpell.name or "Spell") ..
+                " fizzles, but the counter-magic causes maleficence."
+            result.effects[#result.effects + 1] = "counter_spell_maleficence"
+            result.maleficence = self:triggerMaleficence(actor, branch, "counter_spell_failed_or_tied", {
+                spell = incomingSpell,
+                spellId = incomingSpell and incomingSpell.id,
+                source = action,
+                card = action.maleficenceCard,
+                value = action.maleficenceValue,
+                suit = action.maleficenceSuit,
+                deck = action.maleficenceDeck or action.deck,
+                resolve = action.resolveMaleficence == true or action.maleficenceCard ~= nil or
+                    action.maleficenceValue ~= nil,
+            })
+        end
+
+        self.eventBus:emit("counter_spell_resolved", result)
+        return result
+    end
+
+    function resolver:getDwimmercraftMode(action)
+        local mode = normalizeTalentKey(action and (
+            action.mode or action.effect or action.dwimmercraftEffect or action.intent
+        ) or "showy_illusion")
+
+        if mode == "second_sight" or mode == "focus_second_sight" or mode == "sight" then
+            return "second_sight"
+        end
+        if mode == "levitate" or mode == "lift" or mode == "pull" or mode == "push" or mode == "move_object" then
+            return "levitate"
+        end
+        if mode == "simple_illusion" or mode == "handheld_illusion" or mode == "object_illusion" then
+            return "simple_illusion"
+        end
+
+        return "showy_illusion"
+    end
+
+    function resolver:canDwimmercraftAffectObject(actor, object, action)
+        if not object then
+            return false, "dwimmercraft_target_missing"
+        end
+        if action and action.sameZone == false then
+            return false, "dwimmercraft_requires_same_zone"
+        end
+        if actor and object.zone and actor.zone and object.zone ~= actor.zone then
+            return false, "dwimmercraft_requires_same_zone"
+        end
+
+        local weight = object.weightPounds or object.weightLbs or object.weight or
+            (object.properties and (object.properties.weightPounds or object.properties.weightLbs or object.properties.weight))
+        if weight and weight > 10 then
+            return false, "dwimmercraft_object_too_heavy"
+        end
+
+        local size = object.size or object.slots or (object.properties and (object.properties.size or object.properties.slots))
+        if object.oversized or object.twoHanded or object.fitsOneHand == false or object.oneHanded == false or
+           (size and size > 1) then
+            return false, "dwimmercraft_object_too_large"
+        end
+
+        return true, nil
+    end
+
+    function resolver:recordDwimmercraftIllusion(actor, action, mode)
+        actor.dwimmercraftIllusions = actor.dwimmercraftIllusions or {}
+        local illusion = {
+            id = action.illusionId or ("dwimmercraft_" .. tostring(#actor.dwimmercraftIllusions + 1)),
+            source = "dwimmercraft",
+            caster = actor,
+            casterId = actor and actor.id,
+            mode = mode,
+            image = action.image or action.illusion or action.description or
+                (mode == "simple_illusion" and "handheld illusion" or "showy magical display"),
+            harmless = true,
+            obviouslyMagical = mode == "showy_illusion",
+            fitsOneHand = mode == "simple_illusion" and true or nil,
+            convincingUntilInteracted = mode == "simple_illusion" and true or nil,
+            active = true,
+        }
+        actor.dwimmercraftIllusions[#actor.dwimmercraftIllusions + 1] = illusion
+        return illusion
+    end
+
+    function resolver:activateSecondSight(actor, action)
+        local previousFields = {}
+        for _, key in ipairs({
+            "canSeeShrouded",
+            "canSeeInvisible",
+            "canSeeTrueIllusions",
+            "canDetectMagic",
+            "canDetectEnchantments",
+            "canIdentifySorcerers",
+            "magicSight",
+            "secondSightActive",
+        }) do
+            previousFields[#previousFields + 1] = {
+                key = key,
+                value = actor[key],
+            }
+        end
+
+        local sight = {
+            source = "dwimmercraft",
+            actor = actor,
+            actorId = actor and actor.id,
+            active = true,
+            duration = "watch",
+            seesInvisible = true,
+            seesShrouded = true,
+            trueFormIllusions = true,
+            detectsMagic = true,
+            detectsEnchantments = true,
+            identifiesSorcerers = true,
+            previousFields = previousFields,
+            startedAtWatch = action and (action.watchNumber or action.currentWatch),
+        }
+
+        actor.secondSight = sight
+        actor.canSeeShrouded = true
+        actor.canSeeInvisible = true
+        actor.canSeeTrueIllusions = true
+        actor.canDetectMagic = true
+        actor.canDetectEnchantments = true
+        actor.canIdentifySorcerers = true
+        actor.magicSight = true
+        actor.secondSightActive = true
+        actor.conditions = actor.conditions or {}
+        actor.conditions.second_sight = true
+        actor.conditionDurations = actor.conditionDurations or {}
+        actor.conditionDurations.second_sight = {
+            duration = "watch",
+            source = "dwimmercraft",
+            effect = sight,
+        }
+
+        return sight
+    end
+
+    function resolver:resolveDwimmercraft(action, result)
+        action = action or {}
+        result = result or {
+            success = false,
+            effects = {},
+            description = "",
+        }
+        result.effects = result.effects or {}
+
+        local actor = action.actor
+        if not entityHasUsableTalent(actor, "dwimmercraft") then
+            result.success = false
+            result.description = "Requires Dwimmercraft."
+            result.effects[#result.effects + 1] = "requires_dwimmercraft"
+            return result
+        end
+
+        local controller = action.challengeController or self.challengeController
+        local challengeActive = action.challengeActive == true or
+            (controller and controller.isActive and controller:isActive())
+
+        local mode = self:getDwimmercraftMode(action)
+        result.dwimmercraftMode = mode
+        result.effects[#result.effects + 1] = "dwimmercraft"
+        if challengeActive then
+            result.effects[#result.effects + 1] = "dwimmercraft_misc_action"
+        end
+
+        if mode == "second_sight" then
+            local spent, spendReason = self:spendResolveForFavor(actor)
+            if not spent then
+                result.success = false
+                result.description = "Cannot focus second sight: " .. (spendReason or "resolve unavailable") .. "."
+                result.effects[#result.effects + 1] = "resolve_missing"
+                return result
+            end
+
+            result.success = true
+            result.resolveSpent = 1
+            result.secondSight = self:activateSecondSight(actor, action)
+            result.effects[#result.effects + 1] = "second_sight"
+            result.effects[#result.effects + 1] = "resolve_spent_for_dwimmercraft"
+            result.description = (actor.name or actor.id or "The adventurer") .. " focuses second sight for a watch."
+        elseif mode == "levitate" then
+            local object = action.target or action.object or action.item
+            local ok, reason = self:canDwimmercraftAffectObject(actor, object, action)
+            if not ok then
+                result.success = false
+                result.description = "Dwimmercraft cannot affect that object."
+                result.effects[#result.effects + 1] = reason
+                return result
+            end
+
+            object.dwimmercraft = {
+                source = "dwimmercraft",
+                caster = actor,
+                casterId = actor and actor.id,
+                mode = normalizeTalentKey(action.objectMotion or action.motion or action.intent or "levitate"),
+                noFineControl = true,
+                maxWeightPounds = 10,
+                active = true,
+            }
+            object.levitatedByDwimmercraft = true
+            result.success = true
+            result.target = object
+            result.effects[#result.effects + 1] = "dwimmercraft_levitation"
+            result.description = (actor.name or actor.id or "The adventurer") .. " moves a small object with minor magic."
+        else
+            local illusion = self:recordDwimmercraftIllusion(actor, action, mode)
+            result.success = true
+            result.illusion = illusion
+            if mode == "simple_illusion" then
+                result.effects[#result.effects + 1] = "dwimmercraft_simple_illusion"
+                result.description = (actor.name or actor.id or "The adventurer") .. " conjures a small convincing illusion."
+            else
+                result.effects[#result.effects + 1] = "dwimmercraft_showy_illusion"
+                result.description = (actor.name or actor.id or "The adventurer") .. " conjures a harmless magical display."
+            end
+        end
+
+        self.eventBus:emit("dwimmercraft_resolved", result)
+        return result
+    end
+
+    function resolver:inspectWithSecondSight(actor, subject)
+        local sight = actor and actor.secondSight
+        if not sight or sight.active == false then
+            return {
+                success = false,
+                reason = "second_sight_inactive",
+            }
+        end
+
+        local conditions = subject and subject.conditions or {}
+        local props = subject and subject.properties or {}
+        local illusion = subject and (subject.visualIllusion or subject.illusion or subject.emotionalIllusion)
+        local isIllusion = illusion ~= nil or subject and (subject.isIllusion or conditions.illusion)
+        local isSorcerer = subject and (
+            subject.isSorcerer == true or subject.sorcerer == true or subject.canCastSpells == true or
+            type(subject.knownSpells) == "table" or type(subject.spells) == "table" or
+            getEntityTalentEntry(subject, "magic_of_the_wastes") ~= nil or
+            getEntityTalentEntry(subject, "magic_of_the_weald") ~= nil or
+            getEntityTalentEntry(subject, "magic_of_the_weird") ~= nil or
+            getEntityTalentEntry(subject, "magic_of_the_welkin") ~= nil
+        )
+
+        return {
+            success = true,
+            actor = actor,
+            subject = subject,
+            seesInvisible = subject and (subject.invisible == true or conditions.invisible == true),
+            seesShrouded = self:isEntityShrouded(subject),
+            trueForm = isIllusion and (subject.trueForm or subject.illusionTrueForm or
+                (illusion and (illusion.trueForm or illusion.actualForm)) or "illusion") or nil,
+            isIllusion = isIllusion == true,
+            magical = subject and (subject.magical == true or props.magical == true or
+                subject.enchanted == true or conditions.enchanted == true or type(subject.activeSpells) == "table"),
+            enchanted = subject and (subject.enchanted == true or conditions.enchanted == true),
+            isSorcerer = isSorcerer == true,
+        }
     end
 
     local function findActiveSpellIndex(actor, spellEntry)
@@ -12769,9 +15531,9 @@ function M.createActionResolver(config)
             return true
         end
         local conditions = target.conditions or {}
-        return target.emotionless == true or target.noEmotions == true or target.illusionImmune == true or
-            target.immuneToIllusions == true or conditions.emotionless == true or conditions.illusionImmune == true or
-            hasTag(target, "emotionless") or hasTag(target, "illusion_immune") or hasTag(target, "mindless")
+        return isInspirationImmuneTarget(target) or target.illusionImmune == true or
+            target.immuneToIllusions == true or conditions.illusionImmune == true or
+            hasTag(target, "illusion_immune")
     end
 
     local function isEmotionlessSpellTarget(target)
@@ -13283,6 +16045,10 @@ function M.createActionResolver(config)
         end
         if effect.targetTrait == "undead" and not isUndeadTarget(target) then
             return false, (spell.name or "Control") .. " can only control undead.", "control_target_not_undead"
+        end
+        if isControlImmuneTarget(target) then
+            return false, (spell.name or "Control") .. " has no effect on control-immune targets.",
+                "control_immune"
         end
 
         local orderText = getControlOrderText(action)
@@ -16025,12 +18791,18 @@ function M.createActionResolver(config)
 
         if spell and spell.ongoing and not result.skipOngoingSpell then
             actor.activeSpells = actor.activeSpells or {}
+            local committedResolve = action.resolveCommitted
+            if committedResolve == nil then
+                committedResolve = resolveSpent
+            end
             local activeSpell = {
                 spellId = spell.id,
                 name = spell.name,
                 branch = spell.branch,
+                caster = actor,
+                casterId = actor and actor.id,
                 target = target,
-                resolveCommitted = resolveSpent,
+                resolveCommitted = committedResolve,
                 concentration = spell.concentration == true,
                 effectType = effect.type,
                 zoneIds = result.zoneIds,
@@ -16081,7 +18853,7 @@ function M.createActionResolver(config)
             if result.stinkingCloud then
                 result.stinkingCloud.spellEntry = activeSpell
             end
-            actor.committedResolve = (actor.committedResolve or 0) + resolveSpent
+            actor.committedResolve = (actor.committedResolve or 0) + committedResolve
             result.effects[#result.effects + 1] = "ongoing_spell"
 
             if effect.type == "control" then
@@ -16468,7 +19240,20 @@ function M.createActionResolver(config)
             return
         end
 
-        local resolveOk, resolveReason = self:spendSpellResolve(actor, resolveSpent)
+        local pactCharge = nil
+        local resolveCost = resolveSpent
+        if action.usePactCharge or action.spendPactCharge then
+            pactCharge = self:getPactChargeForSpell(component, spell)
+            if not pactCharge then
+                result.success = false
+                result.description = "No pact charge is available for " .. (spell.name or "spell") .. "."
+                result.effects[#result.effects + 1] = "pact_charge_missing"
+                return
+            end
+            resolveCost = math.max(0, resolveSpent - 1)
+        end
+
+        local resolveOk, resolveReason = self:spendSpellResolve(actor, resolveCost)
         if not resolveOk then
             result.success = false
             result.description = "Cannot cast: " .. (resolveReason or "resolve unavailable") .. "."
@@ -16479,7 +19264,7 @@ function M.createActionResolver(config)
         if needsTrainingXP then
             if not self:spendTrainingXP(actor) then
                 if actor and actor.resolve ~= nil then
-                    actor.resolve = actor.resolve + resolveSpent
+                    actor.resolve = actor.resolve + resolveCost
                 end
                 result.success = false
                 result.description = "In-training spellcasting requires 1 XP."
@@ -16489,9 +19274,18 @@ function M.createActionResolver(config)
             result.effects[#result.effects + 1] = "spell_training_xp_spent"
         end
 
+        if pactCharge then
+            self:spendPactCharge(component, pactCharge, spell, actor)
+            action.resolveCommitted = resolveCost
+            result.pactChargeSpent = true
+            result.pactCharge = pactCharge
+            result.effects[#result.effects + 1] = "pact_charge_spent"
+        end
+
         result.spell = spell
         result.component = component
-        result.resolveSpent = resolveSpent
+        result.resolveSpent = resolveCost
+        result.spellResolveValue = resolveSpent
 
         if self:isSpellContestRequired(action, spell, target) then
             local originalTarget = action.target
@@ -17177,6 +19971,88 @@ function M.createActionResolver(config)
         return false, "zones_too_far"
     end
 
+    function resolver:getAcrobatTraversalMode(action)
+        if not action then
+            return nil
+        end
+
+        local explicitMode = action.traversalMode or action.traversal or action.movementMode or action.terrainMode
+        local mode = explicitMode and normalizeTalentKey(explicitMode) or nil
+
+        if action.climb == true or action.climbing == true or action.verticalTraversal == true then
+            mode = mode or "climb"
+        elseif action.narrowLedge == true or action.ledge == true then
+            mode = mode or "ledge"
+        elseif action.tightrope == true then
+            mode = mode or "tightrope"
+        end
+
+        if action.acrobatTraversal == true or action.requiresAcrobatTraversal == true or action.difficultTraversal == true then
+            mode = mode or "difficult_terrain"
+        end
+
+        local acrobatModes = {
+            climb = true,
+            climbing = "climb",
+            vertical = "climb",
+            vertical_terrain = "climb",
+            sheer_surface = "climb",
+            ledge = true,
+            narrow_ledge = "ledge",
+            tightrope = true,
+            difficult_terrain = true,
+        }
+        local mapped = acrobatModes[mode]
+        if mapped == true then
+            return mode
+        end
+        if mapped then
+            return mapped
+        end
+
+        return nil
+    end
+
+    function resolver:resolveAcrobatTraversal(action, result)
+        local mode = self:getAcrobatTraversalMode(action)
+        if not mode then
+            return true
+        end
+
+        result.acrobatTraversal = {
+            mode = mode,
+            asMiscAction = true,
+            noTestFate = false,
+        }
+
+        local testResult = action.traversalTestResult or action.testResult
+        if testResult then
+            if testResult.success then
+                result.effects[#result.effects + 1] = "traversal_test_passed"
+                return true
+            end
+
+            result.success = false
+            result.description = "Traversal failed."
+            result.effects[#result.effects + 1] = "traversal_test_failed"
+            return false
+        end
+
+        if not entityHasUsableTalent(action.actor, "acrobat") then
+            result.success = false
+            result.description = "Traversal requires a Test of Fate without Acrobat."
+            result.effects[#result.effects + 1] = "traversal_test_required"
+            result.effects[#result.effects + 1] = "acrobat_traversal_blocked"
+            result.traversalRequiresTest = true
+            return false
+        end
+
+        result.acrobatTraversal.noTestFate = true
+        result.effects[#result.effects + 1] = "acrobat_traversal"
+        result.effects[#result.effects + 1] = "traversal_no_test"
+        return true
+    end
+
     ----------------------------------------------------------------------------
     -- S6.3: PARTING BLOWS
     ----------------------------------------------------------------------------
@@ -17264,6 +20140,10 @@ function M.createActionResolver(config)
             result.success = false
             result.description = "Rooted! Cannot move."
             result.effects[#result.effects + 1] = "rooted_blocked"
+            return
+        end
+
+        if not self:resolveAcrobatTraversal(action, result) then
             return
         end
 

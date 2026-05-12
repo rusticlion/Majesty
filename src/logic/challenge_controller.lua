@@ -14,6 +14,8 @@ local events = require('logic.events')
 local vigilance_triggers = require('data.vigilance_triggers')
 local constants = require('constants')
 local fate_resolver = require('logic.resolver')
+local action_registry = require('data.action_registry')
+local inventory = require('logic.inventory')
 
 local M = {}
 
@@ -82,6 +84,44 @@ local function entityHasUsableTalent(entity, talentId)
     return entry == true
 end
 
+local function armorTypeAllowsQuick(armorType)
+    local normalized = normalizeTalentKey(armorType)
+    return normalized == "" or normalized == "none" or normalized == "light"
+end
+
+local function entityWearsLightOrNoArmor(entity)
+    if not entity then
+        return false
+    end
+
+    if not armorTypeAllowsQuick(entity.armorType or entity.wornArmorType) then
+        return false
+    end
+
+    local actorArmor = entity.armor
+    if type(actorArmor) == "table" then
+        local props = actorArmor.properties or {}
+        if (actorArmor.isArmor or props.armor) and not actorArmor.destroyed then
+            if not armorTypeAllowsQuick(actorArmor.armorType or props.armorType) then
+                return false
+            end
+        end
+    end
+
+    local inv = entity.inventory
+    local belt = inv and inv.getItems and inv:getItems(inventory.LOCATIONS.BELT) or inv and inv.belt or {}
+    for _, item in ipairs(belt or {}) do
+        local props = item.properties or {}
+        if (item.isArmor or props.armor) and not item.destroyed then
+            if not armorTypeAllowsQuick(item.armorType or props.armorType) then
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
 local function spendEntityResolve(entity, amount)
     amount = amount or 1
     if not entity then
@@ -124,6 +164,7 @@ function M.createChallengeController(config)
     local controller = {
         eventBus   = config.eventBus or events.globalBus,
         playerDeck = config.playerDeck,
+        playerHand = config.playerHand,
         gmDeck     = config.gmDeck,
         actionResolver = config.actionResolver,
         gameClock  = config.gameClock,
@@ -175,6 +216,7 @@ function M.createChallengeController(config)
 
         -- Fool interrupt tracking (S4.9)
         pendingFoolRestore = nil,     -- { state, activeEntity } to restore after Fool
+        pendingQuickRestore = nil,    -- { state, activeEntity } to restore after Quick!
     }
 
     ----------------------------------------------------------------------------
@@ -1590,6 +1632,11 @@ function M.createChallengeController(config)
             return
         end
 
+        if self.pendingQuickRestore then
+            self:completeQuickInterrupt()
+            return
+        end
+
         -- Queue vigilance reactions triggered by the just-resolved action
         local triggeredCount = self:queueTriggeredVigilanceReactions(completedAction)
         if triggeredCount > 0 then
@@ -1936,6 +1983,215 @@ function M.createChallengeController(config)
 
             print("[FOOL INTERRUPT] Complete, resuming normal turn order")
         end
+    end
+
+    ----------------------------------------------------------------------------
+    -- QUICK! INTERRUPT
+    -- A light/no-armor Quick! adventurer can use Pentacles actions out of turn.
+    ----------------------------------------------------------------------------
+
+    function controller:canUseQuickInterrupt(entity, card, action)
+        if self.state ~= M.STATES.COUNT_UP and
+           self.state ~= M.STATES.AWAITING_ACTION and
+           self.state ~= M.STATES.MINOR_WINDOW then
+            return false, "cannot_interrupt_now"
+        end
+
+        if not entity or not card or not action or not action.type then
+            return false, "invalid_quick_interrupt"
+        end
+
+        if not entityHasUsableTalent(entity, "quick") then
+            return false, "requires_quick"
+        end
+
+        if not entityWearsLightOrNoArmor(entity) then
+            return false, "requires_light_or_no_armor"
+        end
+
+        local actionDef = action_registry.getAction(action.type)
+        if not actionDef or actionDef.suit ~= action_registry.SUITS.PENTACLES then
+            return false, "requires_pentacles_action"
+        end
+
+        return true, nil
+    end
+
+    function controller:playQuickInterrupt(entity, card, action)
+        local ok, reason = self:canUseQuickInterrupt(entity, card, action)
+        if not ok then
+            return false, reason
+        end
+
+        print("[QUICK INTERRUPT] " .. (entity.name or entity.id) ..
+              " interrupts with " .. tostring(action.type))
+
+        local previousState = self.state
+        local previousActive = self.activeEntity
+
+        self.activeEntity = entity
+        self.state = M.STATES.RESOLVING
+        self.pendingQuickRestore = {
+            state = previousState,
+            activeEntity = previousActive,
+        }
+
+        action.actor = entity
+        action.card = card
+        action.round = self.currentRound
+        action.count = self.currentCount
+        action.challengeController = self
+        action.isQuickInterrupt = true
+        action.quickInterrupt = true
+
+        self.pendingAction = action
+
+        self.eventBus:emit("quick_interrupt_start", {
+            entity = entity,
+            card = card,
+            action = action,
+            previousState = previousState,
+            previousActive = previousActive,
+        })
+
+        self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
+
+        return true
+    end
+
+    function controller:completeQuickInterrupt()
+        if self.pendingQuickRestore then
+            self.state = self.pendingQuickRestore.state
+            self.activeEntity = self.pendingQuickRestore.activeEntity
+            self.pendingQuickRestore = nil
+            self.pendingAction = nil
+
+            self.eventBus:emit("quick_interrupt_complete", {})
+
+            print("[QUICK INTERRUPT] Complete, resuming normal turn order")
+        end
+    end
+
+    ----------------------------------------------------------------------------
+    -- COUNSEL
+    -- A Cups talent card transfer that can become an interrupt with Resolve.
+    ----------------------------------------------------------------------------
+
+    function controller:findCounselCard(playerHand, counselor, card, opts)
+        opts = opts or {}
+        if not playerHand or not playerHand.hands or not counselor or not counselor.id then
+            return nil, nil, "missing_player_hand"
+        end
+
+        local handData = playerHand.hands[counselor.id]
+        local cards = handData and handData.cards
+        if not cards or #cards == 0 then
+            return nil, nil, "no_counsel_card"
+        end
+
+        local index = tonumber(opts.cardIndex or opts.index)
+        if not index and card then
+            for i, candidate in ipairs(cards) do
+                if candidate == card then
+                    index = i
+                    break
+                end
+            end
+        end
+
+        if not index then
+            return nil, nil, "card_not_in_hand"
+        end
+        if index < 1 or index > #cards then
+            return nil, nil, "invalid_card_index"
+        end
+
+        return cards[index], index, nil
+    end
+
+    function controller:resolveCounsel(counselor, target, card, actionType, opts)
+        opts = opts or {}
+        local playerHand = opts.playerHand or self.playerHand
+
+        if self.state == M.STATES.IDLE or self.state == M.STATES.ENDING then
+            return false, "not_in_challenge"
+        end
+        if not counselor or not target then
+            return false, "invalid_counsel"
+        end
+        if counselor == target or counselor.id == target.id then
+            return false, "requires_other_adventurer"
+        end
+        if not target.isPC then
+            return false, "requires_adventurer_target"
+        end
+        if not entityHasUsableTalent(counselor, "counsel") then
+            return false, "requires_counsel"
+        end
+
+        local round = self.currentRound or 0
+        if counselor.counselUsedRound == round then
+            return false, "counsel_already_used"
+        end
+
+        local actionDef = action_registry.getAction(actionType)
+        if not actionDef then
+            return false, "unknown_counsel_action"
+        end
+        if actionDef.suit == action_registry.SUITS.MISC then
+            return false, "requires_suited_action"
+        end
+
+        local heldCard, cardIndex, cardReason = self:findCounselCard(playerHand, counselor, card, opts)
+        if not heldCard then
+            return false, cardReason
+        end
+
+        local cardSuit = action_registry.cardSuitToActionSuit(heldCard.suit)
+        if cardSuit ~= actionDef.suit then
+            return false, "suit_mismatch"
+        end
+
+        local interrupt = opts.spendResolve == true or opts.resolveForInterrupt == true or
+            opts.spendResolveForInterrupt == true
+        local resolveSpent = false
+        if interrupt then
+            local spent, spendReason = spendEntityResolve(counselor, 1)
+            if not spent then
+                return false, spendReason or "not_enough_resolve"
+            end
+            resolveSpent = true
+        end
+
+        local sourceHand = playerHand.hands[counselor.id].cards
+        table.remove(sourceHand, cardIndex)
+        playerHand.hands[target.id] = playerHand.hands[target.id] or {}
+        playerHand.hands[target.id].cards = playerHand.hands[target.id].cards or {}
+        local targetHand = playerHand.hands[target.id].cards
+        targetHand[#targetHand + 1] = heldCard
+
+        counselor.counselUsedRound = round
+        heldCard.counsel = {
+            counselorId = counselor.id,
+            targetId = target.id,
+            actionType = actionType,
+            round = round,
+            interrupt = interrupt,
+            resolveSpent = resolveSpent,
+        }
+
+        local detail = {
+            counselor = counselor,
+            target = target,
+            card = heldCard,
+            actionType = actionType,
+            interrupt = interrupt,
+            resolveSpent = resolveSpent,
+        }
+
+        self.eventBus:emit("counsel_card_given", detail)
+
+        return true, detail
     end
 
     ----------------------------------------------------------------------------
