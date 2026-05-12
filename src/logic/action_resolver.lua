@@ -69,6 +69,7 @@ M.ACTION_TYPES = {
     TEST_FATE  = "test_fate",   -- Mid-challenge test of fate trigger
     TRIVIAL_ACTION = "trivial_action", -- Simple uncontested action
     VIGILANCE  = "vigilance",   -- Prepared triggered response
+    SNEAK      = "sneak",       -- Talent procedure: off-stage sneaking and dramatic arrival
 
     -- Defensive Actions (S4.9)
     DODGE      = "dodge",       -- Adds card value to defense difficulty
@@ -89,6 +90,9 @@ M.ACTION_ALIASES = {
     cast = M.ACTION_TYPES.SPEAK_INCANTATION,
     counterspell = M.ACTION_TYPES.COUNTER_SPELL,
     root = M.ACTION_TYPES.ROUGHHOUSE,
+    go_sneaking = M.ACTION_TYPES.SNEAK,
+    sneak_arrival = M.ACTION_TYPES.SNEAK,
+    arrive_from_sneak = M.ACTION_TYPES.SNEAK,
 }
 
 --------------------------------------------------------------------------------
@@ -4072,6 +4076,194 @@ function M.createActionResolver(config)
         return self:spendResolveForFavor(actor)
     end
 
+    function resolver:entityInList(items, entity)
+        if type(items) ~= "table" or not entity then
+            return false
+        end
+
+        local entityId = entity.id
+        for _, item in ipairs(items) do
+            if item == entity or (entityId and item and item.id == entityId) then
+                return true
+            end
+        end
+        return false
+    end
+
+    function resolver:ensureSneakChallengeMembership(controller, actor)
+        local added = {}
+        if not controller or not actor then
+            return added
+        end
+
+        controller.pcs = controller.pcs or {}
+        if not self:entityInList(controller.pcs, actor) then
+            controller.pcs[#controller.pcs + 1] = actor
+            added.pcs = true
+        end
+
+        controller.allCombatants = controller.allCombatants or {}
+        if not self:entityInList(controller.allCombatants, actor) then
+            controller.allCombatants[#controller.allCombatants + 1] = actor
+            added.allCombatants = true
+        end
+
+        return added
+    end
+
+    function resolver:resolveSneak(action, result)
+        action = action or {}
+        local actor = action.actor
+        result.effects[#result.effects + 1] = "sneak"
+
+        if not actor then
+            result.reason = "missing_actor"
+            result.description = "Sneak requires an actor."
+            result.effects[#result.effects + 1] = "missing_actor"
+            action.result = result
+            return result
+        end
+
+        if not entityHasUsableTalent(actor, "sneak") then
+            result.reason = "requires_sneak"
+            result.description = "Sneak requires a usable Sneak talent."
+            result.effects[#result.effects + 1] = "talent_missing_or_wounded"
+            action.result = result
+            return result
+        end
+
+        local mode = action.mode or action.sneakMode
+        local wantsArrival = action.arrive == true or action.arriveFromSneak == true or
+            action.sneakArrival == true or mode == "arrive" or mode == "arrival"
+
+        if not wantsArrival then
+            local state = actor.sneakState or {}
+            state.active = true
+            state.offStage = true
+            state.location = firstNonNil(action.location, action.roomId, action.locationId, state.location)
+            state.sceneId = firstNonNil(action.sceneId, action.scene, state.sceneId)
+            state.tension = firstNonNil(action.tension, action.tensionActive, state.tension)
+            if state.tension == nil then
+                state.tension = true
+            end
+
+            actor.sneaking = true
+            actor.offStage = true
+            actor.sneakState = state
+
+            result.success = true
+            result.sneaking = true
+            result.offStage = true
+            result.sneakState = state
+            result.effects[#result.effects + 1] = "sneak_off_stage"
+            result.description = (actor.name or actor.id or "The adventurer") .. " goes sneaking off-stage."
+
+            self.eventBus:emit("sneak_started", {
+                actor = actor,
+                action = action,
+                state = state,
+                result = result,
+            })
+
+            action.result = result
+            return result
+        end
+
+        if action.plausible == false or action.arrivalPlausible == false then
+            result.reason = "sneak_arrival_implausible"
+            result.description = "Sneak arrival is not plausible from the declared position."
+            result.effects[#result.effects + 1] = "sneak_arrival_implausible"
+            action.result = result
+            return result
+        end
+
+        local state = actor.sneakState
+        local hasTrackedSneak = actor.sneaking == true or actor.offStage == true or
+            (type(state) == "table" and state.active ~= false and state.offStage ~= false)
+        if not hasTrackedSneak and action.allowUntrackedArrival ~= true then
+            result.reason = "not_sneaking"
+            result.description = "Sneak arrival requires the actor to be off-stage sneaking."
+            result.effects[#result.effects + 1] = "sneak_not_off_stage"
+            action.result = result
+            return result
+        end
+
+        local freeRejoin = action.tensionEvaporated == true or action.tensionGone == true or action.tension == false
+        if not freeRejoin then
+            local spent, spendReason = self:spendResolveForFavor(actor)
+            if not spent then
+                result.reason = spendReason or "not_enough_resolve"
+                result.description = "Cannot spend Resolve to arrive dramatically from Sneak."
+                result.effects[#result.effects + 1] = "resolve_missing"
+                action.result = result
+                return result
+            end
+            result.resolveSpent = 1
+            result.effects[#result.effects + 1] = "resolve_spent_for_sneak_arrival"
+        end
+
+        actor.sneaking = false
+        actor.offStage = false
+        if type(state) == "table" then
+            state.active = false
+            state.offStage = false
+            state.arrived = true
+        end
+
+        result.success = true
+        result.sneakArrival = true
+        result.freeRejoin = freeRejoin
+
+        local controller = action.challengeController or self.challengeController
+        local challengeActive = controller and controller.isActive and controller:isActive()
+        if freeRejoin then
+            result.effects[#result.effects + 1] = "sneak_free_rejoin"
+            result.description = (actor.name or actor.id or "The adventurer") ..
+                " rejoins when the tension evaporates."
+            self.eventBus:emit("sneak_rejoined", {
+                actor = actor,
+                action = action,
+                result = result,
+                free = true,
+            })
+        elseif challengeActive then
+            result.challengeJoined = true
+            result.challengeMembership = self:ensureSneakChallengeMembership(controller, actor)
+            result.effects[#result.effects + 1] = "sneak_joined_challenge"
+            result.description = (actor.name or actor.id or "The adventurer") ..
+                " arrives dramatically and joins the Challenge flow."
+            self.eventBus:emit("sneak_joined_challenge", {
+                actor = actor,
+                action = action,
+                controller = controller,
+                result = result,
+            })
+        else
+            local ambush = {
+                actor = actor,
+                source = "sneak",
+                location = action.location or action.roomId or (state and state.location),
+                target = action.target,
+                action = action,
+            }
+            actor.pendingSneakAmbush = ambush
+            result.ambush = true
+            result.pendingAmbush = ambush
+            result.effects[#result.effects + 1] = "sneak_ambush"
+            result.description = (actor.name or actor.id or "The adventurer") ..
+                " arrives dramatically; the arrival counts as an ambush."
+            self.eventBus:emit("sneak_ambush_arrival", {
+                actor = actor,
+                action = action,
+                ambush = ambush,
+                result = result,
+            })
+        end
+
+        action.result = result
+        return result
+    end
+
     function resolver:spendResolveForTestFateFavor(actor)
         return self:spendResolveForFavor(actor)
     end
@@ -4911,6 +5103,17 @@ function M.createActionResolver(config)
             }
             result.effects[#result.effects + 1] = "monster_hunter_attack_favor"
             result.effects[#result.effects + 1] = "hunter_attack_favor"
+        end
+
+        if action.actor and action.actor.nextActionFavor then
+            favor = combineFavorState(favor, true)
+            result.effects[#result.effects + 1] = "next_action_favor"
+            if action.actor.nextActionFavorSource == "proud_and_ancient" then
+                result.effects[#result.effects + 1] = "proud_and_ancient_favor"
+            end
+            result.nextActionFavorSource = action.actor.nextActionFavorSource
+            action.actor.nextActionFavor = nil
+            action.actor.nextActionFavorSource = nil
         end
 
         if action.disfavor == true then
@@ -5793,6 +5996,14 @@ function M.createActionResolver(config)
             difficulty = 10,
         }
 
+        action = action or {}
+        local actionType = self:normalizeActionType(action.type or "generic")
+        action.normalizedType = actionType
+
+        if actionType == M.ACTION_TYPES.SNEAK then
+            return self:resolveSneak(action, result)
+        end
+
         if not action.actor or not action.card then
             result.description = "Invalid action"
             return result
@@ -5826,9 +6037,6 @@ function M.createActionResolver(config)
         local card = action.card
         result.cardValue = card.value or 0
         local suit = card.suit
-
-        local actionType = self:normalizeActionType(action.type or "generic")
-        action.normalizedType = actionType
 
         -- S4.9: Check for The Fool interrupt
         if M.isFool(card) then
@@ -5911,7 +6119,7 @@ function M.createActionResolver(config)
         elseif actionType == M.ACTION_TYPES.DWIMMERCRAFT then
             self:resolveDwimmercraft(action, result)
         elseif actionType == M.ACTION_TYPES.FLEE then
-            self:resolveGenericAction(action, result)
+            self:resolveFlee(action, result)
         elseif actionType == M.ACTION_TYPES.BID_LORE or
                actionType == M.ACTION_TYPES.TRIVIAL_ACTION or
                actionType == M.ACTION_TYPES.TEST_FATE or
@@ -6439,19 +6647,16 @@ function M.createActionResolver(config)
         -- S12.7: Apply Mob Rule bonuses (swarm attack bonuses)
         if action.mobRuleBonus then
             local mobBonus = action.mobRuleBonus
-            -- Attack bonus: +1 per additional attacker in same zone
-            if mobBonus.attackBonus and mobBonus.attackBonus > 0 then
-                result.modifier = result.modifier + mobBonus.attackBonus
-                result.testValue = result.cardValue + result.modifier
-                result.description = "(Mob +" .. mobBonus.attackBonus .. ") "
-            end
-            -- Piercing at 3+ attackers
-            if mobBonus.piercing then
-                result.effects[#result.effects + 1] = "piercing"
-            end
-            -- Favor at 2+ attackers (would need deck access for true favor)
             if mobBonus.favor then
                 result.effects[#result.effects + 1] = "mob_favor"
+            end
+            if mobBonus.piercing then
+                result.effects[#result.effects + 1] = "piercing"
+                result.effects[#result.effects + 1] = "mob_piercing"
+            end
+            if mobBonus.critical then
+                result.effects[#result.effects + 1] = "critical"
+                result.effects[#result.effects + 1] = "mob_critical"
             end
         end
 
@@ -7376,8 +7581,7 @@ function M.createActionResolver(config)
         end
 
         local companionId = action.companionId
-        local collections = { actor.companions, actor.animalCompanions }
-        for _, collection in ipairs(collections) do
+        for _, collection in ipairs({ actor.companions or false, actor.animalCompanions or false }) do
             if type(collection) == "table" then
                 for key, companion in pairs(collection) do
                     if type(companion) == "table" then
@@ -7420,6 +7624,18 @@ function M.createActionResolver(config)
         end
 
         return false
+    end
+
+    function resolver:companionAllowsSpokenCommand(companion, rawCommand)
+        if not companion or not companion.oneWordCommandsOnly then
+            return true
+        end
+
+        local text = tostring(rawCommand or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if text == "" then
+            return false
+        end
+        return text:find("[%s_]") == nil
     end
 
     function resolver:canCommandCompanion(companion)
@@ -7574,7 +7790,15 @@ function M.createActionResolver(config)
             return
         end
 
-        local commandName = self:normalizeCommandName(action.commandName or action.command or "command")
+        local rawCommand = action.commandName or action.command or "command"
+        if not self:companionAllowsSpokenCommand(companion, rawCommand) then
+            result.success = false
+            result.description = (companion.name or "Companion") .. " only understands one-word commands."
+            result.effects[#result.effects + 1] = "command_too_complex"
+            return
+        end
+
+        local commandName = self:normalizeCommandName(rawCommand)
         if not self:companionKnowsCommand(companion, commandName) then
             result.success = false
             result.description = (companion.name or "Companion") .. " does not know " .. commandName:gsub("_", " ") .. "."
@@ -18864,10 +19088,97 @@ function M.createActionResolver(config)
         return true
     end
 
+    function resolver:resolveProudAndAncientWarCry(action, result)
+        local actor = action.actor
+        if not entityHasUsableTalent(actor, "proud_and_ancient") then
+            result.success = false
+            result.description = "Requires Proud and Ancient."
+            result.effects[#result.effects + 1] = "proud_and_ancient_required"
+            return
+        end
+
+        local controller = action.challengeController or self.challengeController
+        local inChallenge = action.inChallenge == true or
+            (controller and controller.isActive and controller:isActive())
+        if not inChallenge then
+            result.success = false
+            result.description = "Proud and Ancient war cry requires an active Challenge."
+            result.effects[#result.effects + 1] = "challenge_required"
+            return
+        end
+
+        local ok, reason = self:spendResolveForFavor(actor)
+        if not ok then
+            result.success = false
+            result.description = "Cannot cry house motto: " .. (reason or "resolve unavailable") .. "."
+            result.effects[#result.effects + 1] = "resolve_missing"
+            return
+        end
+
+        local function normalizeHouse(value)
+            return tostring(value or ""):lower():gsub("[’']", ""):gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+        end
+
+        local house = normalizeHouse(action.house or actor.house or actor.humanHouse or actor.kinHouse or actor.family)
+        local candidates = {}
+        if type(action.heardBy or action.listeners) == "table" then
+            candidates = action.heardBy or action.listeners
+        elseif type(action.allEntities) == "table" then
+            candidates = action.allEntities
+        elseif type(action.guild) == "table" then
+            candidates = action.guild
+        else
+            candidates = { actor }
+        end
+
+        local affected = {}
+        local seen = {}
+        local function canHear(entity)
+            local conditions = entity and entity.conditions or {}
+            return entity and not (conditions.dead or conditions.deaf or conditions.deafened or entity.canHearWarCry == false)
+        end
+        local function sameHouse(entity)
+            if entity == actor then
+                return true
+            end
+            if house == "" then
+                return false
+            end
+            return normalizeHouse(entity.house or entity.humanHouse or entity.kinHouse or entity.family) == house
+        end
+        local function addAffected(entity)
+            if entity and not seen[entity] and canHear(entity) and sameHouse(entity) then
+                seen[entity] = true
+                entity.nextActionFavor = true
+                entity.nextActionFavorSource = "proud_and_ancient"
+                affected[#affected + 1] = entity
+            end
+        end
+
+        addAffected(actor)
+        for _, entity in ipairs(candidates) do
+            addAffected(entity)
+        end
+
+        result.success = true
+        result.description = (actor.name or "The adventurer") .. " cries their house motto."
+        result.effects[#result.effects + 1] = "proud_and_ancient_war_cry"
+        result.effects[#result.effects + 1] = "resolve_spent_for_proud_and_ancient"
+        result.affected = affected
+        result.affectedCount = #affected
+        result.house = house ~= "" and house or nil
+    end
+
     function resolver:resolveSpeakIncantation(action, result)
         local actor = action.actor
         local target = action.target or (type(action.targets) == "table" and action.targets[1] or nil)
         action.target = target
+        if action.proudAndAncientWarCry == true or action.proudAndAncient == true or
+           action.warCry == "proud_and_ancient" then
+            self:resolveProudAndAncientWarCry(action, result)
+            return
+        end
+
         local spell = self:getSpellFromAction(action)
 
         if not spell then
@@ -19595,6 +19906,143 @@ function M.createActionResolver(config)
     ----------------------------------------------------------------------------
     -- GENERIC RESOLUTION
     ----------------------------------------------------------------------------
+
+    function resolver:getRetreatParticipants(action)
+        if type(action.participants) == "table" then
+            return action.participants
+        end
+        if type(action.guild) == "table" then
+            return action.guild
+        end
+
+        local controller = action.challengeController or self.challengeController
+        if controller and type(controller.pcs) == "table" then
+            return controller.pcs
+        end
+
+        if action.actor then
+            return { action.actor }
+        end
+        return {}
+    end
+
+    function resolver:getRetreatTestResults(action)
+        if type(action.testResults) == "table" then
+            return action.testResults
+        end
+        if type(action.groupTestResults) == "table" then
+            return action.groupTestResults
+        end
+        if type(action.retreatTests) == "table" then
+            return action.retreatTests
+        end
+
+        local tests = {}
+        if action.highTestResult then
+            tests[#tests + 1] = action.highTestResult
+        end
+        if action.lowTestResult then
+            tests[#tests + 1] = action.lowTestResult
+        end
+        return tests
+    end
+
+    function resolver:markRetreatParticipants(participants)
+        for _, participant in ipairs(participants or {}) do
+            if participant then
+                participant.retreated = true
+                participant.fledChallenge = true
+                participant.conditions = participant.conditions or {}
+                participant.conditions.fled = true
+            end
+        end
+    end
+
+    function resolver:finishRetreat(action, result, outcome)
+        local participants = self:getRetreatParticipants(action)
+        result.participants = participants
+        result.retreatOutcome = outcome
+        result.escaped = true
+        self:markRetreatParticipants(participants)
+
+        local controller = action.challengeController or self.challengeController
+        if controller and controller.endChallenge and action.endChallenge ~= false then
+            controller:endChallenge("fled", {
+                retreat = result,
+                participants = participants,
+                outcome = "fled",
+            })
+            result.challengeEnded = true
+        end
+
+        self.eventBus:emit("retreat_resolved", {
+            actor = action.actor,
+            action = action,
+            result = result,
+            participants = participants,
+        })
+    end
+
+    function resolver:resolveFlee(action, result)
+        result.effects[#result.effects + 1] = "retreat"
+
+        local pursuit = tostring(action.pursuit or action.enemyPursuit or action.pursuitType or ""):lower()
+        local mobility = tostring(action.enemyMobility or action.pursuerMobility or ""):lower()
+
+        if action.canRetreat == false or action.escapeImpossible == true or
+           action.enemyAutomaticallyCatches == true or action.automaticPursuit == true or
+           pursuit == "automatic" or pursuit == "cannot_escape" or mobility == "fast" or mobility == "magical" then
+            result.success = false
+            result.retreatOutcome = "impossible"
+            result.description = "The pursuer is too fast or too magical to escape."
+            result.effects[#result.effects + 1] = "retreat_impossible"
+            return
+        end
+
+        if action.enemyWillNotPursue == true or action.enemyTiedToLair == true or
+           pursuit == "none" or pursuit == "no_pursuit" or pursuit == "will_not_pursue" or
+           mobility == "slow" or mobility == "awkward" or mobility == "tied_to_lair" then
+            result.success = true
+            result.description = "The guild retreats; the enemy cannot or will not pursue."
+            result.effects[#result.effects + 1] = "retreat_clean"
+            result.effects[#result.effects + 1] = "retreat_no_pursuit"
+            self:finishRetreat(action, result, "clean")
+            return
+        end
+
+        local tests = self:getRetreatTestResults(action)
+        if #tests == 0 then
+            result.success = false
+            result.needsGroupTest = true
+            result.groupTestAttribute = "pentacles"
+            result.description = "Retreat requires a Pentacles group test from the highest and lowest Pentacles adventurers."
+            result.effects[#result.effects + 1] = "retreat_group_test_required"
+            return
+        end
+
+        local group = fate_resolver.resolveGroupTest(tests)
+        result.groupTest = group
+        result.groupTestAttribute = "pentacles"
+
+        if group.result == fate_resolver.GROUP_RESULTS.SUCCESS then
+            result.success = true
+            result.description = "The guild gets away cleanly."
+            result.effects[#result.effects + 1] = "retreat_clean"
+            self:finishRetreat(action, result, "clean")
+        elseif group.result == fate_resolver.GROUP_RESULTS.TIGHT_SPOT then
+            result.success = true
+            result.complication = action.complication or true
+            result.description = "The guild escapes, but the GM introduces a complication."
+            result.effects[#result.effects + 1] = "retreat_complication"
+            self:finishRetreat(action, result, "complication")
+        else
+            result.success = false
+            result.cornered = true
+            result.description = "The guild is cornered with no clear path of escape."
+            result.effects[#result.effects + 1] = group.result == fate_resolver.GROUP_RESULTS.DISASTER
+                and "retreat_disaster" or "retreat_cornered"
+        end
+    end
 
     function resolver:resolveTrivialAction(action, result)
         local actor = action.actor

@@ -283,7 +283,15 @@ function M.createAdventurer(pc_data)
         bonds            = pc_data.bonds or {},
         talents          = pc_data.talents or {},
         location         = pc_data.location or nil,
+        kin              = pc_data.kin or pc_data.kith or pc_data.species or pc_data.race or pc_data.ancestry,
+        kith             = pc_data.kith,
+        species          = pc_data.species,
+        race             = pc_data.race,
+        ancestry         = pc_data.ancestry,
     })
+
+    pc.path = pc_data.path or pc_data.pathName or pc_data.role or pc_data.class or pc_data.suit
+    pc.pathName = pc_data.pathName
 
     pc.ammo = pc_data.ammo or pc.ammo
 

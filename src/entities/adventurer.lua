@@ -247,6 +247,7 @@ function M.createAdventurer(config)
     -- ChallengeManager will look up what talents actually do
     ----------------------------------------------------------------------------
     adventurer.talents = normalizeTalents(config.talents)
+    adventurer.woundedTalents = countWoundedTalents(adventurer.talents)
 
     --- Add a talent
     -- @param talentId string: The talent's ID (e.g., "aegis", "war_stories")

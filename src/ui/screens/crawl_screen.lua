@@ -144,6 +144,7 @@ function M.createCrawlScreen(config)
             combineWindow = 0.25,
         },
         subscriptions = {},
+        isDestroyed = false,
 
         -- Textures (loaded in init)
         vellumTexture = nil,
@@ -166,6 +167,8 @@ function M.createCrawlScreen(config)
 
     --- Initialize the screen (call once after creation)
     function screen:init()
+        self.isDestroyed = false
+
         if self.equipmentBar and self.equipmentBar.destroy then
             self.equipmentBar:destroy()
         end
@@ -250,7 +253,12 @@ function M.createCrawlScreen(config)
     end
 
     function screen:listen(eventType, callback)
-        local unsubscribe = self.eventBus:on(eventType, callback)
+        local unsubscribe = self.eventBus:on(eventType, function(data)
+            if self.isDestroyed then
+                return
+            end
+            callback(data)
+        end)
         self.subscriptions[#self.subscriptions + 1] = unsubscribe
         return unsubscribe
     end
@@ -263,6 +271,7 @@ function M.createCrawlScreen(config)
     end
 
     function screen:destroy()
+        self.isDestroyed = true
         self:unsubscribeEvents()
 
         if self.equipmentBar and self.equipmentBar.destroy then

@@ -1110,6 +1110,17 @@ function M.createCampController(config)
             return true, "animal_feed_already_resolved"
         end
 
+        if companion.suppliesOwnFood or companion.selfFeeding then
+            companion.conditions = companion.conditions or {}
+            companion.starvationCount = 0
+            companion.conditions.weak = false
+            companion.conditions.starving = false
+            companion.weak = false
+            companion.starving = false
+            self.animalFeedConsumed[feedKey] = true
+            return true, "animal_feed_self_supplied"
+        end
+
         local feedItem = findAnimalFeedItem(owner, companion)
         if not feedItem then
             return self:markAnimalCompanionUnfed(owner, companion, opts.key)

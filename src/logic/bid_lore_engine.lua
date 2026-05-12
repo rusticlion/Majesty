@@ -356,6 +356,10 @@ function M.createBidLoreEngine(config)
            hasAny(motifTags, { "history", "scholarly", "classification", "occult" }) then
             contextBonus = contextBonus + 1
         end
+        if subject and subject.kind == "location" and
+           hasAny(motifTags, { "scouting", "security", "stealth", "observation", "hazard", "traps" }) then
+            contextBonus = contextBonus + 1
+        end
 
         return overlapSubject + overlapQuestion + contextBonus
     end
@@ -536,6 +540,10 @@ function M.createBidLoreEngine(config)
             contextBonus = contextBonus + 1
         end
         if subject.kind == "location" and hasAny(motifTags, { "history", "scholarly", "classification", "occult" }) then
+            contextBonus = contextBonus + 1
+        end
+        if subject.kind == "location" and
+           hasAny(motifTags, { "scouting", "security", "stealth", "observation", "hazard", "traps" }) then
             contextBonus = contextBonus + 1
         end
 

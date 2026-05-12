@@ -983,6 +983,9 @@ function M.createNPCAI(config)
         local mobBonus = self:checkMobRule(npc, target)
         if mobBonus then
             action.mobRuleBonus = mobBonus
+            if mobBonus.favor then
+                action.favor = true
+            end
         end
 
         return action
@@ -1003,17 +1006,16 @@ function M.createNPCAI(config)
     ----------------------------------------------------------------------------
     -- S12.7: MOB RULE (SWARM BONUSES)
     -- When multiple mobs target the same adventurer, they gain bonuses:
-    -- - +1 to hit per additional attacker in same zone
-    -- - Piercing damage at 3+ attackers
     -- - Favor (advantage) at 2+ attackers
+    -- - Favor and Piercing damage at 4+ attackers
+    -- - Favor and Critical damage at 8+ attackers
     ----------------------------------------------------------------------------
 
     --- Check for Mob Rule (swarm) bonuses
     -- @param npc table: The attacking NPC
     -- @param target table: The target being attacked
-    -- @return table|nil: Bonus info { favor, piercing, attackBonus, alliesCount }
+    -- @return table|nil: Bonus info { favor, piercing, critical, alliesCount, attackersCount }
     function ai:checkMobRule(npc, target)
-        -- Count other NPCs in the same zone as the target (surrounding them)
         local alliesInZone = 0
 
         if self.challengeController then
@@ -1027,13 +1029,14 @@ function M.createNPCAI(config)
             end
         end
 
-        if alliesInZone > 0 then
+        local attackersCount = alliesInZone + 1
+        if attackersCount >= 2 then
             return {
-                -- S12.7: Swarm bonuses scale with number of attackers
-                attackBonus = alliesInZone,          -- +1 per additional attacker
-                favor = alliesInZone >= 1,           -- Favor at 2+ total (self + 1)
-                piercing = alliesInZone >= 2,        -- Piercing at 3+ total (self + 2)
+                favor = true,
+                piercing = attackersCount >= 4,
+                critical = attackersCount >= 8,
                 alliesCount = alliesInZone,
+                attackersCount = attackersCount,
             }
         end
 

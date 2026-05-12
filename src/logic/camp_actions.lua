@@ -9,6 +9,7 @@ local events = require('logic.events')
 local inventory = require('logic.inventory')
 local bid_lore_engine = require('logic.bid_lore_engine')
 local constants = require('constants')
+local talent_catalog = require('data.talent_catalog')
 
 local M = {}
 
@@ -144,6 +145,14 @@ M.ACTIONS = {
         description = "Observe one or more pacts to charge spell components.",
         requiresTarget = false,
         requiresTalent = "gramarye",
+    },
+    {
+        id = "infiltrate",
+        name = "Infiltrate",
+        category = M.CATEGORIES.EXPLORATION,
+        description = "Use Sneak to investigate a known location and unlock precise lore questions.",
+        requiresTarget = false,
+        requiresTalent = "sneak",
     },
     {
         id = "devour_living",
@@ -373,6 +382,8 @@ function M.resolveAction(actionData, context)
         return M.resolveUseTalent(actor, actionData, context, eventBus)
     elseif actionData.type == "make_pact" then
         return M.resolveMakePact(actor, actionData, context, eventBus)
+    elseif actionData.type == "infiltrate" then
+        return M.resolveInfiltrate(actor, actionData, context, eventBus)
     elseif actionData.type == "devour_living" then
         return M.resolveDevourLiving(actor, actionData, context, eventBus)
     elseif actionData.type == "rest" then
@@ -943,13 +954,25 @@ end
 
 local function getTalentRecord(entity, talentId)
     if not entity or not entity.talents then
-        return nil
+        return nil, nil
     end
-    return entity.talents[talentId]
+
+    local requested = talent_catalog.normalizeId(talentId)
+    for key, talent in pairs(entity.talents) do
+        if talent_catalog.normalizeId(key) == requested then
+            return talent, key
+        end
+        if type(talent) == "table" and
+           talent_catalog.normalizeId(talent.id or talent.name or talent.talentId) == requested then
+            return talent, key
+        end
+    end
+
+    return nil, nil
 end
 
 local function normalizeTalentId(talentId)
-    return tostring(talentId or ""):lower():gsub("%s+", "_"):gsub("'", "")
+    return talent_catalog.normalizeId(talentId)
 end
 
 local CAMP_TALENTS = {
@@ -957,6 +980,7 @@ local CAMP_TALENTS = {
     bookworm = true,
     chirurgeon = true,
     high_chant = true,
+    sneak = true,
     war_stories = true,
 }
 
@@ -1379,9 +1403,17 @@ function M.resolveTrain(actor, trainer, actionData, context, eventBus)
     end
 
     local request = actionData.request or actionData.training or actionData
-    local talentId = request.talentId or request.talent or request.id
-    if not talentId then
+    local talentId = normalizeTalentId(request.talentId or request.talent or request.id)
+    if talentId == "" then
         return false, "Choose a talent to train"
+    end
+
+    local trainingOk, training = talent_catalog.validateTraining(actor, talentId, {
+        hasTrainer = true,
+        trainerAvailable = true,
+    })
+    if not trainingOk then
+        return false, training.reason
     end
 
     if not isTalentMastered(trainer, talentId) then
@@ -1406,7 +1438,10 @@ function M.resolveTrain(actor, trainer, actionData, context, eventBus)
 
     talent.mastered = talent.mastered == true
     talent.wounded = talent.wounded == true
-    talent.mentored = true
+    talent.mentored = training.mentored == true
+    talent.pathTrained = training.ownPath == true
+    talent.path = training.path or talent.path
+    talent.trainingKind = training.kind
     talent.trainerId = trainer.id
     talent.xp_invested = (talent.xp_invested or 0) + xpAmount
     talent.prepared_uses = talent.xp_invested
@@ -1467,6 +1502,227 @@ local function listContainsText(items, value)
         end
     end
     return false
+end
+
+local function appendUniqueText(items, value)
+    if not value or tostring(value) == "" then
+        return false
+    end
+    if listContainsText(items, value) then
+        return false
+    end
+    items[#items + 1] = value
+    return true
+end
+
+local function getRequestField(actionData, field)
+    local request = actionData and actionData.request
+    if request and request[field] ~= nil then
+        return request[field]
+    end
+    return actionData and actionData[field]
+end
+
+local function locationKnown(location, roomId, actionData, context)
+    local explicitKnown = getRequestField(actionData, "known")
+    if explicitKnown ~= nil then
+        return explicitKnown == true
+    end
+    if location and location.known == false then
+        return false
+    end
+    if location and (location.known == true or location.visited == true or location.discovered == true) then
+        return true
+    end
+
+    local knownLocations = context and context.knownLocations
+    if type(knownLocations) == "table" and roomId then
+        if knownLocations[roomId] == true then
+            return true
+        end
+        for _, id in ipairs(knownLocations) do
+            if id == roomId then
+                return true
+            end
+        end
+        return false
+    end
+
+    return true
+end
+
+local function lookupInfiltrationLocation(actionData, context)
+    context = context or {}
+    local location = getRequestField(actionData, "location") or getRequestField(actionData, "room")
+    local roomId = getRequestField(actionData, "roomId") or getRequestField(actionData, "room_id") or
+        getRequestField(actionData, "locationId") or getRequestField(actionData, "location_id")
+
+    if type(location) == "string" and not roomId then
+        roomId = location
+        location = nil
+    end
+    if type(location) == "table" and not roomId then
+        roomId = location.id or location.roomId or location.locationId
+    end
+
+    if not location and roomId then
+        if context.roomManager and context.roomManager.getRoom then
+            location = context.roomManager:getRoom(roomId)
+        elseif context.dungeon and context.dungeon.getRoom then
+            location = context.dungeon:getRoom(roomId)
+        elseif type(context.rooms) == "table" then
+            location = context.rooms[roomId]
+        end
+    end
+
+    if not location and not roomId then
+        return nil, "Choose a location to infiltrate"
+    end
+
+    roomId = roomId or (location and (location.id or location.roomId or location.locationId))
+    if not locationKnown(location, roomId, actionData, context) then
+        return nil, "Location must be known"
+    end
+
+    local currentLevel = getRequestField(actionData, "currentLevel") or
+        context.currentDungeonLevel or context.dungeonLevel or context.level
+    local locationLevel = getRequestField(actionData, "level") or
+        (location and (location.level or location.dungeonLevel or location.dungeon_level))
+    if currentLevel and locationLevel and tostring(currentLevel) ~= tostring(locationLevel) then
+        return nil, "Location is not on current dungeon level"
+    end
+
+    return {
+        id = roomId or tostring(location and location.name or "location"),
+        name = (location and location.name) or tostring(roomId or "Known Location"),
+        level = locationLevel or currentLevel,
+        location = location,
+    }
+end
+
+local function mergeFactValue(facts, key, value)
+    if value ~= nil then
+        facts[key] = value == true
+    end
+end
+
+local function collectInfiltrationFacts(location, actionData)
+    local facts = {
+        trapped = false,
+        guarded = false,
+        hasSecret = false,
+        hasLoot = false,
+    }
+
+    if location then
+        if location.socialEncounter or (location.mobs and #location.mobs > 0) or
+           (location.npcs and #location.npcs > 0) then
+            facts.guarded = true
+        end
+
+        for _, feature in ipairs(location.features or {}) do
+            if feature.trap or feature.type == "trap" then
+                facts.trapped = true
+            end
+            if feature.secrets or feature.reveal_connection or feature.state == "hidden" or
+               feature.hidden_description then
+                facts.hasSecret = true
+            end
+            if feature.loot or feature.item or feature.treasure then
+                facts.hasLoot = true
+            end
+        end
+    end
+
+    local overrides = getRequestField(actionData, "facts") or getRequestField(actionData, "yesNoFacts") or {}
+    if type(overrides) ~= "table" then
+        overrides = {}
+    end
+    mergeFactValue(facts, "trapped", overrides.trapped or overrides.hasTrap or overrides.isTrapped)
+    mergeFactValue(facts, "guarded", overrides.guarded or overrides.hasGuards or overrides.isGuarded)
+    mergeFactValue(facts, "hasSecret", overrides.hasSecret or overrides.secret or overrides.hidden)
+    mergeFactValue(facts, "hasLoot", overrides.hasLoot or overrides.loot or overrides.treasure)
+
+    return facts
+end
+
+local function collectInfiltrationSubjectIds(location, actionData)
+    local subjectIds = {}
+    local function add(value)
+        if value and tostring(value) ~= "" and not listContainsText(subjectIds, value) then
+            subjectIds[#subjectIds + 1] = value
+        end
+    end
+
+    add(getRequestField(actionData, "subjectId"))
+    add(location and (location.loreSubjectId or location.subjectId))
+    for _, feature in ipairs(location and location.features or {}) do
+        add(feature.loreSubjectId or feature.subjectId)
+        local loreEffect = feature.loreEffect
+        if type(loreEffect) == "table" then
+            add(loreEffect.subjectId)
+        end
+    end
+
+    return subjectIds
+end
+
+function M.resolveInfiltrate(actor, actionData, context, eventBus)
+    context = context or {}
+    actionData = actionData or {}
+    eventBus = eventBus or context.eventBus or events.globalBus
+
+    if not hasUsableActionTalent(actor, "sneak") then
+        return false, "Requires Sneak"
+    end
+
+    local locationInfo, reason = lookupInfiltrationLocation(actionData, context)
+    if not locationInfo then
+        return false, reason
+    end
+
+    local facts = collectInfiltrationFacts(locationInfo.location, actionData)
+    local subjectIds = collectInfiltrationSubjectIds(locationInfo.location, actionData)
+    local motif = getRequestField(actionData, "motif") or ("Infiltrated " .. locationInfo.name)
+
+    actor.infiltrations = actor.infiltrations or {}
+    local record = {
+        id = getRequestField(actionData, "infiltrationId") or
+            string.format("infiltration_%s_%d", tostring(actor.id or "actor"), #actor.infiltrations + 1),
+        actor = actor,
+        actorId = actor.id,
+        locationId = locationInfo.id,
+        locationName = locationInfo.name,
+        level = locationInfo.level,
+        facts = facts,
+        subjectIds = subjectIds,
+        motif = motif,
+        source = "sneak_infiltrate",
+        yesNoQuestions = {
+            trapped = "Is this location trapped?",
+            guarded = "Is this location guarded?",
+            hasSecret = "Does this location hide something?",
+            hasLoot = "Is there recoverable loot here?",
+        },
+    }
+    actor.infiltrations[#actor.infiltrations + 1] = record
+    actor.lastInfiltration = record
+
+    actor.motifs = actor.motifs or {}
+    appendUniqueText(actor.motifs, motif)
+
+    eventBus:emit("camp_action_resolved", {
+        action = "infiltrate",
+        talentId = "sneak",
+        actor = actor,
+        result = "location_infiltrated",
+        infiltration = record,
+        locationId = record.locationId,
+        locationName = record.locationName,
+        motif = motif,
+    })
+
+    return true, "location_infiltrated", record
 end
 
 local function resolveBeastMasterTalent(actor, actionData, eventBus)
@@ -2077,6 +2333,8 @@ function M.resolveUseTalent(actor, actionData, context, eventBus)
         return resolveWarStoriesTalent(actor, actionData, context, eventBus)
     elseif normalizedTalentId == "high_chant" then
         return resolveHighChantTalent(actor, actionData, context, eventBus)
+    elseif normalizedTalentId == "sneak" then
+        return M.resolveInfiltrate(actor, actionData, context, eventBus)
     elseif normalizedTalentId == "bookworm" then
         local book = actionData.book or actionData.target
         if not book then

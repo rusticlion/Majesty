@@ -114,6 +114,7 @@ function M.createCampScreen(config)
         -- Prompt overlay (S9.3)
         promptOverlay  = nil,       -- { text, callback }
         subscriptions  = {},
+        isDestroyed    = false,
 
         -- Fire animation
         fireTimer      = 0,
@@ -127,6 +128,8 @@ function M.createCampScreen(config)
     ----------------------------------------------------------------------------
 
     function screen:init()
+        self.isDestroyed = false
+
         -- Create character plates for guild
         self:createCharacterPlates()
 
@@ -140,7 +143,12 @@ function M.createCampScreen(config)
     end
 
     function screen:listen(eventType, callback)
-        local unsubscribe = self.eventBus:on(eventType, callback)
+        local unsubscribe = self.eventBus:on(eventType, function(data)
+            if self.isDestroyed then
+                return
+            end
+            callback(data)
+        end)
         self.subscriptions[#self.subscriptions + 1] = unsubscribe
         return unsubscribe
     end
@@ -153,6 +161,7 @@ function M.createCampScreen(config)
     end
 
     function screen:destroy()
+        self.isDestroyed = true
         self:unsubscribeEvents()
 
         for _, plate in ipairs(self.characterPlates or {}) do

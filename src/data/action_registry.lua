@@ -480,6 +480,17 @@ M.ACTIONS = {
         challengeAction = true,
     },
     {
+        id = "flee",
+        name = "Flee",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Retreat from a Challenge using the rulebook pursuit procedure.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        challengeAction = true,
+    },
+    {
         id = "pull_item_belt",
         name = "Pull Item from Belt",
         suit = M.SUITS.MISC,

@@ -24,6 +24,16 @@ local function countEntries(tableValue)
     return count
 end
 
+local function countWoundedTalents(talents)
+    local count = 0
+    for _, talent in pairs(talents or {}) do
+        if type(talent) == "table" and talent.wounded then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 local function sortedTalentIds(talents)
     local ids = {}
     if not talents then
@@ -230,6 +240,11 @@ function M.createEntity(config)
 
     nextId = nextId + 1
 
+    local initialWoundedTalents = countWoundedTalents(config.talents)
+    if initialWoundedTalents == 0 and config.woundedTalents then
+        initialWoundedTalents = config.woundedTalents
+    end
+
     local entity = {
         -- Identity
         id   = config.id or ("entity_" .. nextId),
@@ -263,7 +278,7 @@ function M.createEntity(config)
         armorNotches = 0,                      -- Current notches taken
 
         talentWoundSlots = config.talentWoundSlots or 2,  -- Max wounded talents (usually 2)
-        woundedTalents = 0,                                -- Current wounded talents
+        woundedTalents = initialWoundedTalents,            -- Current wounded talents
 
         -- Talents table (empty for base mobs, populated for adventurers)
         -- Used to verify there are actual talents to wound

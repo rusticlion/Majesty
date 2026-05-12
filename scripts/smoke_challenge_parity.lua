@@ -190,6 +190,96 @@ local function checkGroupTestResolution()
         fate_resolver.GROUP_RESULTS.FAILURE, "0 group-test hits should fail for the group")
     assertEqual(fate_resolver.resolveGroupTest({ greatFailure, failure }).result,
         fate_resolver.GROUP_RESULTS.DISASTER, "negative group-test hits should be a disaster")
+
+    local retreatResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local function makeRetreatParticipant(id, pentacles)
+        return base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            pentacles = pentacles or 0,
+        })
+    end
+    local function resolveRetreat(opts)
+        opts = opts or {}
+        local participants = opts.participants or {
+            makeRetreatParticipant("pc_retreat_fast", 4),
+            makeRetreatParticipant("pc_retreat_slow", 0),
+        }
+        local ended = nil
+        local controller = {
+            pcs = participants,
+            endChallenge = function(_, outcome, data)
+                ended = {
+                    outcome = outcome,
+                    data = data,
+                }
+            end,
+        }
+        local action = {
+            actor = participants[1],
+            card = major(5),
+            type = action_resolver.ACTION_TYPES.FLEE,
+            participants = participants,
+            challengeController = opts.challengeController or controller,
+            pursuit = opts.pursuit,
+            enemyMobility = opts.enemyMobility,
+            enemyTiedToLair = opts.enemyTiedToLair,
+            enemyWillNotPursue = opts.enemyWillNotPursue,
+            testResults = opts.testResults,
+            endChallenge = opts.endChallenge,
+        }
+        return retreatResolver:resolve(action), participants, ended
+    end
+
+    local fastRetreat, fastParticipants = resolveRetreat({ enemyMobility = "fast" })
+    assertTrue(not fastRetreat.success, "fast or magical pursuers should block retreat")
+    assertTrue(hasValue(fastRetreat.effects, "retreat_impossible"),
+        "blocked retreat should report impossible pursuit")
+    assertTrue(not fastParticipants[1].retreated, "blocked retreat should not mark PCs fled")
+
+    local noPursuit, noPursuitParticipants, noPursuitEnd = resolveRetreat({ enemyTiedToLair = true })
+    assertTrue(noPursuit.success, "tied-to-lair enemies should allow clean retreat")
+    assertTrue(hasValue(noPursuit.effects, "retreat_no_pursuit"), "no-pursuit retreat should be explicit")
+    assertTrue(noPursuitParticipants[1].retreated and noPursuitParticipants[2].retreated,
+        "clean retreat should mark the guild as fled")
+    assertEqual(noPursuitEnd and noPursuitEnd.outcome, "fled",
+        "successful retreat should end the Challenge as fled")
+
+    local pendingRetreat = resolveRetreat({ pursuit = "equivalent" })
+    assertTrue(not pendingRetreat.success and pendingRetreat.needsGroupTest,
+        "equivalent pursuit retreat should request the Pentacles group test")
+    assertEqual(pendingRetreat.groupTestAttribute, "pentacles",
+        "retreat group test should use Pentacles")
+
+    local cleanRetreat, _, cleanEnd = resolveRetreat({
+        testResults = { success, success },
+    })
+    assertTrue(cleanRetreat.success and cleanRetreat.escaped, "2 group-test hits should escape cleanly")
+    assertEqual(cleanRetreat.groupTest.hits, 2, "clean retreat should preserve group-test hits")
+    assertTrue(hasValue(cleanRetreat.effects, "retreat_clean"), "clean retreat should be reported")
+    assertEqual(cleanEnd and cleanEnd.outcome, "fled", "clean group-test retreat should end the Challenge")
+
+    local complicatedRetreat = resolveRetreat({
+        testResults = { success, failure },
+        endChallenge = false,
+    })
+    assertTrue(complicatedRetreat.success and complicatedRetreat.complication,
+        "1 group-test hit should escape with a GM complication")
+    assertTrue(hasValue(complicatedRetreat.effects, "retreat_complication"),
+        "complicated retreat should be reported")
+
+    local corneredRetreat, corneredParticipants, corneredEnd = resolveRetreat({
+        testResults = { failure, failure },
+    })
+    assertTrue(not corneredRetreat.success and corneredRetreat.cornered,
+        "0 group-test hits should leave the guild cornered")
+    assertTrue(hasValue(corneredRetreat.effects, "retreat_cornered"),
+        "cornered retreat should be reported")
+    assertTrue(not corneredParticipants[1].retreated, "failed retreat should not mark PCs fled")
+    assertTrue(corneredEnd == nil, "failed retreat should not end the Challenge")
 end
 
 local function buildLinearZones()
@@ -1424,6 +1514,28 @@ local function checkKeyedTalentWoundSlots()
     assertEqual(pc.woundedTalents, 2, "second talent wound should increment wound count")
     assertEqual(pc:takeWound("piercing"), "staggered", "wounds should cascade after keyed talents are exhausted")
 
+    local preWounded = base_entity.createEntity({
+        id = "pc_pre_wounded_keyed_talents",
+        name = "Pre-Wounded Keyed Talent PC",
+        isPC = true,
+        armorSlots = 0,
+        talentWoundSlots = 2,
+        talents = {
+            aegis = { mastered = true, wounded = true },
+            path_lore = { mastered = true, wounded = false },
+        },
+    })
+    assertEqual(preWounded.woundedTalents, 1,
+        "entities should initialize woundedTalents from keyed wounded talent flags")
+    assertEqual(preWounded:getWoundsTaken(), 1,
+        "pre-wounded keyed talents should count toward total wounds")
+    assertEqual(preWounded:healWound(), "talent_healed",
+        "pre-wounded keyed talents should be healable through the wound track")
+    assertEqual(preWounded.woundedTalents, 0,
+        "healing a pre-wounded keyed talent should synchronize the wound count")
+    assertTrue(not preWounded.talents.aegis.wounded,
+        "healing a pre-wounded keyed talent should clear the talent flag")
+
     local adventurer = entity_factory.createAdventurer({
         id = "adventurer_keyed_talents",
         name = "Keyed Talent Adventurer",
@@ -1457,6 +1569,22 @@ local function checkKeyedTalentWoundSlots()
         "healed direct adventurer talent slots should become available again")
     assertEqual(adventurer.woundedTalents, 2,
         "direct adventurer talent wound count should stay synchronized after healing")
+
+    local preWoundedAdventurer = entity_factory.createAdventurer({
+        id = "adventurer_pre_wounded_keyed_talents",
+        name = "Pre-Wounded Keyed Talent Adventurer",
+        talentWoundSlots = 2,
+        talents = {
+            aegis = { mastered = true, wounded = true },
+            ritualist = { mastered = false, wounded = false },
+        },
+    })
+    assertEqual(preWoundedAdventurer.woundedTalents, 1,
+        "adventurers should initialize woundedTalents after normalizing keyed talents")
+    assertTrue(preWoundedAdventurer:healTalent("aegis"),
+        "pre-wounded adventurer talents should be healable by id")
+    assertEqual(preWoundedAdventurer.woundedTalents, 0,
+        "direct healing should synchronize pre-wounded adventurer talent counts")
 end
 
 local function checkChosenPCWoundOptions()
@@ -3494,6 +3622,111 @@ local function checkChallengeActionFavorAndResolve()
     assertTrue(not hasValue(cancelled.effects, "action_favor"), "neutralized disfavor should not record action favor")
     assertTrue(not hasValue(cancelled.effects, "action_disfavor"), "neutralized disfavor should not record action disfavor")
 
+    local houseActor = base_entity.createEntity({
+        id = "pc_proud_house",
+        name = "Proud House",
+        isPC = true,
+        wands = 2,
+        talents = {
+            proud_and_ancient = { mastered = true },
+        },
+    })
+    houseActor.resolve = 1
+    houseActor.house = "Crowell"
+    local houseAlly = base_entity.createEntity({
+        id = "pc_proud_house_ally",
+        name = "Proud House Ally",
+        isPC = true,
+        swords = 1,
+    })
+    houseAlly.house = "Crowell"
+    local otherHouse = base_entity.createEntity({
+        id = "pc_other_house",
+        name = "Other House",
+        isPC = true,
+    })
+    otherHouse.house = "Mourn"
+    local deafHouse = base_entity.createEntity({
+        id = "pc_deaf_house",
+        name = "Deaf House",
+        isPC = true,
+    })
+    deafHouse.house = "Crowell"
+    deafHouse.conditions.deafened = true
+
+    local activeChallenge = { isActive = function() return true end }
+    local warCry = resolver:resolve({
+        actor = houseActor,
+        card = { name = "Six of Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        proudAndAncientWarCry = true,
+        allEntities = { houseActor, houseAlly, otherHouse, deafHouse },
+        challengeController = activeChallenge,
+    })
+    assertTrue(warCry.success, "Proud and Ancient should cry the house motto during Challenges")
+    assertEqual(houseActor.resolve, 0, "Proud and Ancient war cry should spend one Resolve")
+    assertEqual(warCry.affectedCount, 2, "Proud and Ancient should affect the actor and same-house listeners")
+    assertTrue(houseActor.nextActionFavor and houseAlly.nextActionFavor,
+        "Proud and Ancient should grant next-action favor to same-house listeners")
+    assertTrue(not otherHouse.nextActionFavor, "Proud and Ancient should not favor other houses")
+    assertTrue(not deafHouse.nextActionFavor, "Proud and Ancient should not favor listeners who cannot hear")
+
+    local warCryTarget = base_entity.createEntity({
+        id = "npc_war_cry_target",
+        name = "War Cry Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    local allyAttack = resolver:resolve({
+        actor = houseAlly,
+        target = warCryTarget,
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+    })
+    assertTrue(allyAttack.success, "Proud and Ancient next-action favor should turn a miss into a hit")
+    assertTrue(hasValue(allyAttack.effects, "proud_and_ancient_favor"),
+        "Proud and Ancient next-action favor should be recorded")
+    assertTrue(not houseAlly.nextActionFavor, "Proud and Ancient favor should be consumed by the next action")
+
+    local quietHouse = base_entity.createEntity({
+        id = "pc_quiet_house",
+        name = "Quiet House",
+        isPC = true,
+        talents = {
+            proud_and_ancient = { mastered = true },
+        },
+    })
+    quietHouse.resolve = 1
+    local noChallengeCry = resolver:resolve({
+        actor = quietHouse,
+        card = { name = "Six of Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        proudAndAncientWarCry = true,
+    })
+    assertTrue(not noChallengeCry.success, "Proud and Ancient war cry should require an active Challenge")
+    assertEqual(quietHouse.resolve, 1, "failed Proud and Ancient challenge gate should not spend Resolve")
+
+    local woundedHouse = base_entity.createEntity({
+        id = "pc_wounded_house",
+        name = "Wounded House",
+        isPC = true,
+        talents = {
+            proud_and_ancient = { mastered = true, wounded = true },
+        },
+    })
+    woundedHouse.resolve = 1
+    local woundedCry = resolver:resolve({
+        actor = woundedHouse,
+        card = { name = "Six of Wands", value = 6, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.SPEAK_INCANTATION,
+        proudAndAncientWarCry = true,
+        challengeController = activeChallenge,
+    })
+    assertTrue(not woundedCry.success, "Wounded Proud and Ancient should block the war cry")
+    assertEqual(woundedHouse.resolve, 1, "wounded Proud and Ancient should not spend Resolve")
+
     local emptyActor = base_entity.createEntity({
         id = "pc_empty_resolve",
         name = "Empty Resolve",
@@ -5346,6 +5579,67 @@ local function checkMonsterHunterAttackFavorTalent()
     assertTrue(not hasValue(wrongTarget.effects, "monster_hunter_attack_favor"),
         "non-specialization targets should not report Hunter favor")
 
+    local cityHunter = makeHunter("pc_city_monster_hunter", {
+        monster_hunter = {
+            mastered = true,
+        },
+    })
+    local hunterCityController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { cityHunter },
+    })
+    local ok, result, detail = hunterCityController:resolveAction(cityHunter, {
+        type = "change_monster_hunter_foe",
+        foe = "Beast",
+        specialization = "cockatrice",
+        reason = "The last cockatrice made this personal.",
+    })
+    assertTrue(ok, "Monster Hunter should be able to change hated foe as a City Action")
+    assertEqual(result, "monster_hunter_foe_chosen",
+        "Monster Hunter City Action should report chosen foe")
+    assertEqual(cityHunter.talents.monster_hunter.foe, "Beast",
+        "Monster Hunter City Action should store the hated foe")
+    assertEqual(cityHunter.talents.monster_hunter.specialization, "cockatrice",
+        "Monster Hunter City Action should store the specialization")
+    assertEqual(cityHunter.talents.monster_hunter.motif, "Beast Hunter",
+        "Monster Hunter City Action should expose the generated Hunter motif")
+    assertTrue(hunterCityController:hasActed(cityHunter),
+        "Monster Hunter foe change should consume the actor's City Action")
+
+    local cityHunterFavored = resolver:resolve({
+        actor = cityHunter,
+        target = makeTarget("npc_city_hunter_cockatrice", { "beast", "cockatrice" }),
+        card = { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 9,
+        challengeController = activeChallenge,
+    })
+    assertTrue(cityHunterFavored.success,
+        "changed Monster Hunter specialization should feed Attack favor")
+    assertTrue(hasValue(cityHunterFavored.effects, "monster_hunter_attack_favor"),
+        "changed Monster Hunter specialization should report Hunter favor")
+
+    local woundedCityHunter = makeHunter("pc_city_wounded_monster_hunter", {
+        monster_hunter = {
+            mastered = true,
+            wounded = true,
+        },
+    })
+    local woundedHunterCityController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { woundedCityHunter },
+    })
+    ok, result = woundedHunterCityController:resolveAction(woundedCityHunter, {
+        type = "change_monster_hunter_foe",
+        foe = "Beast",
+        specialization = "cockatrice",
+    })
+    assertTrue(not ok, "wounded Monster Hunter should not change hated foe")
+    assertEqual(result, "Monster Hunter talent is wounded",
+        "wounded Monster Hunter City Action should explain the wounded talent")
+    assertTrue(not woundedHunterCityController:hasActed(woundedCityHunter),
+        "failed Monster Hunter foe change should not consume the City Action")
+
     local woundedHunter = makeHunter("pc_wounded_hunter", {
         monster_hunter = {
             mastered = true,
@@ -5924,6 +6218,84 @@ local function checkGreaterDoomAttackPairing()
     assertEqual(action.greaterDoomCard.value, 17, "greater doom card should be attached as rider")
     assertEqual(action.greaterDoom.id, "web", "attack rider should carry the selected doom")
     assertEqual(#ai.hand, 0, "paired doom attack should spend both cards")
+
+    local function makeMob(id)
+        return {
+            id = id,
+            name = id,
+            zone = "near",
+            isPC = false,
+            swords = 0,
+            conditions = {},
+        }
+    end
+    local mobTarget = {
+        id = "pc_mob_rule_target",
+        name = "Mob Rule Target",
+        zone = "near",
+        isPC = true,
+        defense = 5,
+        conditions = {},
+    }
+    local mobs = {}
+    for i = 1, 8 do
+        mobs[i] = makeMob("npc_mob_rule_" .. i)
+    end
+    local mobAI = npc_ai.createNPCAI({
+        eventBus = events.createEventBus(),
+        challengeController = {
+            npcs = { mobs[1] },
+            allCombatants = { mobs[1], mobTarget },
+        },
+    })
+    assertTrue(mobAI:checkMobRule(mobs[1], mobTarget) == nil,
+        "one attacker should not trigger mob rule")
+
+    mobAI.challengeController.npcs = { mobs[1], mobs[2] }
+    local twoAttackers = mobAI:checkMobRule(mobs[1], mobTarget)
+    assertTrue(twoAttackers and twoAttackers.favor, "two attackers should gain mob-rule favor")
+    assertTrue(not twoAttackers.piercing and not twoAttackers.critical,
+        "two attackers should not gain Piercing or Critical")
+    assertTrue(twoAttackers.attackBonus == nil, "mob rule should not add a numeric attack bonus")
+
+    mobAI.challengeController.npcs = { mobs[1], mobs[2], mobs[3] }
+    local threeAttackers = mobAI:checkMobRule(mobs[1], mobTarget)
+    assertTrue(threeAttackers and threeAttackers.favor and not threeAttackers.piercing,
+        "three attackers should still only have mob-rule favor")
+
+    mobAI.challengeController.npcs = { mobs[1], mobs[2], mobs[3], mobs[4] }
+    local fourAttackers = mobAI:checkMobRule(mobs[1], mobTarget)
+    assertTrue(fourAttackers and fourAttackers.piercing and not fourAttackers.critical,
+        "four attackers should add Piercing damage")
+    local mobAction = mobAI:createAttackAction(mobs[1], mobTarget, major(3))
+    assertTrue(mobAction.favor, "mob-rule attacks should enter the resolver with favor")
+    assertTrue(mobAction.mobRuleBonus and mobAction.mobRuleBonus.piercing,
+        "created mob-rule actions should preserve Piercing metadata")
+
+    mobAI.challengeController.npcs = {
+        mobs[1], mobs[2], mobs[3], mobs[4], mobs[5], mobs[6], mobs[7], mobs[8],
+    }
+    local eightAttackers = mobAI:checkMobRule(mobs[1], mobTarget)
+    assertTrue(eightAttackers and eightAttackers.critical,
+        "eight attackers should escalate mob-rule damage to Critical")
+
+    local damageType = nil
+    mobTarget.takeWound = function(_, incomingType)
+        damageType = incomingType
+        return "injured"
+    end
+    local mobResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local criticalAction = mobAI:createAttackAction(mobs[1], mobTarget, major(3))
+    criticalAction.targetInitiative = 5
+    local criticalResult = mobResolver:resolve(criticalAction)
+    assertTrue(criticalResult.success, "mob-rule favor should make the low card hit")
+    assertTrue(hasValue(criticalResult.effects, "action_favor"),
+        "mob-rule favor should flow through the central favor pipeline")
+    assertTrue(hasValue(criticalResult.effects, "mob_critical"),
+        "eight-attacker mob rule should report Critical damage")
+    assertEqual(damageType, "critical", "eight-attacker mob rule should apply Critical Wounds")
 end
 
 local function checkWebGreaterDoomResolution()
@@ -9372,6 +9744,7 @@ local function checkCampTrainAction()
         isPC = true,
     })
     trainee.xp = 3
+    trainee.path = "pentacles"
     trainee.talents = {}
 
     local trainer = base_entity.createEntity({
@@ -9409,6 +9782,7 @@ local function checkCampTrainAction()
     assertEqual(result, "training_complete", "Train should report completion")
     assertEqual(trainee.xp, 1, "Train should spend invested XP")
     assertTrue(trainee.talents.war_stories ~= nil, "Train should create the mentored talent")
+    assertTrue(trainee.talents.war_stories.mentored, "cross-path Train should mark the talent as mentored")
     assertTrue(not trainee.talents.war_stories.mastered, "two invested XP should not master the talent")
     assertEqual(trainee.talents.war_stories.xp_invested, 2, "Train should record invested XP")
     assertEqual(trainee.talents.war_stories.uses_remaining, 2, "Train should prepare uses equal to XP invested")
@@ -9432,6 +9806,56 @@ local function checkCampTrainAction()
     }, {}, events.createEventBus())
     assertTrue(not ok, "Train should require XP to invest")
     assertEqual(result, "Not enough XP", "missing XP should explain Train failure")
+
+    local kinTeacher = base_entity.createEntity({
+        id = "pc_kin_train_teacher",
+        name = "Kin Train Teacher",
+        isPC = true,
+        talents = {
+            proud_and_ancient = { mastered = true },
+        },
+    })
+    local kinStudent = base_entity.createEntity({
+        id = "pc_kin_train_student",
+        name = "Kin Train Student",
+        isPC = true,
+    })
+    kinStudent.path = "swords"
+    kinStudent.kin = "human"
+    kinStudent.xp = 3
+    kinStudent.talents = {}
+    ok, result = camp_actions.resolveTrain(kinStudent, kinTeacher, {
+        talentId = "proud_and_ancient",
+        xp = 1,
+    }, {}, events.createEventBus())
+    assertTrue(not ok, "Train should reject kin talents")
+    assertEqual(result, "Kin talents cannot be trained", "kin talent training should explain the rulebook restriction")
+    assertEqual(kinStudent.xp, 3, "rejected kin talent training should not spend XP")
+    assertTrue(kinStudent.talents.proud_and_ancient == nil, "rejected kin talent training should not create the talent")
+
+    local pathStudent = base_entity.createEntity({
+        id = "pc_path_train_student",
+        name = "Path Train Student",
+        isPC = true,
+    })
+    pathStudent.path = "swords"
+    pathStudent.xp = 1
+    pathStudent.talents = {}
+    local pathTeacher = base_entity.createEntity({
+        id = "pc_path_train_teacher",
+        name = "Path Train Teacher",
+        isPC = true,
+        talents = {
+            aegis = { mastered = true },
+        },
+    })
+    ok, result = camp_actions.resolveTrain(pathStudent, pathTeacher, {
+        talentId = "aegis",
+        xp = 1,
+    }, {}, events.createEventBus())
+    assertTrue(ok, "Train should allow an adventurer to invest in their own path talent")
+    assertTrue(pathStudent.talents.aegis.pathTrained, "own-path Train should record path training")
+    assertTrue(not pathStudent.talents.aegis.mentored, "own-path Train should not mark the talent as mentored")
 
     trainee.xp = 5
     ok, result = camp_actions.resolveTrain(trainee, trainer, {
@@ -9666,6 +10090,234 @@ local function checkCampUseTalentAction()
     assertTrue(#(bookworm.bookwormBooks or {}) == 1, "Bookworm should record read books")
     assertTrue(hasValue(bookworm.motifs, "Guardian Shrine and tomb astronomy"),
         "Bookworm should add read books as lore motifs")
+
+    local sneak = base_entity.createEntity({
+        id = "pc_sneak_infiltrator",
+        name = "Sneak Infiltrator",
+        isPC = true,
+        motifs = {},
+        talents = {
+            sneak = { mastered = true },
+        },
+    })
+    local webRoom = room_manager.createRoomInstance({
+        id = "105_hall_of_solemnity",
+        name = "Hall of Solemnity",
+        level = 1,
+        features = {
+            {
+                id = "silvery_webs",
+                name = "silvery webs",
+                type = "hazard",
+                trap = { damage = 1 },
+                hidden_description = "Thin web-lines cross the floor.",
+                loreSubjectId = "hazard_silvery_webs",
+            },
+        },
+    }, "105_hall_of_solemnity")
+    webRoom.discovered = true
+    local infiltrateBus = events.createEventBus()
+    local infiltrateEvent = nil
+    infiltrateBus:on("camp_action_resolved", function(data)
+        if data.result == "location_infiltrated" then
+            infiltrateEvent = data
+        end
+    end)
+    local availableSneakActions = camp_actions.getAvailableActions(sneak, { sneak })
+    local sawInfiltrate = false
+    for _, action in ipairs(availableSneakActions) do
+        if action.id == "infiltrate" then
+            sawInfiltrate = true
+            break
+        end
+    end
+    assertTrue(sawInfiltrate, "Sneak should expose the Infiltrate Camp Action")
+    ok, result, detail = camp_actions.resolveAction({
+        type = "infiltrate",
+        actor = sneak,
+        roomId = "105_hall_of_solemnity",
+    }, {
+        eventBus = infiltrateBus,
+        rooms = {
+            ["105_hall_of_solemnity"] = webRoom,
+        },
+        knownLocations = {
+            ["105_hall_of_solemnity"] = true,
+        },
+        currentDungeonLevel = 1,
+    })
+    assertTrue(ok, "Sneak should infiltrate a known location")
+    assertEqual(result, "location_infiltrated", "Sneak Infiltrate should report the location result")
+    assertEqual(detail.locationId, "105_hall_of_solemnity", "Infiltrate should record the infiltrated location")
+    assertTrue(detail.facts.trapped, "Infiltrate should extract trap facts for later yes/no lore")
+    assertTrue(detail.facts.hasSecret, "Infiltrate should extract hidden-detail facts")
+    assertTrue(hasValue(detail.subjectIds, "hazard_silvery_webs"),
+        "Infiltrate should preserve keyed lore subjects from the location")
+    assertTrue(hasValue(sneak.motifs, detail.motif), "Infiltrate should add a lore-bearing motif")
+    assertTrue(infiltrateEvent and infiltrateEvent.infiltration == detail,
+        "Infiltrate should emit camp resolution details")
+
+    local engine = require('logic.bid_lore_engine').createBidLoreEngine({})
+    local infiltratedLore = engine:adjudicate({
+        actor = sneak,
+        subjectId = "hazard_silvery_webs",
+        questionType = "environmental_risk",
+        motif = detail.motif,
+    })
+    assertEqual(infiltratedLore.verdict, "accepted",
+        "Infiltrate motif should support subsequent Bid Lore about the location")
+
+    local unknownSneak = base_entity.createEntity({
+        id = "pc_unknown_sneak",
+        name = "Unknown Sneak",
+        isPC = true,
+        talents = {
+            sneak = { mastered = true },
+        },
+    })
+    ok, result = camp_actions.resolveAction({
+        type = "infiltrate",
+        actor = unknownSneak,
+        roomId = "105_hall_of_solemnity",
+        known = false,
+    }, {
+        eventBus = events.createEventBus(),
+        rooms = {
+            ["105_hall_of_solemnity"] = webRoom,
+        },
+        knownLocations = {},
+        currentDungeonLevel = 1,
+    })
+    assertTrue(not ok, "Infiltrate should require a known location")
+    assertEqual(result, "Location must be known", "unknown locations should explain the Sneak gate")
+
+    local function makeSneakActor(id, talentEntry, resolveAmount)
+        local actor = base_entity.createEntity({
+            id = id,
+            name = id,
+            isPC = true,
+            talents = {
+                sneak = talentEntry or { mastered = true },
+            },
+        })
+        actor.resolve = { current = resolveAmount or 2, max = 2 }
+        return actor
+    end
+
+    local sneakResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local dramaticSneak = makeSneakActor("pc_dramatic_sneak", nil, 2)
+    local sneakStarted = sneakResolver:resolve({
+        actor = dramaticSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+        mode = "go_sneaking",
+        roomId = "105_hall_of_solemnity",
+    })
+    assertTrue(sneakStarted.success, "Sneak should support a cardless go-sneaking declaration")
+    assertTrue(dramaticSneak.sneaking and dramaticSneak.offStage, "go-sneaking should put the actor off-stage")
+    assertEqual(dramaticSneak.resolve.current, 2, "go-sneaking should not spend Resolve")
+
+    local ambushArrival = sneakResolver:resolve({
+        actor = dramaticSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+        arriveFromSneak = true,
+        roomId = "105_hall_of_solemnity",
+    })
+    assertTrue(ambushArrival.success, "Sneak should resolve a dramatic arrival before combat")
+    assertTrue(ambushArrival.ambush, "dramatic arrival before a Challenge should count as an ambush")
+    assertTrue(hasValue(ambushArrival.effects, "sneak_ambush"), "ambush arrival should be reported")
+    assertEqual(dramaticSneak.resolve.current, 1, "dramatic Sneak arrival should spend one Resolve")
+    assertTrue(not dramaticSneak.sneaking and not dramaticSneak.offStage,
+        "successful Sneak arrival should clear off-stage state")
+
+    local freeSneak = makeSneakActor("pc_free_sneak", nil, 2)
+    sneakResolver:resolve({
+        actor = freeSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+    })
+    local freeArrival = sneakResolver:resolve({
+        actor = freeSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+        arriveFromSneak = true,
+        tension = false,
+    })
+    assertTrue(freeArrival.success, "Sneak should rejoin freely once tension evaporates")
+    assertTrue(hasValue(freeArrival.effects, "sneak_free_rejoin"), "free Sneak rejoin should be reported")
+    assertEqual(freeSneak.resolve.current, 2, "free Sneak rejoin should not spend Resolve")
+
+    local challengeSneak = makeSneakActor("pc_challenge_sneak", nil, 2)
+    local activeController = {
+        pcs = {},
+        allCombatants = {},
+        isActive = function()
+            return true
+        end,
+    }
+    sneakResolver:resolve({
+        actor = challengeSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+    })
+    local challengeArrival = sneakResolver:resolve({
+        actor = challengeSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+        arriveFromSneak = true,
+        challengeController = activeController,
+    })
+    assertTrue(challengeArrival.success, "Sneak should join an active Challenge dramatically")
+    assertTrue(challengeArrival.challengeJoined, "active Challenge Sneak arrival should join the flow")
+    assertTrue(not challengeArrival.ambush, "active Challenge Sneak arrival should not create a new ambush")
+    assertTrue(hasValue(challengeArrival.effects, "sneak_joined_challenge"),
+        "active Challenge Sneak arrival should be reported")
+    assertEqual(challengeSneak.resolve.current, 1, "active Challenge Sneak arrival should spend Resolve")
+    assertEqual(#activeController.pcs, 1, "Sneak arrival should add the actor to controller PCs once")
+    assertEqual(activeController.pcs[1], challengeSneak, "Sneak arrival should add the right PC")
+    assertEqual(#activeController.allCombatants, 1,
+        "Sneak arrival should add the actor to all combatants once")
+
+    local woundedSneak = makeSneakActor("pc_wounded_sneak", { mastered = true, wounded = true }, 2)
+    local woundedStart = sneakResolver:resolve({
+        actor = woundedSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+    })
+    assertTrue(not woundedStart.success, "wounded Sneak should not allow go-sneaking")
+    assertTrue(hasValue(woundedStart.effects, "talent_missing_or_wounded"),
+        "wounded Sneak should report the talent gate")
+    assertEqual(woundedSneak.resolve.current, 2, "wounded Sneak should not spend Resolve")
+
+    local implausibleSneak = makeSneakActor("pc_implausible_sneak", nil, 2)
+    sneakResolver:resolve({
+        actor = implausibleSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+    })
+    local implausibleArrival = sneakResolver:resolve({
+        actor = implausibleSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+        arriveFromSneak = true,
+        plausible = false,
+    })
+    assertTrue(not implausibleArrival.success, "implausible Sneak arrival should be blocked")
+    assertTrue(hasValue(implausibleArrival.effects, "sneak_arrival_implausible"),
+        "implausible Sneak arrival should report the positional gate")
+    assertEqual(implausibleSneak.resolve.current, 2, "implausible arrival should not spend Resolve")
+    assertTrue(implausibleSneak.sneaking and implausibleSneak.offStage,
+        "blocked Sneak arrival should keep the actor off-stage")
+
+    local brokeSneak = makeSneakActor("pc_broke_sneak", nil, 0)
+    sneakResolver:resolve({
+        actor = brokeSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+    })
+    local brokeArrival = sneakResolver:resolve({
+        actor = brokeSneak,
+        type = action_resolver.ACTION_TYPES.SNEAK,
+        arriveFromSneak = true,
+    })
+    assertTrue(not brokeArrival.success, "Sneak dramatic arrival should require Resolve while tension remains")
+    assertTrue(hasValue(brokeArrival.effects, "resolve_missing"),
+        "broke Sneak dramatic arrival should report missing Resolve")
+    assertTrue(brokeSneak.sneaking and brokeSneak.offStage,
+        "failed Resolve spend should keep the Sneak actor off-stage")
 
     local surgeon = base_entity.createEntity({
         id = "pc_chirurgeon",
@@ -12249,21 +12901,25 @@ function checkAppendixDCityLayoutGeneration()
     assertEqual(result, "District City Action unavailable",
         "missing district action should explain layout availability")
 
-    local prophet = base_entity.createEntity({
-        id = "pc_district_prophet",
-        name = "District Prophet",
-        isPC = true,
-    })
-    prophet.inventory = inventory.createInventory()
-    local unimplementedController = city_phase.createCityPhaseController({
-        eventBus = events.createEventBus(),
-        guild = { prophet },
-        cityLayout = generated,
-    })
-    ok, result = unimplementedController:resolveDistrictAction(prophet, "pale_prophecies")
-    assertTrue(not ok, "unimplemented district actions should be recognized but not resolved")
-    assertEqual(result, "District City Action not implemented",
-        "unimplemented district action should distinguish implementation gaps")
+    local uniqueActions, missingAliases = {}, {}
+    for _, suitDistricts in pairs(city_districts.districts) do
+        for _, district in pairs(suitDistricts) do
+            for _, districtAction in ipairs(district.specialCityActions or {}) do
+                uniqueActions[districtAction.id] = true
+            end
+        end
+    end
+    local totalDistrictActionIds = 0
+    for actionId in pairs(uniqueActions) do
+        totalDistrictActionIds = totalDistrictActionIds + 1
+        if not city_phase.DISTRICT_ACTION_ALIASES[actionId] then
+            missingAliases[#missingAliases + 1] = actionId
+        end
+    end
+    table.sort(missingAliases)
+    assertEqual(totalDistrictActionIds, 59, "Appendix D should expose 59 unique special district action ids")
+    assertEqual(#missingAliases, 0,
+        "Appendix D district actions should all have City Phase aliases: " .. table.concat(missingAliases, ", "))
 
     local actionLayout = city_phase.generateCityLayout({
         cards = {
@@ -12591,6 +13247,1299 @@ function checkAppendixDPersonalDistrictActions()
     assertEqual(leechPatient.gold, 0, "two-stage leeching should cost 40g")
     assertTrue(leechPatient.afflictions.red_welts == nil,
         "Undergo leeching should remove the paid-for affliction")
+
+    local lowPentaclesLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Ace of Pentacles", value = 1, suit = constants.SUITS.PENTACLES },
+            { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+            { name = "Three of Pentacles", value = 3, suit = constants.SUITS.PENTACLES },
+            { name = "Four of Pentacles", value = 4, suit = constants.SUITS.PENTACLES },
+            { name = "Five of Pentacles", value = 5, suit = constants.SUITS.PENTACLES },
+            { name = "Six of Pentacles", value = 6, suit = constants.SUITS.PENTACLES },
+            { name = "Seven of Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+            { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+        },
+    })
+    assertTrue(lowPentaclesLayout ~= nil, "low Pentacles district action layout should generate")
+
+    local bodyHauler = base_entity.createEntity({
+        id = "pc_district_body_hauler",
+        name = "District Body Hauler",
+        isPC = true,
+    })
+    bodyHauler.inventory = inventory.createInventory()
+    local corpseBundle = inventory.createItem({
+        id = "corpse_bundle",
+        name = "Body-Shaped Bundle",
+        type = "corpse",
+        isCorpse = true,
+    })
+    bodyHauler.inventory:addItem(corpseBundle, inventory.LOCATIONS.PACK)
+    local bodyController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { bodyHauler },
+        cityLayout = lowPentaclesLayout,
+    })
+    ok, result, detail = bodyController:resolveDistrictAction(bodyHauler, "dispose_of_bodies", {
+        bodyId = "corpse_bundle",
+    })
+    assertTrue(ok, "Licehouse district action should dispose of bodies")
+    assertEqual(result, "bodies_disposed", "Dispose of bodies should report completion")
+    assertTrue(bodyHauler.inventory:findItem("corpse_bundle") == nil,
+        "Dispose of bodies should remove a carried body-shaped bundle")
+    assertTrue(bodyHauler.disposedBodies[1].noQuestionsAsked,
+        "Dispose of bodies should record the no-questions-asked service")
+
+    local adopter = base_entity.createEntity({
+        id = "pc_district_adopter",
+        name = "District Adopter",
+        isPC = true,
+    })
+    local adoptionController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { adopter },
+        cityLayout = lowPentaclesLayout,
+    })
+    ok, result, detail = adoptionController:resolveDistrictAction(adopter, "adopt", {
+        name = "Mottle",
+    })
+    assertTrue(ok, "Orphanarium district action should adopt a ward")
+    assertEqual(result, "ward_adopted", "Adopt should report completion")
+    assertEqual(adopter.wards[1].name, "Mottle", "Adopt should record the ward")
+    assertTrue(adopter.wards[1].citySupportStaff and adopter.wards[1].canEnterUnderworld == false,
+        "adopted wards should be City support staff, not crawl companions")
+    assertTrue(adopter.soleInheritor == adopter.wards[1],
+        "adopted wards should default to sole inheritor")
+
+    local fugitive = base_entity.createEntity({
+        id = "pc_district_fugitive",
+        name = "District Fugitive",
+        isPC = true,
+    })
+    local gambolController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { fugitive },
+        cityLayout = lowPentaclesLayout,
+    })
+    ok, result, detail = gambolController:resolveDistrictAction(fugitive, "lay_high", {
+        offendedParty = "The All-Watch",
+        duration = "one City Phase",
+    })
+    assertTrue(ok, "Gambol district action should let adventurers lay high")
+    assertEqual(result, "laid_high", "Lay high should report completion")
+    assertEqual(fugitive.layingHigh[1].pursuer, "The All-Watch",
+        "Lay high should record the offended party")
+    assertTrue(fugitive.layingHigh[1].pursuerWastesTimeAndMoney,
+        "Lay high should record that pursuers waste time and money")
+
+    local fence = base_entity.createEntity({
+        id = "pc_district_fence",
+        name = "District Fence",
+        isPC = true,
+    })
+    fence.gold = 3
+    fence.inventory = inventory.createInventory()
+    local falseCoinDies = inventory.createItem({
+        id = "false_coin_dies",
+        name = "False Coin Dies",
+        type = "illicit_good",
+    })
+    fence.inventory:addItem(falseCoinDies, inventory.LOCATIONS.PACK)
+    local curiaController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { fence },
+        cityLayout = lowPentaclesLayout,
+    })
+    ok, result, detail = curiaController:resolveDistrictAction(fence, "fence_goods", {
+        itemId = "false_coin_dies",
+        price = 125,
+    })
+    assertTrue(ok, "Curio Curia district action should fence illicit goods")
+    assertEqual(result, "goods_fenced", "Fence goods should report completion")
+    assertEqual(fence.gold, 128, "Fence goods should pay the GM-set fair price")
+    assertTrue(fence.inventory:findItem("false_coin_dies") == nil,
+        "Fence goods should remove the fenced possession")
+    assertTrue(fence.fencedGoods[1].fairPriceProcedure,
+        "Fence goods should record use of the fair-price procedure")
+
+    local latePentaclesLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Seven of Pentacles", value = 7, suit = constants.SUITS.PENTACLES },
+            { name = "Eight of Pentacles", value = 8, suit = constants.SUITS.PENTACLES },
+            { name = "Nine of Pentacles", value = 9, suit = constants.SUITS.PENTACLES },
+            { name = "Page of Pentacles", value = constants.FACE_VALUES.PAGE, suit = constants.SUITS.PENTACLES },
+            { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+            { name = "Knight of Pentacles", value = constants.FACE_VALUES.KNIGHT, suit = constants.SUITS.PENTACLES },
+            { name = "Queen of Pentacles", value = constants.FACE_VALUES.QUEEN, suit = constants.SUITS.PENTACLES },
+            { name = "King of Pentacles", value = constants.FACE_VALUES.KING, suit = constants.SUITS.PENTACLES },
+        },
+    })
+    assertTrue(latePentaclesLayout ~= nil, "late Pentacles district action layout should generate")
+
+    local mutant = base_entity.createEntity({
+        id = "pc_district_mutant",
+        name = "District Mutant",
+        isPC = true,
+    })
+    local mutationController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { mutant },
+        cityLayout = latePentaclesLayout,
+    })
+    ok, result, detail = mutationController:resolveDistrictAction(mutant, "mutation", {
+        name = "Eyestalks",
+        description = "Can peer around corners.",
+    })
+    assertTrue(ok, "Cloaca Maxima district action should grant a random mutation")
+    assertEqual(result, "mutation_gained", "Mutation should report completion")
+    assertEqual(mutant.mutations[1].name, "Eyestalks", "Mutation should store the rolled mutation")
+
+    local scavenger = base_entity.createEntity({
+        id = "pc_district_doodlebugger",
+        name = "District Doodlebugger",
+        isPC = true,
+    })
+    scavenger.inventory = inventory.createInventory()
+    local lostUnderworldItem = inventory.createItem({
+        id = "lost_orichalcum_spoon",
+        name = "Lost Orichalcum Spoon",
+        type = "treasure",
+    })
+    local doodleController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { scavenger },
+        cityLayout = latePentaclesLayout,
+    })
+    ok, result, detail = doodleController:resolveDistrictAction(scavenger, "doodlebug", {
+        lostItem = lostUnderworldItem,
+        found = true,
+    })
+    assertTrue(ok, "Mount of Broken Amphorae district action should search for a lost item")
+    assertEqual(result, "lost_item_found", "Doodlebug should report a successful find")
+    assertTrue(scavenger.inventory:findItem("lost_orichalcum_spoon") ~= nil,
+        "Doodlebug should return the found lost Underworld item to inventory")
+    assertEqual(scavenger.doodlebugSearches[1].chance, 0.5,
+        "Doodlebug should record the rulebook 50 percent chance")
+
+    local diner = base_entity.createEntity({
+        id = "pc_district_diner",
+        name = "District Diner",
+        isPC = true,
+    })
+    diner.inventory = inventory.createInventory()
+    local monsterSteak = inventory.createItem({
+        id = "flailsnail_steak",
+        name = "Flailsnail Steak",
+        type = "monster_meat",
+        properties = { underworldMeat = true },
+    })
+    diner.inventory:addItem(monsterSteak, inventory.LOCATIONS.PACK)
+    local diningController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { diner },
+        cityLayout = latePentaclesLayout,
+    })
+    ok, result, detail = diningController:resolveDistrictAction(diner, "attend_miss_kinseys_dining_club", {
+        meatId = "flailsnail_steak",
+        question = "What dreams under the flooded shrine?",
+        rumor = "Something old breathes there when the moon is hidden.",
+    })
+    assertTrue(ok, "Lichyard Market district action should admit diners with strange monster meat")
+    assertEqual(result, "miss_kinseys_dinner_attended", "Miss Kinsey's dinner should report completion")
+    assertTrue(diner.inventory:findItem("flailsnail_steak") == nil,
+        "Miss Kinsey's dinner should consume the monster steak entry cost")
+    assertEqual(diner.missKinseyDinners[1].rumor,
+        "Something old breathes there when the moon is hidden.",
+        "Miss Kinsey's dinner should record the Underworld rumor")
+
+    local dwarfPatron = base_entity.createEntity({
+        id = "pc_district_dwarven_patron",
+        name = "District Dwarven Patron",
+        isPC = true,
+    })
+    dwarfPatron.gold = 150
+    local mastercraftController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { dwarfPatron },
+        cityLayout = latePentaclesLayout,
+    })
+    ok, result, detail = mastercraftController:resolveDistrictAction(dwarfPatron, "commission_dwarven_mastercraft", {
+        description = "dwarven lamp",
+        syllables = 2,
+        improvement = "may flicker one additional time",
+    })
+    assertTrue(ok, "Colonies district action should commission dwarven mastercraft")
+    assertEqual(result, "dwarven_mastercraft_commissioned",
+        "Dwarven mastercraft should report completion")
+    assertEqual(dwarfPatron.gold, 50, "Dwarven mastercraft should cost 50g per syllable")
+    assertTrue(detail.commission.dwarven and detail.commission.mastercraft,
+        "Dwarven mastercraft should record the superior craft flags")
+
+    local assassinPatron = base_entity.createEntity({
+        id = "pc_district_assassin_patron",
+        name = "District Assassin Patron",
+        isPC = true,
+    })
+    assassinPatron.gold = 6000
+    local assassinationController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { assassinPatron },
+        cityLayout = latePentaclesLayout,
+    })
+    ok, result, detail = assassinationController:resolveDistrictAction(assassinPatron, "contract_assassination", {
+        targetName = "Count Varro of the Wide World",
+        price = 5000,
+    })
+    assertTrue(ok, "Court of Coins district action should contract an assassination")
+    assertEqual(result, "assassination_contracted", "Contract assassination should report completion")
+    assertEqual(assassinPatron.gold, 1000, "Contract assassination should spend the quoted price")
+    assertTrue(assassinPatron.assassinationContracts[1].withinMonth,
+        "Contract assassination should record the within-the-month promise")
+
+    local underworldPatron = base_entity.createEntity({
+        id = "pc_district_bad_assassin_patron",
+        name = "District Bad Assassin Patron",
+        isPC = true,
+    })
+    underworldPatron.gold = 6000
+    local underworldAssassinationController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { underworldPatron },
+        cityLayout = latePentaclesLayout,
+    })
+    ok, result = underworldAssassinationController:resolveDistrictAction(underworldPatron, "contract_assassination", {
+        targetName = "The Tomb Guardian",
+        location = "underworld",
+        price = 5000,
+    })
+    assertTrue(not ok, "Court of Coins should reject Underworld targets")
+    assertEqual(result, "Court of Coins only targets the Wide World",
+        "Contract assassination should explain the Wide World restriction")
+
+    local wandsSocialLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+            { name = "Ten of Wands", value = 10, suit = constants.SUITS.WANDS },
+            { name = "Page of Wands", value = constants.FACE_VALUES.PAGE, suit = constants.SUITS.WANDS },
+            { name = "Knight of Wands", value = constants.FACE_VALUES.KNIGHT, suit = constants.SUITS.WANDS },
+            { name = "King of Wands", value = constants.FACE_VALUES.KING, suit = constants.SUITS.WANDS },
+            { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+            { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+            { name = "Four of Cups", value = 4, suit = constants.SUITS.CUPS },
+            { name = "Five of Cups", value = 5, suit = constants.SUITS.CUPS },
+            { name = "Six of Cups", value = 6, suit = constants.SUITS.CUPS },
+            { name = "Seven of Cups", value = 7, suit = constants.SUITS.CUPS },
+            { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+            { name = "Nine of Cups", value = 9, suit = constants.SUITS.CUPS },
+            { name = "Ten of Cups", value = 10, suit = constants.SUITS.CUPS },
+            { name = "Queen of Cups", value = constants.FACE_VALUES.QUEEN, suit = constants.SUITS.CUPS },
+            { name = "King of Cups", value = constants.FACE_VALUES.KING, suit = constants.SUITS.CUPS },
+        },
+    })
+    assertTrue(wandsSocialLayout ~= nil, "Wands social district action layout should generate")
+
+    local picnicHost = base_entity.createEntity({
+        id = "pc_district_picnic_host",
+        name = "District Picnic Host",
+        isPC = true,
+    })
+    local picnicGuest = base_entity.createEntity({
+        id = "pc_district_picnic_guest",
+        name = "District Picnic Guest",
+        isPC = true,
+    })
+    local picnicController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { picnicHost, picnicGuest },
+        cityLayout = wandsSocialLayout,
+    })
+    ok, result, detail = picnicController:resolveDistrictAction(picnicHost, "picnic", {
+        participants = { picnicGuest },
+        backstories = {
+            pc_district_picnic_host = "I deserted a doomed shrine guard.",
+            pc_district_picnic_guest = "I once served a rose vampire.",
+        },
+    })
+    assertTrue(ok, "Garden of Ravenous Roses district action should host a picnic")
+    assertEqual(result, "picnic_shared", "Picnic should report completion")
+    assertEqual(#picnicHost.picnics[1].shares, 2, "Picnic should record each backstory share")
+    assertTrue(picnicController:hasActed(picnicGuest), "Picnic participants should spend their City Action")
+
+    local pitChanged = base_entity.createEntity({
+        id = "pc_district_pit_changed",
+        name = "District Pit Changed",
+        isPC = true,
+        kin = "human",
+    })
+    local pitController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { pitChanged },
+        cityLayout = wandsSocialLayout,
+    })
+    ok, result, detail = pitController:resolveDistrictAction(pitChanged, "visit_the_pit", {
+        field = "kin",
+        value = "changedling",
+    })
+    assertTrue(ok, "Starfall Pit district action should alter the character sheet")
+    assertEqual(result, "pit_altered_sheet", "Visit the Pit should report completion")
+    assertEqual(pitChanged.kin, "changedling", "Visit the Pit should apply table sheet changes")
+    assertTrue(pitChanged.starfallPitVisits[1].actorInsistsAlwaysTrue,
+        "Visit the Pit should record the always-been-like-this fiction")
+
+    local playgoer = base_entity.createEntity({
+        id = "pc_district_playgoer",
+        name = "District Playgoer",
+        isPC = true,
+    })
+    playgoer.gold = 25
+    local playController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { playgoer },
+        cityLayout = wandsSocialLayout,
+    })
+    ok, result, detail = playController:resolveDistrictAction(playgoer, "the_plays_the_thing", {
+        companionName = "Captain Verro",
+        subject = "money",
+        opinion = "Secretly despises debt collectors.",
+    })
+    assertTrue(ok, "Broken Smiles district action should take a companion to a play")
+    assertEqual(result, "companion_opinion_gauged", "The play's the thing should report completion")
+    assertEqual(playgoer.gold, 0, "The play's the thing should cost 25g")
+    assertEqual(playgoer.playOutings[1].opinion, "Secretly despises debt collectors.",
+        "The play's the thing should reveal the companion's opinion on the subject")
+
+    local giftGiver = base_entity.createEntity({
+        id = "pc_district_gift_giver",
+        name = "District Gift Giver",
+        isPC = true,
+    })
+    giftGiver.inventory = inventory.createInventory()
+    local ceremonialShell = inventory.createItem({
+        id = "ceremonial_shell",
+        name = "Ceremonial Shell",
+    })
+    giftGiver.inventory:addItem(ceremonialShell, inventory.LOCATIONS.PACK)
+    local giftController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { giftGiver },
+        cityLayout = wandsSocialLayout,
+    })
+    ok, result, detail = giftController:resolveDistrictAction(giftGiver, "exchange_gifts", {
+        giftId = "ceremonial_shell",
+        rewardName = "Bronze Marriage Comb",
+        testResult = {
+            result = fate_resolver.RESULTS.SUCCESS,
+            success = true,
+            total = 14,
+        },
+    })
+    assertTrue(ok, "Temple of God's Wives district action should exchange gifts")
+    assertEqual(result, "antique_received", "Exchange gifts should grant an antique on success")
+    assertTrue(giftGiver.inventory:findItem("ceremonial_shell") == nil,
+        "Exchange gifts should remove the given gift")
+    assertTrue(giftGiver.inventory:findItemByPredicate(function(item)
+        return item.name == "Bronze Marriage Comb" and item.properties.antique == true
+    end) ~= nil, "Exchange gifts should add the received antique")
+
+    local wandPetitioner = base_entity.createEntity({
+        id = "pc_district_wand_petitioner",
+        name = "District Wand Petitioner",
+        isPC = true,
+    })
+    wandPetitioner.gold = 100
+    wandPetitioner.inventory = inventory.createInventory()
+    local courtWandsController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { wandPetitioner },
+        cityLayout = wandsSocialLayout,
+    })
+    ok, result, detail = courtWandsController:resolveDistrictAction(wandPetitioner, "join_the_court_of_wands")
+    assertTrue(ok, "Court of Wands district action should join the Court")
+    assertEqual(result, "court_of_wands_joined", "Join Court of Wands should report completion")
+    assertEqual(wandPetitioner.gold, 0, "Join Court of Wands should cost 100g")
+    assertTrue(wandPetitioner.memberships.court_of_wands.archwoodStaffIssued,
+        "Join Court of Wands should record membership and staff issue")
+    assertTrue(wandPetitioner.inventory:findItemByPredicate(function(item)
+        local props = item.properties or {}
+        return props.archwood == true and props.staff == true and props.gramaryeFocus == true
+    end) ~= nil, "Join Court of Wands should add the archwood staff")
+
+    local packedPetitioner = base_entity.createEntity({
+        id = "pc_district_packed_wand_petitioner",
+        name = "Packed District Wand Petitioner",
+        isPC = true,
+    })
+    packedPetitioner.gold = 100
+    packedPetitioner.inventory = inventory.createInventory()
+    for i = 1, inventory.SLOTS.PACK do
+        packedPetitioner.inventory:addItem(inventory.createItem({ name = "Pack Filler " .. i }), inventory.LOCATIONS.PACK)
+    end
+    local packedCourtWandsController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { packedPetitioner },
+        cityLayout = wandsSocialLayout,
+    })
+    ok, result = packedCourtWandsController:resolveDistrictAction(packedPetitioner, "join_the_court_of_wands")
+    assertTrue(not ok, "Court of Wands should fail cleanly when the archwood staff cannot be carried")
+    assertEqual(result, "insufficient_slots", "Join Court of Wands should preserve inventory failure reason")
+    assertEqual(packedPetitioner.gold, 100, "failed Court of Wands membership should refund dues")
+    assertTrue(not (packedPetitioner.memberships and packedPetitioner.memberships.court_of_wands),
+        "failed Court of Wands membership should not be recorded")
+
+    local remainingDistrictLayout = {
+        specialCityActions = {
+            { districtId = "court_martial", action = { id = "trial_by_combat" } },
+            { districtId = "temple_militant", action = { id = "seal_away" } },
+            { districtId = "brothel_of_battle", action = { id = "join_the_swordwhores" } },
+            { districtId = "court_of_swords", action = { id = "fight" } },
+            { districtId = "lotus_eaters_district", action = { id = "buy_exotic_drugs" } },
+            { districtId = "kobalosgaard", action = { id = "blood_feast" } },
+            { districtId = "plaza_numina", action = { id = "huff_fumes" } },
+            { districtId = "street_of_heretics", action = { id = "strange_communions" } },
+            { districtId = "sidereal_house", action = { id = "as_above_so_below" } },
+            { districtId = "labyrinth", action = { id = "enter_the_underworld" } },
+            { districtId = "tower_gnostic", action = { id = "research_a_new_spell" } },
+        },
+    }
+
+    local accused = base_entity.createEntity({
+        id = "pc_district_accused",
+        name = "District Accused",
+        isPC = true,
+    })
+    accused.languages = { "chivalric" }
+    local trialController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { accused },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = trialController:resolveDistrictAction(accused, "trial_by_combat", {
+        accusation = "breaking the peace",
+        strictures = { "no shield" },
+        survived = true,
+    })
+    assertTrue(ok, "Court Martial district action should resolve trial by combat")
+    assertEqual(result, "declared_innocent", "Trial by combat should declare surviving defendants innocent")
+    assertTrue(accused.trialsByCombat[1].chivalricArgument,
+        "Trial by combat should record Chivalric argument advantage")
+
+    local templarPetitioner = base_entity.createEntity({
+        id = "pc_district_templar_petitioner",
+        name = "District Templar Petitioner",
+        isPC = true,
+    })
+    local abomination = { id = "npc_sealable_abomination", name = "Sealable Abomination" }
+    local sealController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { templarPetitioner },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = sealController:resolveDistrictAction(templarPetitioner, "seal_away", {
+        target = abomination,
+        convinced = true,
+        evidence = "It crawled out of the Underworld.",
+    })
+    assertTrue(ok, "Temple Militant district action should seal abominations")
+    assertEqual(result, "abomination_sealed_away", "Seal away should report completion")
+    assertTrue(abomination.sealedAway and abomination.conditions.sealed,
+        "Seal away should mark the target imprisoned by the templars")
+
+    local swordwhore = base_entity.createEntity({
+        id = "pc_district_swordwhore",
+        name = "District Swordwhore",
+        isPC = true,
+    })
+    swordwhore.gold = 100
+    local swordwhoreController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { swordwhore },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = swordwhoreController:resolveDistrictAction(swordwhore, "join_the_swordwhores")
+    assertTrue(ok, "Brothel of Battle district action should join the Swordwhores")
+    assertEqual(result, "swordwhores_joined", "Join Swordwhores should report completion")
+    assertEqual(swordwhore.gold, 0, "Join Swordwhores should cost 100g")
+    assertEqual(swordwhore.memberships.swordwhores.armorUpkeepTier, "impoverished",
+        "Swordwhores membership should unlock impoverished-upkeep iron and steel armor")
+
+    local pitWinner = base_entity.createEntity({
+        id = "pc_district_pit_winner",
+        name = "District Pit Winner",
+        isPC = true,
+        swords = 2,
+    })
+    pitWinner.gold = 100
+    local pitWinController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { pitWinner },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = pitWinController:resolveDistrictAction(pitWinner, "fight", {
+        bet = 40,
+        outcome = "win",
+    })
+    assertTrue(ok, "Court of Swords district action should resolve a pit fight win")
+    assertEqual(result, "pit_fight_won", "Fight should report a winning pit fight")
+    assertEqual(pitWinner.gold, 110, "winning a pit fight should net +25% of the bet")
+
+    local pitBust = base_entity.createEntity({
+        id = "pc_district_pit_bust",
+        name = "District Pit Bust",
+        isPC = true,
+        swords = 1,
+    })
+    pitBust.gold = 10
+    local pitBustController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { pitBust },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = pitBustController:resolveDistrictAction(pitBust, "fight", {
+        bet = 10,
+        outcome = "bust",
+        bust = 4,
+    })
+    assertTrue(ok, "Court of Swords district action should resolve a blackjack bust")
+    assertEqual(result, "pit_fight_busted", "Fight should report a busted pit fight")
+    assertEqual(detail.wounds, 3, "Fight bust wounds should equal bust minus Swords, minimum one")
+    assertTrue(pitBust.conditions.dead, "Fight busts that would check Death's Door should kill the fighter")
+
+    local drugBuyer = base_entity.createEntity({
+        id = "pc_district_drug_buyer",
+        name = "District Drug Buyer",
+        isPC = true,
+    })
+    drugBuyer.gold = 45
+    drugBuyer.inventory = inventory.createInventory()
+    local drugController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { drugBuyer },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = drugController:resolveDistrictAction(drugBuyer, "buy_exotic_drugs", {
+        drugs = {
+            { id = "black_honey", quantity = 1 },
+            { id = "ghost_lotus", quantity = 2 },
+        },
+    })
+    assertTrue(ok, "Lotus Eater's District action should buy exotic drugs")
+    assertEqual(result, "exotic_drugs_purchased", "Buy exotic drugs should report completion")
+    assertEqual(drugBuyer.gold, 0, "Buy exotic drugs should use Appendix D drug prices")
+    assertTrue(drugBuyer.inventory:findItemByPredicate(function(item)
+        return item.drugId == "black_honey" and item.properties.affliction == "black_honey"
+    end) ~= nil, "Black honey should be recorded as a drug affliction item")
+
+    local bloodFeaster = base_entity.createEntity({
+        id = "pc_district_blood_feaster",
+        name = "District Blood Feaster",
+        isPC = true,
+    })
+    bloodFeaster.gold = 50
+    bloodFeaster.inventory = inventory.createInventory()
+    local carcass = inventory.createItem({
+        id = "underworld_carcass",
+        name = "Underworld Monster Carcass",
+        properties = { monsterCarcass = true, underworld = true },
+    })
+    bloodFeaster.inventory:addItem(carcass, inventory.LOCATIONS.PACK)
+    local bloodFeastController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { bloodFeaster },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = bloodFeastController:resolveDistrictAction(bloodFeaster, "blood_feast", {
+        carcassId = "underworld_carcass",
+        nickname = "Ember-Belly",
+    })
+    assertTrue(ok, "Kobalosgaard district action should hold a blood feast")
+    assertEqual(result, "blood_feast_joined", "Blood feast should report completion")
+    assertEqual(bloodFeaster.gold, 0, "Blood feast should cost 50g in gifts")
+    assertTrue(bloodFeaster.inventory:findItem("underworld_carcass") == nil,
+        "Blood feast should consume the Underworld monster carcass")
+    assertEqual(bloodFeaster.orcNicknames[1], "Ember-Belly", "Blood feast should grant an orc nickname")
+
+    local fumeProphet = base_entity.createEntity({
+        id = "pc_district_fume_prophet",
+        name = "District Fume Prophet",
+        isPC = true,
+    })
+    local fumeController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { fumeProphet },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = fumeController:resolveDistrictAction(fumeProphet, "huff_fumes", {
+        words = { "silver", "worm", "devours" },
+    })
+    assertTrue(ok, "Plaza Numina district action should huff sacred fumes")
+    assertEqual(result, "fume_prophecy_babbled", "Huff fumes should report prophecy babble")
+    assertTrue(fumeProphet.fumeProphecies[1].gmMayUseInUnderworldPlanning,
+        "Huff fumes should preserve the GM planning hook")
+
+    local communicant = base_entity.createEntity({
+        id = "pc_district_communicant",
+        name = "District Communicant",
+        isPC = true,
+    })
+    local communionController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { communicant },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = communionController:resolveDistrictAction(communicant, "strange_communions", {
+        religion = "Veneration of the Feathered Swine",
+    })
+    assertTrue(ok, "Street of Heretics district action should attend strange communions")
+    assertEqual(result, "strange_communion_attended", "Strange communions should report completion")
+    assertTrue(communicant.nextExpeditionChallengeDrawChoice.challengeDrawChoice,
+        "Strange communions should grant the next-expedition Challenge draw choice")
+
+    local topCard = { id = "top", name = "Ace of Wands", value = 1, suit = constants.SUITS.WANDS }
+    local secondCard = { id = "second", name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS }
+    local thirdCard = { id = "third", name = "Three of Swords", value = 3, suit = constants.SUITS.SWORDS }
+    local fakeMinorDeck = {
+        draw_pile = { thirdCard, secondCard, topCard },
+        draw = function(self)
+            return table.remove(self.draw_pile)
+        end,
+    }
+    local stargazer = base_entity.createEntity({
+        id = "pc_district_stargazer",
+        name = "District Stargazer",
+        isPC = true,
+    })
+    local stargazingController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { stargazer },
+        cityLayout = remainingDistrictLayout,
+        playerDeck = fakeMinorDeck,
+    })
+    ok, result, detail = stargazingController:resolveDistrictAction(stargazer, "as_above_so_below", {
+        order = { 3, 1, 2 },
+    })
+    assertTrue(ok, "Sidereal House district action should reorder the minor deck")
+    assertEqual(result, "minor_deck_reordered", "As above so below should report deck reordering")
+    assertEqual(fakeMinorDeck:draw().id, "third", "As above so below should put the chosen card on top")
+    assertEqual(fakeMinorDeck:draw().id, "top", "As above so below should preserve the chosen follow-up order")
+    assertEqual(fakeMinorDeck:draw().id, "second", "As above so below should preserve all three cards")
+
+    local labyrinthWalker = base_entity.createEntity({
+        id = "pc_district_labyrinth_walker",
+        name = "District Labyrinth Walker",
+        isPC = true,
+    })
+    local labyrinthRoster = {}
+    local labyrinthController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { labyrinthWalker },
+        guildRoster = labyrinthRoster,
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = labyrinthController:resolveDistrictAction(labyrinthWalker, "enter_the_underworld", {
+        location = "sunless_cistern",
+    })
+    assertTrue(ok, "Labyrinth district action should plan a random Underworld entry")
+    assertEqual(result, "underworld_entry_planned", "Enter the Underworld should report next crawl planning")
+    assertEqual(labyrinthRoster.nextCrawlStart.location, "sunless_cistern",
+        "Enter the Underworld should set the guild's next crawl start")
+    assertTrue(labyrinthRoster.nextCrawlStart.neverSame,
+        "Enter the Underworld should preserve the never-the-same-location rule")
+
+    local spellResearcher = base_entity.createEntity({
+        id = "pc_district_spell_researcher",
+        name = "District Spell Researcher",
+        isPC = true,
+    })
+    spellResearcher.gold = 100
+    local spellResearchController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { spellResearcher },
+        cityLayout = remainingDistrictLayout,
+    })
+    ok, result, detail = spellResearchController:resolveDistrictAction(spellResearcher, "research_a_new_spell", {
+        spellName = "Moon",
+        tiles = "MOON",
+        mechanics = "A pale light reveals hidden doors.",
+    })
+    assertTrue(ok, "Tower Gnostic district action should research a new spell")
+    assertEqual(result, "spell_research_complete", "Research a new spell should complete when tiles spell the name")
+    assertEqual(spellResearcher.gold, 0, "Research a new spell should cost 25g per Scrabble tile")
+    assertTrue(spellResearcher.knownSpells.moon.researched,
+        "completed spell research should add the custom spell to known spells")
+
+    local prophecyTruthLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Seven of Cups", value = 7, suit = constants.SUITS.CUPS },
+            { name = "Eight of Cups", value = 8, suit = constants.SUITS.CUPS },
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+            { name = "Three of Swords", value = 3, suit = constants.SUITS.SWORDS },
+            { name = "Four of Swords", value = 4, suit = constants.SUITS.SWORDS },
+            { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+            { name = "Six of Swords", value = 6, suit = constants.SUITS.SWORDS },
+        },
+    })
+    assertTrue(prophecyTruthLayout ~= nil, "prophecy and truth district layout should generate")
+
+    local prophet = base_entity.createEntity({
+        id = "pc_district_doomsaying",
+        name = "District Doomsaying",
+        isPC = true,
+    })
+    prophet.gold = 10
+    prophet.inventory = inventory.createInventory()
+    local prophecyController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { prophet },
+        cityLayout = prophecyTruthLayout,
+    })
+    ok, result, detail = prophecyController:resolveDistrictAction(prophet, "doomsaying", {
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+            { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+            { name = "Four of Wands", value = 4, suit = constants.SUITS.WANDS },
+        },
+    })
+    assertTrue(ok, "Plaza of the Stylites district action should produce a prophecy")
+    assertEqual(result, "prophecy_received", "Doomsaying should report completion")
+    assertEqual(prophet.gold, 0, "Doomsaying should cost 10g")
+    assertEqual(#prophet.prophecies[1].fragments, 4, "Doomsaying should store four prophecy fragments")
+    assertEqual(prophet.prophecies[1].reward, "refill_resolve",
+        "Doomsaying should record the future Resolve-refill reward")
+
+    local philosopher = base_entity.createEntity({
+        id = "pc_district_philosopher",
+        name = "District Philosopher",
+        isPC = true,
+    })
+    philosopher.gold = 50
+    philosopher.inventory = inventory.createInventory()
+    local truthController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { philosopher },
+        cityLayout = prophecyTruthLayout,
+    })
+    ok, result, detail = truthController:resolveDistrictAction(philosopher, "seek_truth", {
+        hypothesis = "The golden ghosts remember the first king.",
+        response = "debate",
+    })
+    assertTrue(ok, "Philosophers' Forum district action should test a hypothesis")
+    assertEqual(result, "truth_sought", "Seek truth should report completion")
+    assertEqual(philosopher.gold, 0, "Seek truth should cost 50g")
+    assertEqual(detail.veracity, "kernel_of_truth",
+        "Seek truth should preserve the debate result as a partial truth")
+
+    local animalLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Four of Cups", value = 4, suit = constants.SUITS.CUPS },
+            { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+            { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+            { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+            { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+            { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        },
+    })
+    assertTrue(animalLayout ~= nil, "animal companion district action layout should generate")
+
+    local animalBuyer = base_entity.createEntity({
+        id = "pc_district_animal_buyer",
+        name = "District Animal Buyer",
+        isPC = true,
+    })
+    animalBuyer.gold = 350
+    animalBuyer.inventory = inventory.createInventory()
+    local animalController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { animalBuyer },
+        cityLayout = animalLayout,
+    })
+    ok, result, detail = animalController:resolveDistrictAction(animalBuyer, "purchase_animal_companion", {
+        name = "Lantern Wing",
+        species = "dire moth",
+        cost = 350,
+        command = "Fetch",
+    })
+    assertTrue(ok, "Hippodrome district action should purchase an animal companion")
+    assertEqual(result, "animal_companion_purchased", "Purchase animal companion should report completion")
+    assertEqual(animalBuyer.gold, 0, "Purchase animal companion should spend the rarity cost")
+    assertEqual(#animalBuyer.animalCompanions, 1, "Purchase animal companion should add a companion")
+    assertEqual(animalBuyer.animalCompanions[1].knownCommands[1], "Fetch",
+        "Purchased animal companion should enter service knowing one command")
+    assertTrue(animalBuyer.animalCompanions[1].commands == animalBuyer.animalCompanions[1].knownCommands,
+        "Purchased animal companion command aliases should stay in sync")
+    local canCommand, commandBlock = action_registry.checkActionRequirements(
+        action_registry.getAction("command"), animalBuyer)
+    assertTrue(canCommand and commandBlock == nil,
+        "Purchased animal companion should satisfy Command action requirements")
+
+    local firstSwordsLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "King of Cups", value = constants.FACE_VALUES.KING, suit = constants.SUITS.CUPS },
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+            { name = "Three of Swords", value = 3, suit = constants.SUITS.SWORDS },
+            { name = "Four of Swords", value = 4, suit = constants.SUITS.SWORDS },
+        },
+    })
+    assertTrue(firstSwordsLayout ~= nil, "first Swords district action layout should generate")
+
+    local paleProphet = base_entity.createEntity({
+        id = "pc_district_pale_prophet",
+        name = "District Pale Prophet",
+        isPC = true,
+    })
+    local paleController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { paleProphet },
+        cityLayout = firstSwordsLayout,
+    })
+    ok, result, detail = paleController:resolveDistrictAction(paleProphet, "pale_prophecies", {
+        text = "The dead kings dream of a broken crown.",
+    })
+    assertTrue(ok, "Mortuary district action should grant a pale prophecy")
+    assertEqual(result, "pale_prophecy_heard", "Pale prophecies should report the whispered prophecy")
+    assertEqual(paleProphet.paleProphecies[1].text, "The dead kings dream of a broken crown.",
+        "Pale prophecies should record the prophecy text")
+
+    local nightExplorer = base_entity.createEntity({
+        id = "pc_district_hangmans_explorer",
+        name = "District Hangman's Explorer",
+        isPC = true,
+    })
+    local hillController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { nightExplorer },
+        cityLayout = firstSwordsLayout,
+    })
+    ok, result, detail = hillController:resolveDistrictAction(nightExplorer, "explore_hangmans_hill", {
+        finding = "a noose-wrapped silver icon",
+        gold = 12,
+    })
+    assertTrue(ok, "Hangman's Hill district action should resolve night exploration")
+    assertEqual(result, "hangmans_hill_explored", "Explore Hangman's Hill should report completion")
+    assertEqual(nightExplorer.gold, 12, "Explore Hangman's Hill should add found gold")
+    assertEqual(nightExplorer.hangmansHillExplorations[1].finding, "a noose-wrapped silver icon",
+        "Explore Hangman's Hill should record the finding")
+
+    local duelist = base_entity.createEntity({
+        id = "pc_district_duelist",
+        name = "District Duelist",
+        isPC = true,
+    })
+    local duelController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { duelist },
+        cityLayout = firstSwordsLayout,
+    })
+    ok, result, detail = duelController:resolveDistrictAction(duelist, "duel", {
+        opponent = "Tavra of the Seven Guards",
+        won = true,
+        swordName = "Seven-Guard Saber",
+    })
+    assertTrue(ok, "Iron Street district action should resolve a duel")
+    assertEqual(result, "duel_won", "Duel should report a winning result")
+    assertEqual(duelist.duelPrizes[1].name, "Seven-Guard Saber",
+        "Duel should record the opponent's sword when won")
+
+    local groundedWrestler = base_entity.createEntity({
+        id = "pc_district_grounded_wrestler",
+        name = "District Grounded Wrestler",
+        isPC = true,
+    })
+    local groundedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { groundedWrestler },
+        cityLayout = firstSwordsLayout,
+    })
+    ok, result, detail = groundedController:resolveDistrictAction(groundedWrestler, "wrestle_hereclus", {
+        feetOnSolidGround = true,
+        won = true,
+    })
+    assertTrue(ok, "Temple of Strength wrestling should resolve even when Hereclus is unbeatable")
+    assertEqual(result, "hereclus_unbeaten", "Hereclus should be unbeatable while grounded")
+    assertEqual(groundedWrestler.gold or 0, 0, "grounded Hereclus bout should not pay the prize")
+
+    local cleverWrestler = base_entity.createEntity({
+        id = "pc_district_clever_wrestler",
+        name = "District Clever Wrestler",
+        isPC = true,
+    })
+    local cleverController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { cleverWrestler },
+        cityLayout = firstSwordsLayout,
+    })
+    ok, result, detail = cleverController:resolveDistrictAction(cleverWrestler, "wrestle_hereclus", {
+        offSolidGround = true,
+        testResult = {
+            result = fate_resolver.RESULTS.SUCCESS,
+            success = true,
+            total = 14,
+        },
+    })
+    assertTrue(ok, "Temple of Strength wrestling should allow a non-grounded victory")
+    assertEqual(result, "hereclus_defeated", "Wrestle Hereclus should report the rare victory")
+    assertEqual(cleverWrestler.gold, 500, "defeating Hereclus should pay the 500g prize")
+
+    local earlySwordsLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+            { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+            { name = "Six of Swords", value = 6, suit = constants.SUITS.SWORDS },
+            { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+        },
+    })
+    assertTrue(earlySwordsLayout ~= nil, "early Swords district action layout should generate")
+
+    local autographHunter = base_entity.createEntity({
+        id = "pc_district_autograph_hunter",
+        name = "District Autograph Hunter",
+        isPC = true,
+    })
+    local autographController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { autographHunter },
+        cityLayout = earlySwordsLayout,
+    })
+    ok, result, detail = autographController:resolveDistrictAction(autographHunter, "get_autographs", {
+        athlete = "Harat the Swift",
+        inscription = "Train until the sand knows your name.",
+    })
+    assertTrue(ok, "Temple of Strength district action should grant an autograph")
+    assertEqual(result, "autograph_received", "Get autographs should report completion")
+    assertEqual(autographHunter.autographs[1].athlete, "Harat the Swift",
+        "Get autographs should record the celebrated athlete")
+
+    local questioner = base_entity.createEntity({
+        id = "pc_district_questioner",
+        name = "District Questioner",
+        isPC = true,
+    })
+    questioner.gold = 100
+    local lipsController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { questioner },
+        cityLayout = earlySwordsLayout,
+    })
+    ok, result, detail = lipsController:resolveDistrictAction(questioner, "loosen_lips", {
+        characterName = "Captain Verro",
+        question = "Who sold the bronze key?",
+        answer = "A red-gloved factor.",
+        gold = 100,
+        testResult = {
+            result = fate_resolver.RESULTS.SUCCESS,
+            success = true,
+            total = 14,
+        },
+    })
+    assertTrue(ok, "Vinegar District action should buy drinks for a guarded answer")
+    assertEqual(result, "lips_loosened", "Loosen lips should report a successful answer")
+    assertEqual(questioner.gold, 0, "Loosen lips should spend the declared gold")
+    assertEqual(detail.bonus, 5, "Loosen lips gold bonus should cap at +5")
+    assertEqual(questioner.loosenedLips[1].answer, "A red-gloved factor.",
+        "Loosen lips should record the honest answer on success")
+
+    local mourner = base_entity.createEntity({
+        id = "pc_district_mourner",
+        name = "District Mourner",
+        isPC = true,
+        wands = 3,
+    })
+    local mourningController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { mourner },
+        cityLayout = earlySwordsLayout,
+    })
+    ok, result, detail = mourningController:resolveDistrictAction(mourner, "seek_the_cursed_king", {
+        terribleChoice = "Break the oath or drown with it.",
+        testResult = {
+            result = fate_resolver.RESULTS.SUCCESS,
+            success = true,
+            total = 14,
+        },
+    })
+    assertTrue(ok, "Bridge of Mourning district action should search for the Cursed King")
+    assertEqual(result, "cursed_king_found", "Seek the Cursed King should report success")
+    assertEqual(mourner.cursedKingEncounters[1].terribleChoice, "Break the oath or drown with it.",
+        "Seek the Cursed King should record the terrible choice")
+
+    local rumorTattooLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+            { name = "Nine of Swords", value = 9, suit = constants.SUITS.SWORDS },
+            { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+            { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        },
+    })
+    assertTrue(rumorTattooLayout ~= nil, "Bellringer and Grey Docks district layout should generate")
+
+    local listener = base_entity.createEntity({
+        id = "pc_district_listener",
+        name = "District Listener",
+        isPC = true,
+    })
+    local listenerController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { listener },
+        cityLayout = rumorTattooLayout,
+    })
+    ok, result, detail = listenerController:resolveDistrictAction(listener, "keep_an_ear_to_the_ground", {
+        eventValue = 14,
+    })
+    assertTrue(ok, "Bellringer's District action should reveal a City Events rumor")
+    assertEqual(result, "city_event_rumor_heard", "Keep an ear to the ground should report rumor discovery")
+    assertEqual(listener.cityRumors[1].title, "The Strangler's Palm",
+        "Keep an ear to the ground should record the chosen City Events rumor")
+
+    local rumorMonger = base_entity.createEntity({
+        id = "pc_district_rumor_monger",
+        name = "District Rumor Monger",
+        isPC = true,
+    })
+    rumorMonger.gold = 140
+    local spreadController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { rumorMonger },
+        cityLayout = rumorTattooLayout,
+    })
+    ok, result, detail = spreadController:resolveDistrictAction(rumorMonger, "spread_rumors", {
+        rumor = "The Grey Docks hide a friendly tavern.",
+        gold = 140,
+        testResult = {
+            result = fate_resolver.RESULTS.SUCCESS,
+            success = true,
+            total = 14,
+        },
+    })
+    assertTrue(ok, "Bellringer's District action should spread a rumor")
+    assertEqual(result, "rumor_spread", "Spread rumors should report completion")
+    assertEqual(rumorMonger.gold, 0, "Spread rumors should spend the declared gold")
+    assertEqual(detail.bonus, 5, "Spread rumors gold bonus should cap at +5")
+    assertTrue(rumorMonger.spreadRumors[1].credible,
+        "successful Spread rumors should record the rumor as credible")
+
+    local tattooed = base_entity.createEntity({
+        id = "pc_district_tattooed",
+        name = "District Tattooed",
+        isPC = true,
+    })
+    local tattooController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { tattooed },
+        cityLayout = rumorTattooLayout,
+    })
+    ok, result, detail = tattooController:resolveDistrictAction(tattooed, "get_tattoos", {
+        design = "river knot",
+        location = "forearm",
+    })
+    assertTrue(ok, "Grey Docks district action should grant a tattoo")
+    assertEqual(result, "tattoo_received", "Get tattoos should report completion")
+    assertEqual(tattooed.tattoos[1].description, "river knot",
+        "Get tattoos should record the requested design")
+    assertEqual(tattooed.tattoos[1].source, "grey_docks",
+        "Get tattoos should record its district source")
+
+    local institutionalLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "Queen of Pentacles", value = constants.FACE_VALUES.QUEEN, suit = constants.SUITS.PENTACLES },
+            { name = "Five of Cups", value = 5, suit = constants.SUITS.CUPS },
+            { name = "Knight of Cups", value = constants.FACE_VALUES.KNIGHT, suit = constants.SUITS.CUPS },
+            { name = "Queen of Cups", value = constants.FACE_VALUES.QUEEN, suit = constants.SUITS.CUPS },
+            { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+            { name = "Three of Swords", value = 3, suit = constants.SUITS.SWORDS },
+            { name = "Four of Swords", value = 4, suit = constants.SUITS.SWORDS },
+            { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+            { name = "Six of Swords", value = 6, suit = constants.SUITS.SWORDS },
+            { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+            { name = "Eight of Swords", value = 8, suit = constants.SUITS.SWORDS },
+        },
+    })
+    assertTrue(institutionalLayout ~= nil, "institutional district action layout should generate")
+
+    local beggar = base_entity.createEntity({
+        id = "pc_district_beggar_member",
+        name = "District Beggar Member",
+        isPC = true,
+    })
+    beggar.gold = 100
+    beggar.inventory = inventory.createInventory()
+    local beggarController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { beggar },
+        cityLayout = institutionalLayout,
+    })
+    ok, result, detail = beggarController:resolveDistrictAction(beggar, "join_the_beggars_guild")
+    assertTrue(ok, "Street of Beggars district action should join the Beggars Guild")
+    assertEqual(result, "beggars_guild_joined", "Join Beggars Guild should report completion")
+    assertEqual(beggar.gold, 0, "Beggars Guild dues should cost 100g")
+    assertTrue(beggar.memberships.beggars_guild.secretUnderworldEntrance,
+        "Beggars Guild membership should unlock the secret Underworld entrance")
+    assertTrue(beggar.memberships.beggars_guild.portalItemDonationRequired,
+        "Beggars Guild membership should record the portal item donation tariff")
+
+    local betrothed = base_entity.createEntity({
+        id = "pc_district_betrothed",
+        name = "District Betrothed",
+        isPC = true,
+    })
+    local spouse = base_entity.createEntity({
+        id = "pc_district_spouse",
+        name = "District Spouse",
+        isPC = true,
+    })
+    local guest = base_entity.createEntity({
+        id = "pc_district_guest",
+        name = "District Guest",
+        isPC = true,
+    })
+    betrothed.gold = 30
+    spouse.gold = 20
+    guest.gold = 0
+    local weddingController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { betrothed, spouse, guest },
+        cityLayout = institutionalLayout,
+    })
+    ok, result, detail = weddingController:resolveDistrictAction(betrothed, "marriage_feast", {
+        partner = spouse,
+        attendees = { guest },
+    })
+    assertTrue(ok, "Rouge Road district action should hold a marriage feast")
+    assertEqual(result, "marriage_feast_held", "Marriage feast should report completion")
+    assertEqual(betrothed.gold, 0, "Marriage feast should spend the actor's last-Crawl gold")
+    assertEqual(spouse.gold, 0, "Marriage feast should spend the partner's last-Crawl gold")
+    assertEqual(betrothed.xp, 2, "Marriage feast should grant 2 XP to the marrying actor")
+    assertEqual(spouse.xp, 2, "Marriage feast should grant 2 XP to the partner")
+    assertEqual(guest.xp, 1, "Marriage feast attendees should gain 1 XP")
+    assertTrue(weddingController:hasActed(spouse) and weddingController:hasActed(guest),
+        "Marriage feast partner and attendees should spend their City Actions")
+
+    local copyist = base_entity.createEntity({
+        id = "pc_district_copyist",
+        name = "District Copyist",
+        isPC = true,
+    })
+    copyist.gold = 250
+    copyist.inventory = inventory.createInventory()
+    local copyController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { copyist },
+        cityLayout = institutionalLayout,
+    })
+    ok, result, detail = copyController:resolveDistrictAction(copyist, "copy_texts", {
+        topic = "Golden ghost funerary poetry",
+        cost = 250,
+    })
+    assertTrue(ok, "Old Queen's Library district action should copy available texts")
+    assertEqual(result, "text_copied", "Copy texts should report completion")
+    assertEqual(copyist.gold, 0, "Copy texts should spend the GM-determined copy cost")
+    assertEqual(copyist.copiedTexts[1].topic, "Golden ghost funerary poetry",
+        "Copy texts should record the copied topic")
+
+    local borrower = base_entity.createEntity({
+        id = "pc_district_borrower",
+        name = "District Borrower",
+        isPC = true,
+    })
+    borrower.gold = 5
+    borrower.inventory = inventory.createInventory()
+    local loanController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { borrower },
+        cityLayout = institutionalLayout,
+    })
+    ok, result, detail = loanController:resolveDistrictAction(borrower, "take_out_a_loan", {
+        amount = 100,
+    })
+    assertTrue(ok, "Centrum Bank district action should issue loans")
+    assertEqual(result, "loan_taken", "Take out loan should report completion")
+    assertEqual(borrower.gold, 105, "Take out loan should add the borrowed principal")
+    assertEqual(borrower.loans[1].owed, 130, "Take out loan should record 30 percent interest")
+
+    local grailLayout = city_phase.generateCityLayout({
+        cards = {
+            { name = "Ace of Swords", value = 1, suit = constants.SUITS.SWORDS },
+            { name = "King of Cups", value = constants.FACE_VALUES.KING, suit = constants.SUITS.CUPS },
+            { name = "Seven of Swords", value = 7, suit = constants.SUITS.SWORDS },
+            { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+            { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+            { name = "Two of Cups", value = 2, suit = constants.SUITS.CUPS },
+            { name = "Three of Cups", value = 3, suit = constants.SUITS.CUPS },
+        },
+    })
+    assertTrue(grailLayout ~= nil, "Court of the Grail district action layout should generate")
+
+    local initiate = base_entity.createEntity({
+        id = "pc_district_mythrys_initiate",
+        name = "District Mythrys Initiate",
+        isPC = true,
+    })
+    initiate.inventory = inventory.createInventory()
+    local initiationController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { initiate },
+        cityLayout = grailLayout,
+    })
+    ok, result, detail = initiationController:resolveDistrictAction(initiate, "seek_initiation", {
+        koan = "What cup is empty when it is full?",
+        expectedAnswer = "The Grail",
+    })
+    assertTrue(ok, "Court of the Grail district action should join the Cult of Mythrys")
+    assertEqual(result, "cult_initiated", "Seek initiation should report the first initiation")
+    assertEqual(initiate.memberships.cult_of_mythrys.rank, 1,
+        "first Seek initiation should begin at the first initiation")
+    assertEqual(initiate.memberships.cult_of_mythrys.currentKoan, "What cup is empty when it is full?",
+        "first Seek initiation should record the given koan")
+
+    local lowerInitiate = base_entity.createEntity({
+        id = "npc_lower_mythrys_initiate",
+        name = "Lower Mythrys Initiate",
+    })
+    lowerInitiate.memberships = {
+        cult_of_mythrys = { joined = true, rank = 1 },
+    }
+    local advancedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { initiate },
+        cityLayout = grailLayout,
+    })
+    ok, result, detail = advancedController:resolveDistrictAction(initiate, "seek_initiation", {
+        answer = "the grail",
+        nextKoan = "What river rises without water?",
+        nextExpectedAnswer = "The Grey",
+    })
+    assertTrue(ok, "Seek initiation should spend a later City Action to answer the koan")
+    assertEqual(result, "initiation_advanced", "correct initiation answer should advance rank")
+    assertEqual(initiate.memberships.cult_of_mythrys.rank, 2,
+        "correct initiation answer should increase the rank")
+    assertEqual(initiate.memberships.cult_of_mythrys.currentKoan, "What river rises without water?",
+        "correct initiation answer should assign the next koan")
+    assertTrue(city_phase.hasMythrysInitiationFavor(initiate, lowerInitiate),
+        "higher Mythrys initiation should grant City influence favor over lower initiates")
+
+    local wrongAnswerController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { initiate },
+        cityLayout = grailLayout,
+    })
+    ok, result, detail = wrongAnswerController:resolveDistrictAction(initiate, "seek_initiation", {
+        answer = "A canal",
+    })
+    assertTrue(ok, "incorrect initiation answers should still spend the City Action")
+    assertEqual(result, "initiation_answer_incorrect", "incorrect initiation answer should be recorded")
+    assertEqual(initiate.memberships.cult_of_mythrys.rank, 2,
+        "incorrect initiation answer should not increase the rank")
+    assertTrue(wrongAnswerController:hasActed(initiate),
+        "incorrect initiation answer should mark the actor's City Action spent")
 
     local cleanBoots = base_entity.createEntity({
         id = "pc_district_not_destitute",
@@ -14117,6 +16066,7 @@ local function checkCityPhaseTrainAction()
         isPC = true,
     })
     trainee.gold = 100
+    trainee.path = "pentacles"
     trainee.inventory = inventory.createInventory()
     trainee.talents = {}
 
@@ -14143,6 +16093,7 @@ local function checkCityPhaseTrainAction()
     assertEqual(trainee.gold, 0, "City Train should spend gold")
     assertTrue(trainee.talents.war_stories ~= nil, "City Train should create the trained talent")
     assertTrue(trainee.talents.war_stories.mentored, "City Train should mark outside-path training as mentored")
+    assertTrue(not trainee.talents.war_stories.pathTrained, "cross-path City Train should not mark path training")
     assertTrue(trainee.talents.war_stories.cityTrained, "City Train should record city expert training")
     assertEqual(trainee.talents.war_stories.xp_invested, 2, "City Train should record invested XP")
     assertEqual(trainee.talents.war_stories.uses_remaining, 2, "City Train should prepare uses equal to XP invested")
@@ -14177,6 +16128,77 @@ local function checkCityPhaseTrainAction()
     assertTrue(ok, "City Train should allow continued training on an unmastered talent")
     assertTrue(nearlyMastered.talents.aegis.mastered, "seven total invested XP should master a City-trained talent")
     assertEqual(detail.totalXPInvested, 7, "City Train mastery detail should report total invested XP")
+
+    local pathStudent = base_entity.createEntity({
+        id = "pc_city_train_path_student",
+        name = "City Train Path Student",
+        isPC = true,
+    })
+    pathStudent.gold = 50
+    pathStudent.path = "swords"
+    pathStudent.inventory = inventory.createInventory()
+    pathStudent.talents = {}
+    local pathController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { pathStudent },
+    })
+    ok, result = pathController:resolveAction(pathStudent, {
+        type = "train",
+        talentId = "aegis",
+        xp = 1,
+    })
+    assertTrue(ok, "City Train should allow own-path talent investment")
+    assertTrue(pathStudent.talents.aegis.pathTrained, "own-path City Train should record path training")
+    assertTrue(not pathStudent.talents.aegis.mentored, "own-path City Train should not mark the talent as mentored")
+
+    local unavailable = base_entity.createEntity({
+        id = "pc_city_train_unavailable",
+        name = "City Train Unavailable",
+        isPC = true,
+    })
+    unavailable.gold = 50
+    unavailable.path = "pentacles"
+    unavailable.inventory = inventory.createInventory()
+    unavailable.talents = {}
+    local unavailableController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { unavailable },
+    })
+    ok, result = unavailableController:resolveAction(unavailable, {
+        type = "train",
+        talentId = "war_stories",
+        xp = 1,
+        trainerAvailable = false,
+    })
+    assertTrue(not ok, "City Train should respect unavailable cross-path experts")
+    assertEqual(result, "Trainer unavailable", "unavailable expert should explain City Train failure")
+    assertEqual(unavailable.gold, 50, "unavailable expert should not spend gold")
+    assertTrue(not unavailableController:hasActed(unavailable), "unavailable expert should not consume City Action")
+
+    local kinStudent = base_entity.createEntity({
+        id = "pc_city_train_kin_student",
+        name = "City Train Kin Student",
+        isPC = true,
+    })
+    kinStudent.gold = 100
+    kinStudent.path = "swords"
+    kinStudent.kin = "human"
+    kinStudent.inventory = inventory.createInventory()
+    kinStudent.talents = {}
+    local kinController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { kinStudent },
+    })
+    ok, result = kinController:resolveAction(kinStudent, {
+        type = "train",
+        talentId = "proud_and_ancient",
+        xp = 1,
+    })
+    assertTrue(not ok, "City Train should reject kin talents")
+    assertEqual(result, "Kin talents cannot be trained", "City Train kin talent rejection should explain the rule")
+    assertEqual(kinStudent.gold, 100, "City Train kin rejection should not spend gold")
+    assertTrue(kinStudent.talents.proud_and_ancient == nil, "City Train kin rejection should not create a talent")
+    assertTrue(not kinController:hasActed(kinStudent), "City Train kin rejection should not consume City Action")
 
     local poor = base_entity.createEntity({
         id = "pc_city_train_poor",
@@ -14240,6 +16262,177 @@ local function checkCityPhaseTrainAction()
     assertTrue(not ok, "City Train should require a talent choice")
     assertEqual(result, "Choose a talent to train", "missing City Train talent should explain failure")
     assertTrue(not noTalentController:hasActed(noTalent), "missing City Train talent should not consume City Action")
+end
+
+local function checkCityPhaseJarlGoblinHordeAction()
+    local jarl = base_entity.createEntity({
+        id = "pc_city_jarl",
+        name = "City Jarl",
+        isPC = true,
+        talents = {
+            jarl = { mastered = true },
+        },
+    })
+    jarl.xp = 3
+    jarl.inventory = inventory.createInventory()
+
+    local controller = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { jarl },
+    })
+
+    local ok, result, detail = controller:resolveAction(jarl, {
+        type = "jarl",
+        xp = 2,
+    })
+    assertTrue(ok, "Jarl City Action should assemble a goblin horde")
+    assertEqual(result, "goblin_horde_assembled", "Jarl City Action should report horde assembly")
+    assertEqual(jarl.xp, 1, "Jarl City Action should spend chosen XP")
+    assertEqual(#jarl.animalCompanions, 1, "Goblin horde should count as an animal companion")
+    assertTrue(controller:hasActed(jarl), "Jarl City Action should consume a City Action")
+
+    local horde = jarl.animalCompanions[1]
+    assertTrue(horde.goblinHorde, "assembled companion should be marked as a goblin horde")
+    assertEqual(horde.goblinCount, 4, "Jarl should attract 2 + XP spent goblins")
+    assertEqual(detail.goblinCount, 4, "Jarl detail should report current horde count")
+    assertEqual(horde.porterSlots, 4, "goblin horde should carry one slot per goblin")
+    assertTrue(horde.countsAsOneCreature, "goblin horde should count as one creature")
+    assertTrue(horde.suppliesOwnFood, "goblin horde should supply its own food")
+    assertTrue(horde.commandsAny and horde.oneWordCommandsOnly, "goblin horde should follow any one-word command")
+
+    local woundResult = horde:takeWound("normal")
+    assertEqual(woundResult, "goblin_killed", "each goblin horde Wound should kill one goblin")
+    assertEqual(horde.goblinCount, 3, "goblin horde Wound should reduce horde size")
+    assertEqual(horde.porterSlots, 3, "goblin porter slots should track surviving goblins")
+
+    local feedController = camp_controller.createCampController({
+        eventBus = events.createEventBus(),
+        guild = { jarl },
+    })
+    feedController:transitionTo(camp_controller.STATES.BREAK_BREAD)
+    horde.conditions.weak = true
+    horde.weak = true
+    ok, result = feedController:feedAnimalCompanion(jarl, horde)
+    assertTrue(ok, "goblin horde should self-supply food during Break Bread")
+    assertEqual(result, "animal_feed_self_supplied", "self-supplied horde feed should report distinct result")
+    assertTrue(not horde.conditions.weak and not horde.weak, "self-supplied horde feed should clear Weak")
+
+    local target = base_entity.createEntity({
+        id = "npc_horde_target",
+        name = "Horde Target",
+        isPC = false,
+        health = 2,
+    })
+    local resolver = action_resolver.createActionResolver({ eventBus = events.createEventBus() })
+    local commandResult = resolver:resolve({
+        actor = jarl,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        companionId = horde.id,
+        commandName = "attack",
+        target = target,
+        contestedCommand = false,
+    })
+    assertTrue(commandResult.success, "goblin horde should obey a one-word command")
+    assertEqual(commandResult.commandName, "sic_em", "one-word attack should normalize to Sic 'Em")
+
+    local complexCommand = resolver:resolve({
+        actor = jarl,
+        card = { name = "Cups", value = 8, suit = constants.SUITS.CUPS },
+        type = action_resolver.ACTION_TYPES.COMMAND,
+        companionId = horde.id,
+        commandName = "Get Help",
+        contestedCommand = false,
+    })
+    assertTrue(not complexCommand.success, "goblin horde should reject multi-word commands")
+    assertTrue(hasValue(complexCommand.effects, "command_too_complex"),
+        "multi-word goblin command should report complexity block")
+
+    jarl.xp = 10
+    local capController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { jarl },
+    })
+    ok, result, detail = capController:resolveAction(jarl, {
+        type = "assemble_goblin_horde",
+        xp = 10,
+    })
+    assertTrue(ok, "Jarl City Action should add goblins up to the rulebook cap")
+    assertEqual(horde.goblinCount, 8, "goblin horde should cap at eight goblins")
+    assertTrue(detail.capped, "Jarl detail should report recruitment capped by the eight-goblin maximum")
+
+    local fullController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { jarl },
+    })
+    ok, result = fullController:resolveAction(jarl, {
+        type = "hatch_goblin_horde",
+        xp = 0,
+    })
+    assertTrue(not ok, "Jarl City Action should reject already-full hordes")
+    assertEqual(result, "Goblin horde at capacity", "full horde should explain Jarl failure")
+    assertTrue(not fullController:hasActed(jarl), "failed full-horde Jarl action should not consume City Action")
+
+    local noJarl = base_entity.createEntity({
+        id = "pc_no_jarl",
+        name = "No Jarl",
+        isPC = true,
+        talents = {},
+    })
+    noJarl.xp = 3
+    local noJarlController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { noJarl },
+    })
+    ok, result = noJarlController:resolveAction(noJarl, {
+        type = "jarl",
+        xp = 1,
+    })
+    assertTrue(not ok, "Jarl City Action should require the Jarl talent")
+    assertEqual(result, "Requires Jarl talent", "missing Jarl should explain City Action failure")
+    assertTrue(not noJarlController:hasActed(noJarl), "missing Jarl should not consume City Action")
+
+    local woundedJarl = base_entity.createEntity({
+        id = "pc_wounded_jarl",
+        name = "Wounded Jarl",
+        isPC = true,
+        talents = {
+            jarl = { mastered = true, wounded = true },
+        },
+    })
+    woundedJarl.xp = 3
+    local woundedController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { woundedJarl },
+    })
+    ok, result = woundedController:resolveAction(woundedJarl, {
+        type = "gather_goblins",
+        xp = 1,
+    })
+    assertTrue(not ok, "Wounded Jarl talent should block horde assembly")
+    assertEqual(result, "Requires Jarl talent", "wounded Jarl should explain City Action failure")
+    assertEqual(woundedJarl.xp, 3, "wounded Jarl failure should not spend XP")
+
+    local poorJarl = base_entity.createEntity({
+        id = "pc_poor_jarl",
+        name = "Poor Jarl",
+        isPC = true,
+        talents = {
+            jarl = { mastered = true },
+        },
+    })
+    poorJarl.xp = 1
+    local poorController = city_phase.createCityPhaseController({
+        eventBus = events.createEventBus(),
+        guild = { poorJarl },
+    })
+    ok, result = poorController:resolveAction(poorJarl, {
+        type = "jarl",
+        xp = 2,
+    })
+    assertTrue(not ok, "Jarl City Action should require the chosen XP")
+    assertEqual(result, "Not enough XP", "insufficient Jarl XP should explain failure")
+    assertEqual(poorJarl.xp, 1, "insufficient Jarl XP should not be spent")
 end
 
 local function checkCityPhaseSupportAction()
@@ -22805,6 +24998,7 @@ checkCityPhaseCommissionCraftAction()
 checkCityPhaseHoldFuneralAction()
 checkCityPhasePrepareComponentsAction()
 checkCityPhaseTrainAction()
+checkCityPhaseJarlGoblinHordeAction()
 checkCityPhaseSupportAction()
 checkCityPhaseResearchAction()
 checkCityPhaseAlchemyActionFacade()

@@ -11,6 +11,7 @@ local city_events = require('data.city_events')
 local city_layout = require('logic.city_layout')
 local item_templates = require('data.item_templates')
 local spell_registry = require('data.spell_registry')
+local talent_catalog = require('data.talent_catalog')
 local fate_resolver = require('logic.resolver')
 
 local M = {}
@@ -20,6 +21,7 @@ M.TRAINING_COST_PER_XP = 50
 M.BUILD_COST_PER_SYLLABLE = 50
 M.FUNERAL_COST_PER_XP = 100
 M.MAX_FAME = 5
+M.MAX_MYTHRYS_INITIATION = 21
 M.generateCityLayout = city_layout.generateCityLayout
 
 M.COMMISSION_CRAFT_RATES = {
@@ -77,6 +79,7 @@ M.ACTIONS = {
     BUILD = "build",
     CAMP_ACTION = "camp_action",
     CAROUSE = "carouse",
+    CHOOSE_MONSTER_HUNTER_FOE = "choose_monster_hunter_foe",
     COMMISSION_CRAFT = "commission_craft",
     HOLD_FUNERAL = "hold_funeral",
     PREPARE_COMPONENTS = "prepare_components",
@@ -84,43 +87,130 @@ M.ACTIONS = {
     TRAIN = "train",
     SUPPORT = "support",
     RESEARCH = "research",
+    AS_ABOVE_SO_BELOW = "as_above_so_below",
+    BLOOD_FEAST = "blood_feast",
+    BUY_EXOTIC_DRUGS = "buy_exotic_drugs",
     MENAGERIE_REAGENT_PURCHASE = "menagerie_reagent_purchase",
     HARVEST_ALCHEMICAL_REAGENTS = "harvest_alchemical_reagents",
     BEG_FOR_SCRAPS = "beg_for_scraps",
+    ATTEND_MISS_KINSEYS_DINING_CLUB = "attend_miss_kinseys_dining_club",
+    COMMISSION_DWARVEN_MASTERCRAFT = "commission_dwarven_mastercraft",
     COMMISSION_GARGOYLE = "commission_gargoyle",
     COMMISSION_PUPPET = "commission_puppet",
+    CONTRACT_ASSASSINATION = "contract_assassination",
+    COPY_TEXTS = "copy_texts",
+    ADOPT = "adopt",
+    DISPOSE_OF_BODIES = "dispose_of_bodies",
+    DOODLEBUG = "doodlebug",
+    DOOMSAYING = "doomsaying",
+    DUEL = "duel",
+    EXPLORE_HANGMANS_HILL = "explore_hangmans_hill",
+    EXCHANGE_GIFTS = "exchange_gifts",
+    FENCE_GOODS = "fence_goods",
     FIT_PROSTHETICS = "fit_prosthetics",
+    FIGHT = "fight",
+    GET_AUTOGRAPHS = "get_autographs",
+    GET_TATTOOS = "get_tattoos",
+    HUFF_FUMES = "huff_fumes",
+    ENTER_THE_UNDERWORLD = "enter_the_underworld",
+    JOIN_BEGGARS_GUILD = "join_the_beggars_guild",
+    JOIN_COURT_OF_WANDS = "join_the_court_of_wands",
+    JOIN_SWORDWHORES = "join_the_swordwhores",
+    ASSEMBLE_GOBLIN_HORDE = "assemble_goblin_horde",
+    KEEP_AN_EAR_TO_THE_GROUND = "keep_an_ear_to_the_ground",
+    LAY_HIGH = "lay_high",
+    LOOSEN_LIPS = "loosen_lips",
     MAKEOVER = "makeover",
+    MARRIAGE_FEAST = "marriage_feast",
+    MUTATION = "mutation",
+    PALE_PROPHECIES = "pale_prophecies",
     PILLOW_TALK = "pillow_talk",
+    PICNIC = "picnic",
     PURCHASE_AMULETS = "purchase_amulets",
+    PURCHASE_ANIMAL_COMPANION = "purchase_animal_companion",
     PURCHASE_FATE_HONEY = "purchase_fate_honey",
     PURCHASE_FIREWORKS = "purchase_fireworks",
+    RESEARCH_A_NEW_SPELL = "research_a_new_spell",
     REST_AND_RECUPERATE = "rest_and_recuperate",
+    SEAL_AWAY = "seal_away",
+    SEEK_INITIATION = "seek_initiation",
+    SEEK_TRUTH = "seek_truth",
     SEND_LETTER = "send_letter",
+    SEEK_THE_CURSED_KING = "seek_the_cursed_king",
     SELL_REAGENT = "sell_reagent",
     SELL_REAGENTS = "sell_reagents",
+    SPREAD_RUMORS = "spread_rumors",
+    STRANGE_COMMUNIONS = "strange_communions",
     STUDY_LANGUAGE = "study_language",
+    TAKE_OUT_LOAN = "take_out_a_loan",
+    THE_PLAYS_THE_THING = "the_plays_the_thing",
+    TRIAL_BY_COMBAT = "trial_by_combat",
     UNDERGO_LEECHING = "undergo_leeching",
     VISIT_GRAVE = "visit_grave",
+    VISIT_THE_PIT = "visit_the_pit",
+    WRESTLE_HERECLUS = "wrestle_hereclus",
 }
 
 M.DISTRICT_ACTION_ALIASES = {
+    adopt = M.ACTIONS.ADOPT,
+    as_above_so_below = M.ACTIONS.AS_ABOVE_SO_BELOW,
+    attend_miss_kinseys_dining_club = M.ACTIONS.ATTEND_MISS_KINSEYS_DINING_CLUB,
     beg_for_scraps = M.ACTIONS.BEG_FOR_SCRAPS,
+    blood_feast = M.ACTIONS.BLOOD_FEAST,
+    buy_exotic_drugs = M.ACTIONS.BUY_EXOTIC_DRUGS,
+    commission_dwarven_mastercraft = M.ACTIONS.COMMISSION_DWARVEN_MASTERCRAFT,
     commission_gargoyle = M.ACTIONS.COMMISSION_GARGOYLE,
     commission_puppet = M.ACTIONS.COMMISSION_PUPPET,
+    contract_assassination = M.ACTIONS.CONTRACT_ASSASSINATION,
+    copy_texts = M.ACTIONS.COPY_TEXTS,
+    dispose_of_bodies = M.ACTIONS.DISPOSE_OF_BODIES,
+    doodlebug = M.ACTIONS.DOODLEBUG,
+    doomsaying = M.ACTIONS.DOOMSAYING,
+    duel = M.ACTIONS.DUEL,
+    explore_hangmans_hill = M.ACTIONS.EXPLORE_HANGMANS_HILL,
+    exchange_gifts = M.ACTIONS.EXCHANGE_GIFTS,
+    fence_goods = M.ACTIONS.FENCE_GOODS,
     fit_prosthetics = M.ACTIONS.FIT_PROSTHETICS,
+    fight = M.ACTIONS.FIGHT,
+    get_autographs = M.ACTIONS.GET_AUTOGRAPHS,
+    get_tattoos = M.ACTIONS.GET_TATTOOS,
+    huff_fumes = M.ACTIONS.HUFF_FUMES,
+    enter_the_underworld = M.ACTIONS.ENTER_THE_UNDERWORLD,
+    join_the_beggars_guild = M.ACTIONS.JOIN_BEGGARS_GUILD,
+    join_the_court_of_wands = M.ACTIONS.JOIN_COURT_OF_WANDS,
+    join_the_swordwhores = M.ACTIONS.JOIN_SWORDWHORES,
+    keep_an_ear_to_the_ground = M.ACTIONS.KEEP_AN_EAR_TO_THE_GROUND,
+    lay_high = M.ACTIONS.LAY_HIGH,
+    loosen_lips = M.ACTIONS.LOOSEN_LIPS,
     harvest_alchemical_reagents = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
     makeover = M.ACTIONS.MAKEOVER,
+    marriage_feast = M.ACTIONS.MARRIAGE_FEAST,
+    mutation = M.ACTIONS.MUTATION,
+    pale_prophecies = M.ACTIONS.PALE_PROPHECIES,
     pillow_talk = M.ACTIONS.PILLOW_TALK,
+    picnic = M.ACTIONS.PICNIC,
     purchase_amulets = M.ACTIONS.PURCHASE_AMULETS,
+    purchase_animal_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
     purchase_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
     purchase_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
+    research_a_new_spell = M.ACTIONS.RESEARCH_A_NEW_SPELL,
     rest_and_recuperate = M.ACTIONS.REST_AND_RECUPERATE,
+    seal_away = M.ACTIONS.SEAL_AWAY,
+    seek_initiation = M.ACTIONS.SEEK_INITIATION,
+    seek_truth = M.ACTIONS.SEEK_TRUTH,
     send_letter = M.ACTIONS.SEND_LETTER,
+    seek_the_cursed_king = M.ACTIONS.SEEK_THE_CURSED_KING,
     sell_reagents = M.ACTIONS.SELL_REAGENT,
+    spread_rumors = M.ACTIONS.SPREAD_RUMORS,
+    strange_communions = M.ACTIONS.STRANGE_COMMUNIONS,
     study_language = M.ACTIONS.STUDY_LANGUAGE,
+    take_out_a_loan = M.ACTIONS.TAKE_OUT_LOAN,
+    the_plays_the_thing = M.ACTIONS.THE_PLAYS_THE_THING,
+    trial_by_combat = M.ACTIONS.TRIAL_BY_COMBAT,
     undergo_leeching = M.ACTIONS.UNDERGO_LEECHING,
     visit_grave = M.ACTIONS.VISIT_GRAVE,
+    visit_the_pit = M.ACTIONS.VISIT_THE_PIT,
+    wrestle_hereclus = M.ACTIONS.WRESTLE_HERECLUS,
 }
 
 local ACTION_ALIASES = {
@@ -134,6 +224,10 @@ local ACTION_ALIASES = {
     camp = M.ACTIONS.CAMP_ACTION,
     perform_camp_action = M.ACTIONS.CAMP_ACTION,
     carouse = M.ACTIONS.CAROUSE,
+    choose_monster_hunter_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
+    change_monster_hunter_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
+    monster_hunter_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
+    choose_hated_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
     commission_craft = M.ACTIONS.COMMISSION_CRAFT,
     commission = M.ACTIONS.COMMISSION_CRAFT,
     craft = M.ACTIONS.COMMISSION_CRAFT,
@@ -149,30 +243,114 @@ local ACTION_ALIASES = {
     support = M.ACTIONS.SUPPORT,
     support_project = M.ACTIONS.SUPPORT,
     research = M.ACTIONS.RESEARCH,
+    as_above_so_below = M.ACTIONS.AS_ABOVE_SO_BELOW,
+    stargaze = M.ACTIONS.AS_ABOVE_SO_BELOW,
+    blood_feast = M.ACTIONS.BLOOD_FEAST,
+    buy_exotic_drugs = M.ACTIONS.BUY_EXOTIC_DRUGS,
+    buy_drugs = M.ACTIONS.BUY_EXOTIC_DRUGS,
     menagerie_reagent_purchase = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
     harvest_alchemical_reagents = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
     harvest_reagents_menagerie = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
+    adopt = M.ACTIONS.ADOPT,
+    attend_miss_kinseys_dining_club = M.ACTIONS.ATTEND_MISS_KINSEYS_DINING_CLUB,
+    miss_kinseys_dining_club = M.ACTIONS.ATTEND_MISS_KINSEYS_DINING_CLUB,
     beg_for_scraps = M.ACTIONS.BEG_FOR_SCRAPS,
+    commission_dwarven_mastercraft = M.ACTIONS.COMMISSION_DWARVEN_MASTERCRAFT,
+    dwarven_mastercraft = M.ACTIONS.COMMISSION_DWARVEN_MASTERCRAFT,
     commission_gargoyle = M.ACTIONS.COMMISSION_GARGOYLE,
     commission_puppet = M.ACTIONS.COMMISSION_PUPPET,
+    contract_assassination = M.ACTIONS.CONTRACT_ASSASSINATION,
+    assassinate = M.ACTIONS.CONTRACT_ASSASSINATION,
+    copy_text = M.ACTIONS.COPY_TEXTS,
+    copy_texts = M.ACTIONS.COPY_TEXTS,
+    dispose_bodies = M.ACTIONS.DISPOSE_OF_BODIES,
+    dispose_of_bodies = M.ACTIONS.DISPOSE_OF_BODIES,
+    doodlebug = M.ACTIONS.DOODLEBUG,
+    doodlebugging = M.ACTIONS.DOODLEBUG,
+    doomsaying = M.ACTIONS.DOOMSAYING,
+    duel = M.ACTIONS.DUEL,
+    explore_hangmans_hill = M.ACTIONS.EXPLORE_HANGMANS_HILL,
+    explore_hangmans_hill_at_night = M.ACTIONS.EXPLORE_HANGMANS_HILL,
+    exchange_gifts = M.ACTIONS.EXCHANGE_GIFTS,
+    gift_exchange = M.ACTIONS.EXCHANGE_GIFTS,
+    fence = M.ACTIONS.FENCE_GOODS,
+    fence_goods = M.ACTIONS.FENCE_GOODS,
     fit_prosthetics = M.ACTIONS.FIT_PROSTHETICS,
+    fight = M.ACTIONS.FIGHT,
+    fight_in_pits = M.ACTIONS.FIGHT,
+    get_autograph = M.ACTIONS.GET_AUTOGRAPHS,
+    get_autographs = M.ACTIONS.GET_AUTOGRAPHS,
+    get_tattoo = M.ACTIONS.GET_TATTOOS,
+    get_tattoos = M.ACTIONS.GET_TATTOOS,
+    huff_fumes = M.ACTIONS.HUFF_FUMES,
+    sacred_fumes = M.ACTIONS.HUFF_FUMES,
+    enter_the_underworld = M.ACTIONS.ENTER_THE_UNDERWORLD,
+    labyrinth_entry = M.ACTIONS.ENTER_THE_UNDERWORLD,
+    join_beggars_guild = M.ACTIONS.JOIN_BEGGARS_GUILD,
+    join_the_beggars_guild = M.ACTIONS.JOIN_BEGGARS_GUILD,
+    join_court_of_wands = M.ACTIONS.JOIN_COURT_OF_WANDS,
+    join_the_court_of_wands = M.ACTIONS.JOIN_COURT_OF_WANDS,
+    join_swordwhores = M.ACTIONS.JOIN_SWORDWHORES,
+    join_the_swordwhores = M.ACTIONS.JOIN_SWORDWHORES,
+    assemble_goblin_horde = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+    gather_goblin_horde = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+    hatch_goblin_horde = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+    gather_goblins = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+    jarl = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+    keep_an_ear_to_the_ground = M.ACTIONS.KEEP_AN_EAR_TO_THE_GROUND,
+    hear_city_rumor = M.ACTIONS.KEEP_AN_EAR_TO_THE_GROUND,
+    lay_high = M.ACTIONS.LAY_HIGH,
+    hide_out = M.ACTIONS.LAY_HIGH,
+    loosen_lips = M.ACTIONS.LOOSEN_LIPS,
+    buy_drinks_for_answer = M.ACTIONS.LOOSEN_LIPS,
     makeover = M.ACTIONS.MAKEOVER,
+    marriage_feast = M.ACTIONS.MARRIAGE_FEAST,
+    mutation = M.ACTIONS.MUTATION,
+    random_mutation = M.ACTIONS.MUTATION,
+    pale_prophecies = M.ACTIONS.PALE_PROPHECIES,
     pillow_talk = M.ACTIONS.PILLOW_TALK,
+    picnic = M.ACTIONS.PICNIC,
     purchase_amulets = M.ACTIONS.PURCHASE_AMULETS,
     buy_amulets = M.ACTIONS.PURCHASE_AMULETS,
+    purchase_animal_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
+    purchase_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
+    buy_animal_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
     purchase_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
     buy_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
     purchase_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
     buy_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
+    research_a_new_spell = M.ACTIONS.RESEARCH_A_NEW_SPELL,
+    spell_research = M.ACTIONS.RESEARCH_A_NEW_SPELL,
     rest_and_recuperate = M.ACTIONS.REST_AND_RECUPERATE,
     hospital_rest = M.ACTIONS.REST_AND_RECUPERATE,
+    seal_away = M.ACTIONS.SEAL_AWAY,
+    seal_abomination = M.ACTIONS.SEAL_AWAY,
+    seek_initiation = M.ACTIONS.SEEK_INITIATION,
+    mythrys_initiation = M.ACTIONS.SEEK_INITIATION,
+    seek_truth = M.ACTIONS.SEEK_TRUTH,
+    test_hypothesis = M.ACTIONS.SEEK_TRUTH,
     send_letter = M.ACTIONS.SEND_LETTER,
+    seek_the_cursed_king = M.ACTIONS.SEEK_THE_CURSED_KING,
+    cursed_king = M.ACTIONS.SEEK_THE_CURSED_KING,
     sell_reagent = M.ACTIONS.SELL_REAGENT,
     sell_reagents = M.ACTIONS.SELL_REAGENT,
+    spread_rumor = M.ACTIONS.SPREAD_RUMORS,
+    spread_rumors = M.ACTIONS.SPREAD_RUMORS,
+    strange_communions = M.ACTIONS.STRANGE_COMMUNIONS,
+    attend_communion = M.ACTIONS.STRANGE_COMMUNIONS,
     study_language = M.ACTIONS.STUDY_LANGUAGE,
+    loan = M.ACTIONS.TAKE_OUT_LOAN,
+    take_loan = M.ACTIONS.TAKE_OUT_LOAN,
+    take_out_a_loan = M.ACTIONS.TAKE_OUT_LOAN,
+    play = M.ACTIONS.THE_PLAYS_THE_THING,
+    the_plays_the_thing = M.ACTIONS.THE_PLAYS_THE_THING,
+    trial_by_combat = M.ACTIONS.TRIAL_BY_COMBAT,
+    court_martial_trial = M.ACTIONS.TRIAL_BY_COMBAT,
     undergo_leeching = M.ACTIONS.UNDERGO_LEECHING,
     leeching = M.ACTIONS.UNDERGO_LEECHING,
     visit_grave = M.ACTIONS.VISIT_GRAVE,
+    visit_the_pit = M.ACTIONS.VISIT_THE_PIT,
+    wrestle_hereclus = M.ACTIONS.WRESTLE_HERECLUS,
 }
 
 local function districtActionAlias(actionId)
@@ -211,6 +389,33 @@ M.HANGOVER_TABLE = {
     [19] = { id = "missing_hand", title = "Missing Hand" },
     [20] = { id = "candle_fire", title = "Candle Dare Fire" },
     [21] = { id = "puncture_marks", title = "Circular Punctures" },
+}
+
+M.DOOMSAYING_PROPHECY = {
+    [1] = {
+        [constants.SUITS.SWORDS] = { id = "beast_first_house", text = "The Beast enters the First House" },
+        [constants.SUITS.PENTACLES] = { id = "grey_turns_red", text = "The Grey turns red" },
+        [constants.SUITS.CUPS] = { id = "eldest_falls", text = "The eldest falls" },
+        [constants.SUITS.WANDS] = { id = "western_sunrise", text = "The sun rises in the west" },
+    },
+    [2] = {
+        [constants.SUITS.SWORDS] = { id = "hunger_loosed", text = "Hunger is loosed" },
+        [constants.SUITS.PENTACLES] = { id = "last_queen_blinded", text = "The Last Queen blinds herself" },
+        [constants.SUITS.CUPS] = { id = "second_mouth_sings", text = "A second mouth begins to sing" },
+        [constants.SUITS.WANDS] = { id = "earth_birth_pangs", text = "The earth groans with birth pangs" },
+    },
+    [3] = {
+        [constants.SUITS.SWORDS] = { id = "moon_dies", text = "The moon dies" },
+        [constants.SUITS.PENTACLES] = { id = "new_river_rises", text = "A new river rises" },
+        [constants.SUITS.CUPS] = { id = "new_star_kindled", text = "A new star is kindled" },
+        [constants.SUITS.WANDS] = { id = "worm_arises", text = "His Majesty the Worm arises" },
+    },
+    [4] = {
+        [constants.SUITS.SWORDS] = { id = "ascend_heaven", text = "Ascend the stairs of Heaven" },
+        [constants.SUITS.PENTACLES] = { id = "seven_crowns_stolen", text = "The seven crowns are stolen" },
+        [constants.SUITS.CUPS] = { id = "blood_blasphemy_sung", text = "The Blood Blasphemy is sung again" },
+        [constants.SUITS.WANDS] = { id = "clarion_wound", text = "The Clarion of Altheia is wound" },
+    },
 }
 
 M.MARKET_TIERS = {
@@ -280,6 +485,59 @@ M.MARKET_TIERS = {
     steel_armor = "luxurious",
     tent = "luxurious",
     wand_archwood = "luxurious",
+}
+
+local EXOTIC_DRUGS = {
+    black_honey = {
+        id = "black_honey",
+        name = "Black Honey",
+        cost = 35,
+        affliction = "black_honey",
+        stageEffects = {
+            [1] = "May draw five Challenge cards instead of four, then spit out 1-4 teeth.",
+            [2] = "Cups equals 1; disfavor on fine motor tests of fate.",
+        },
+        quitCharges = 5,
+    },
+    ghost_lotus = {
+        id = "ghost_lotus",
+        name = "Ghost Lotus",
+        cost = 5,
+        affliction = "ghost_lotus",
+        stageEffects = {
+            [1] = "Euphoria cancels effects that hamper sleep.",
+            [2] = "Cannot read or write and is immune to illusions.",
+            [3] = "Rewrite one motif descriptor.",
+        },
+    },
+}
+
+local HUNTER_DEFAULT_FOES = {
+    beast_hunter = "Beast",
+    elemental_hunter = "Elemental",
+    man_hunter = "Man",
+    spirit_hunter = "Spirit",
+    undead_hunter = "Undead",
+    witch_hunter = "Witch",
+}
+
+local HUNTER_TALENT_IDS = {
+    "monster_hunter",
+    "beast_hunter",
+    "elemental_hunter",
+    "man_hunter",
+    "spirit_hunter",
+    "undead_hunter",
+    "witch_hunter",
+}
+
+local HUNTER_FOE_LABELS = {
+    beast = "Beast",
+    elemental = "Elemental",
+    man = "Man",
+    spirit = "Spirit",
+    undead = "Undead",
+    witch = "Witch",
 }
 
 local MARKET_TIER_RANK = {
@@ -445,6 +703,25 @@ local function actorId(actor)
     return actor and (actor.id or actor.name)
 end
 
+local function getMythrysMembership(actor)
+    local memberships = actor and actor.memberships
+    if type(memberships) ~= "table" then
+        return nil
+    end
+    return memberships.cult_of_mythrys or memberships.mythrys or memberships.cultOfMythrys
+end
+
+function M.getMythrysInitiationRank(actor)
+    local membership = getMythrysMembership(actor)
+    return math.max(0, math.floor(tonumber(membership and (membership.rank or membership.initiationRank)) or 0))
+end
+
+function M.hasMythrysInitiationFavor(actor, target)
+    local actorRank = M.getMythrysInitiationRank(actor)
+    local targetRank = M.getMythrysInitiationRank(target)
+    return actorRank > 0 and targetRank > 0 and actorRank > targetRank
+end
+
 local function normalizeUpkeepTier(tier)
     return tostring(tier or ""):lower():gsub("%s+", "_")
 end
@@ -458,6 +735,13 @@ local function getWands(actor)
         return actor:getAttribute(constants.SUITS.WANDS)
     end
     return tonumber(actor and actor.wands) or 0
+end
+
+local function getSwords(actor)
+    if actor and actor.getAttribute then
+        return actor:getAttribute(constants.SUITS.SWORDS)
+    end
+    return tonumber(actor and actor.swords) or 0
 end
 
 local function getCups(actor)
@@ -515,6 +799,16 @@ local function languageListHas(source, language)
         end
     end
     return false
+end
+
+local function normalizeInitiationAnswer(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    local normalized = value:lower()
+    normalized = normalized:gsub("^%s+", ""):gsub("%s+$", "")
+    normalized = normalized:gsub("%s+", " ")
+    return normalized ~= "" and normalized or nil
 end
 
 local function slugify(value)
@@ -1354,6 +1648,88 @@ local function appendActorRecord(actor, field, record)
     actor[field][#actor[field] + 1] = record
 end
 
+local function findCarriedItem(actor, request, idKeys, tableKeys)
+    request = request or {}
+    local inv = actor and actor.inventory
+    if not inv then
+        return nil, nil
+    end
+
+    for _, key in ipairs(idKeys or {}) do
+        local itemId = request[key]
+        if itemId and inv.findItem then
+            local item, location = inv:findItem(itemId)
+            if item then
+                return item, location
+            end
+        end
+    end
+
+    for _, key in ipairs(tableKeys or {}) do
+        local candidate = request[key]
+        if type(candidate) == "table" then
+            if candidate.id and inv.findItem then
+                local item, location = inv:findItem(candidate.id)
+                if item then
+                    return item, location
+                end
+            end
+            return candidate, nil
+        end
+    end
+
+    return nil, nil
+end
+
+local function normalizeTiles(value)
+    local tiles = {}
+    local function addTile(tile)
+        if type(tile) == "table" then
+            addTile(tile.tile or tile.letter or tile.value or tile[1])
+            return
+        end
+        if tile == nil then
+            return
+        end
+        local text = tostring(tile):upper()
+        for char in text:gmatch("%a") do
+            tiles[#tiles + 1] = char
+        end
+    end
+
+    if type(value) == "table" then
+        for _, tile in ipairs(value) do
+            addTile(tile)
+        end
+    else
+        addTile(value)
+    end
+
+    return tiles
+end
+
+local function lettersNeededForName(name)
+    local needed = {}
+    for char in tostring(name or ""):upper():gmatch("%a") do
+        needed[char] = (needed[char] or 0) + 1
+    end
+    return needed
+end
+
+local function tilesCompleteName(name, tiles)
+    local remaining = lettersNeededForName(name)
+    for _, tile in ipairs(tiles or {}) do
+        local char = tostring(tile or ""):upper():match("%a")
+        if char and remaining[char] then
+            remaining[char] = remaining[char] - 1
+            if remaining[char] <= 0 then
+                remaining[char] = nil
+            end
+        end
+    end
+    return next(remaining) == nil, remaining
+end
+
 local function getActorCityUpkeep(controller, actor)
     local id = actorId(actor)
     return (id and controller and controller.upkeepCompleted[id]) or (actor and actor.cityUpkeep)
@@ -1841,7 +2217,33 @@ local function resolveComponentTemplateId(ref)
 end
 
 local function normalizeTalentId(talentId)
-    return tostring(talentId or ""):lower():gsub("%s+", "_"):gsub("[’']", "")
+    return talent_catalog.normalizeId(talentId)
+end
+
+local function getTalentEntry(actor, talentId)
+    if type(actor and actor.talents) ~= "table" then
+        return nil, nil
+    end
+
+    local requested = normalizeTalentId(talentId)
+    for key, talent in pairs(actor.talents) do
+        if normalizeTalentId(key) == requested then
+            return talent, key
+        end
+        if type(talent) == "table" and normalizeTalentId(talent.id or talent.name or talent.talentId) == requested then
+            return talent, key
+        end
+    end
+
+    return nil, nil
+end
+
+local function hasUsableTalent(actor, talentId)
+    local talent = getTalentEntry(actor, talentId)
+    if type(talent) == "table" then
+        return talent.wounded ~= true
+    end
+    return talent == true
 end
 
 local function normalizeProjectId(projectId)
@@ -3356,6 +3758,14 @@ function M.createCityPhaseController(config)
             return false, "Choose a talent to train"
         end
 
+        local trainingOk, training = talent_catalog.validateTraining(actor, talentId, {
+            cityExpert = true,
+            trainerAvailable = request.trainerAvailable,
+        })
+        if not trainingOk then
+            return false, training.reason
+        end
+
         local xpAmount = math.max(1, tonumber(request.xp or request.amount or request.xpInvested) or 1)
         local costPerXP = tonumber(request.costPerXP or actionData.costPerXP) or M.TRAINING_COST_PER_XP
         local cost = xpAmount * costPerXP
@@ -3384,7 +3794,10 @@ function M.createCityPhaseController(config)
 
         talent.mastered = talent.mastered == true
         talent.wounded = talent.wounded == true
-        talent.mentored = true
+        talent.mentored = training.mentored == true
+        talent.pathTrained = training.ownPath == true
+        talent.path = training.path or talent.path
+        talent.trainingKind = training.kind
         talent.cityTrained = true
         talent.trainerId = request.trainerId or request.expertId
         talent.trainerName = request.trainerName or request.expertName
@@ -3405,8 +3818,143 @@ function M.createCityPhaseController(config)
             mastered = talent.mastered,
             cost = cost,
             costPerXP = costPerXP,
+            trainingKind = training.kind,
+            path = training.path,
+            actorPath = training.actorPath,
+            mentored = talent.mentored,
+            pathTrained = talent.pathTrained,
             talent = talent,
             result = "training_complete",
+        }
+    end
+
+    function controller:resolveChooseMonsterHunterFoe(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.hunter or actionData
+        if type(actor and actor.talents) ~= "table" then
+            return false, "Requires Monster Hunter talent"
+        end
+
+        local function findTalentById(wanted)
+            wanted = normalizeTalentId(wanted)
+            if wanted == "" then
+                return nil, nil
+            end
+            for key, value in pairs(actor.talents) do
+                if normalizeTalentId(key) == wanted then
+                    return key, value
+                end
+                if type(value) == "table" and normalizeTalentId(value.id or value.name or value.talentId) == wanted then
+                    return key, value
+                end
+            end
+            return nil, nil
+        end
+
+        local talentKey, talent = findTalentById(request.talentId or request.talent)
+        if not talentKey then
+            local requestedFoeKey = normalizeTalentId(request.foe or request.hatedFoe or request.category)
+            if requestedFoeKey ~= "" then
+                talentKey, talent = findTalentById(requestedFoeKey .. "_hunter")
+            end
+        end
+        if not talentKey then
+            for _, candidate in ipairs(HUNTER_TALENT_IDS) do
+                talentKey, talent = findTalentById(candidate)
+                if talentKey then
+                    break
+                end
+            end
+        end
+        if not talentKey then
+            return false, "Requires Monster Hunter talent"
+        end
+        if type(talent) == "table" and talent.wounded == true then
+            return false, "Monster Hunter talent is wounded"
+        end
+
+        if type(talent) ~= "table" then
+            talent = {
+                mastered = talent == true,
+                wounded = false,
+            }
+            actor.talents[talentKey] = talent
+        end
+
+        local function foeLabel(value)
+            local key = normalizeTalentId(value)
+            if HUNTER_FOE_LABELS[key] then
+                return HUNTER_FOE_LABELS[key]
+            end
+            local text = tostring(value or ""):gsub("_", " ")
+            text = text:gsub("(%a)([%w']*)", function(first, rest)
+                return first:upper() .. rest:lower()
+            end)
+            return text
+        end
+
+        local foe = request.foe or request.hatedFoe or request.category or talent.foe or HUNTER_DEFAULT_FOES[normalizeTalentId(talentKey)]
+        if not foe or tostring(foe) == "" then
+            return false, "Choose hated foe"
+        end
+        foe = foeLabel(foe)
+
+        local specialization = request.specialization or request.speciality or request.specialty or request.creature or
+            request.species or request.targetType
+        if not specialization or tostring(specialization) == "" then
+            return false, "Choose hunter specialization"
+        end
+        specialization = tostring(specialization)
+
+        local tags = {}
+        local function addTag(value)
+            if value == nil then
+                return
+            end
+            local tag = slugify(value)
+            if tag ~= "" then
+                tags[#tags + 1] = tag
+            end
+        end
+        addTag(specialization)
+        for _, tag in ipairs(normalizeList(request.specializationTags or request.tags)) do
+            addTag(tag)
+        end
+
+        local previous = {
+            foe = talent.foe,
+            specialization = talent.specialization,
+            specializationTags = talent.specializationTags,
+        }
+        talent.foe = foe
+        talent.hatedFoe = foe
+        talent.specialization = specialization
+        talent.specializationTags = tags
+        talent.motif = foe .. " Hunter"
+        talent.changedInCity = true
+
+        local change = {
+            action = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
+            talentId = normalizeTalentId(talentKey),
+            previous = previous,
+            foe = foe,
+            specialization = specialization,
+            specializationTags = tags,
+            reason = request.reason or request.cause,
+            motif = talent.motif,
+        }
+        appendActorRecord(actor, "monsterHunterChanges", change)
+
+        return true, "monster_hunter_foe_chosen", {
+            actor = actor,
+            action = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
+            change = change,
+            talent = talent,
+            talentId = change.talentId,
+            foe = foe,
+            specialization = specialization,
+            specializationTags = tags,
+            result = "monster_hunter_foe_chosen",
         }
     end
 
@@ -3880,6 +4428,1616 @@ function M.createCityPhaseController(config)
         }
     end
 
+    function controller:resolveDisposeOfBodies(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.bodyDisposal or actionData
+        local body, location = findCarriedItem(actor, request,
+            { "bodyId", "corpseId", "itemId" },
+            { "body", "corpse", "item" })
+        local description = request.description or request.bodyDescription or
+            (body and (body.name or body.id)) or request.bodyName
+        local count = math.max(1, math.floor(tonumber(request.count or request.quantity) or 1))
+        if not body and (not description or tostring(description) == "") then
+            return false, "Body required"
+        end
+
+        local removed = nil
+        if body and body.id and actor and actor.inventory and actor.inventory.removeItem and location then
+            removed = actor.inventory:removeItem(body.id)
+        end
+
+        local disposal = {
+            source = "licehouse",
+            description = tostring(description or "body-shaped bundle of meat"),
+            count = count,
+            item = removed or body,
+            removedFromInventory = removed ~= nil,
+            location = location,
+            noQuestionsAsked = true,
+        }
+        appendActorRecord(actor, "disposedBodies", disposal)
+
+        return true, "bodies_disposed", {
+            actor = actor,
+            action = M.ACTIONS.DISPOSE_OF_BODIES,
+            disposal = disposal,
+            removedItem = removed,
+            result = "bodies_disposed",
+        }
+    end
+
+    function controller:resolveAdopt(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.adoption or actionData
+        actor.wards = actor.wards or {}
+        local wardName = request.name or request.wardName or request.childName or
+            string.format("%s's ward", actor and actor.name or "adventurer")
+        local ward = type(request.ward) == "table" and shallowClone(request.ward) or {}
+        ward.id = ward.id or request.wardId or string.format("%s_ward_%02d_%s",
+            slugify(actorId(actor)), #actor.wards + 1, slugify(wardName))
+        ward.name = ward.name or tostring(wardName)
+        ward.source = ward.source or "orphanarium"
+        ward.citySupportStaff = true
+        ward.supportStaff = true
+        ward.accompaniesCrawl = false
+        ward.canEnterUnderworld = false
+        ward.inheritor = request.soleInheritor ~= false and request.inheritor ~= false
+
+        actor.wards[#actor.wards + 1] = ward
+        if ward.inheritor then
+            actor.soleInheritor = ward
+            actor.inheritor = ward
+        end
+
+        return true, "ward_adopted", {
+            actor = actor,
+            action = M.ACTIONS.ADOPT,
+            ward = ward,
+            soleInheritor = ward.inheritor,
+            result = "ward_adopted",
+        }
+    end
+
+    function controller:resolveLayHigh(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.layHigh or actionData
+        local pursuer = request.pursuer or request.offendedParty or request.angryParty or request.creditor or
+            "offended party"
+        local duration = request.duration or request.time or request.cityActions or request.days or "GM-determined"
+        local record = {
+            source = "the_gambol",
+            pursuer = tostring(pursuer),
+            duration = duration,
+            heatDiedDown = request.heatDiedDown ~= false,
+            pursuerWastesTimeAndMoney = true,
+        }
+        appendActorRecord(actor, "layingHigh", record)
+
+        return true, "laid_high", {
+            actor = actor,
+            action = M.ACTIONS.LAY_HIGH,
+            layHigh = record,
+            result = "laid_high",
+        }
+    end
+
+    function controller:resolveFenceGoods(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.fence or actionData
+        local item, location = findCarriedItem(actor, request,
+            { "itemId", "goodsId", "possessionId" },
+            { "item", "goods", "possession" })
+        local description = request.description or request.name or request.title or
+            (item and (item.name or item.id))
+        if not item and (not description or tostring(description) == "") then
+            return false, "Goods required"
+        end
+
+        local price = tonumber(request.price or request.fairPrice or request.salePrice or request.gold)
+        local scale = nil
+        local syllables = nil
+        local rate = nil
+        if not price then
+            scale = normalizeCommissionScale(request.scale or request.category or request.tier or "adventurer")
+            rate = M.COMMISSION_CRAFT_RATES[scale]
+            if not rate then
+                return false, "Fence price scale required"
+            end
+            syllables = resolveSyllables({
+                syllables = request.syllables or request.syllableCount,
+                description = description,
+                name = description,
+            })
+            if syllables <= 0 then
+                return false, "Goods required"
+            end
+            price = syllables * rate
+        end
+        price = math.max(0, math.floor(price))
+
+        local removed = nil
+        if item and item.id and actor and actor.inventory and actor.inventory.removeItem and location then
+            removed = actor.inventory:removeItem(item.id)
+        end
+        currency.addGold(actor, price)
+
+        local sale = {
+            source = "curio_curia",
+            description = tostring(description or "illicit goods"),
+            item = removed or item,
+            removedFromInventory = removed ~= nil,
+            location = location,
+            price = price,
+            fairPriceProcedure = true,
+            scale = scale,
+            syllables = syllables,
+            ratePerSyllable = rate,
+        }
+        appendActorRecord(actor, "fencedGoods", sale)
+
+        return true, "goods_fenced", {
+            actor = actor,
+            action = M.ACTIONS.FENCE_GOODS,
+            sale = sale,
+            goldGained = price,
+            removedItem = removed,
+            result = "goods_fenced",
+        }
+    end
+
+    function controller:resolveMutation(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.mutation or actionData
+        local mutation = {
+            source = "cloaca_maxima",
+            table = request.tableName or request.sourceTable or "external_random_mutation_table",
+            name = request.name or request.mutationName or request.result or "GM-supplied random mutation",
+            description = request.description or request.effect,
+            random = request.random ~= false,
+        }
+        actor.mutations = actor.mutations or {}
+        actor.mutations[#actor.mutations + 1] = mutation
+        appendActorRecord(actor, "cityMutations", mutation)
+
+        return true, "mutation_gained", {
+            actor = actor,
+            action = M.ACTIONS.MUTATION,
+            mutation = mutation,
+            result = "mutation_gained",
+        }
+    end
+
+    function controller:resolveDoodlebug(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.doodlebug or actionData
+        if request.destroyed == true or request.givenAway == true or request.given_away == true or
+           request.stolen == true then
+            return false, "Only legitimately lost Underworld items can be doodlebugged"
+        end
+
+        local lostItem = type(request.lostItem) == "table" and request.lostItem or
+            (type(request.item) == "table" and request.item or nil)
+        local itemName = request.itemName or request.name or request.description or (lostItem and lostItem.name)
+        if not itemName or tostring(itemName) == "" then
+            return false, "Lost item required"
+        end
+
+        local found = request.found
+        local roll = request.roll or request.chanceRoll
+        if found == nil then
+            if roll ~= nil then
+                found = (tonumber(roll) or 1) <= 0.5
+            else
+                found = math.random() <= 0.5
+            end
+        end
+
+        local returnedItem = nil
+        local location = request.location or inventory.LOCATIONS.PACK
+        if found then
+            returnedItem = lostItem or inventory.createItem({
+                id = request.itemId,
+                name = tostring(itemName),
+                type = request.itemType,
+                templateId = request.templateId,
+                properties = request.properties or {},
+            })
+            if actor.inventory and actor.inventory.addItem then
+                local added, reason = actor.inventory:addItem(returnedItem, location)
+                if not added then
+                    return false, reason or "No inventory space"
+                end
+            end
+        end
+
+        local search = {
+            source = "mount_of_broken_amphorae",
+            itemName = tostring(itemName),
+            found = found == true,
+            chance = 0.5,
+            roll = roll,
+            returnedItem = returnedItem,
+        }
+        appendActorRecord(actor, "doodlebugSearches", search)
+
+        return true, found and "lost_item_found" or "lost_item_not_found", {
+            actor = actor,
+            action = M.ACTIONS.DOODLEBUG,
+            search = search,
+            item = returnedItem,
+            result = found and "lost_item_found" or "lost_item_not_found",
+        }
+    end
+
+    function controller:resolveAttendMissKinseysDiningClub(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.diningClub or actionData
+        local meat, location = findCarriedItem(actor, request,
+            { "meatId", "steakId", "itemId" },
+            { "meat", "steak", "item" })
+        if not meat and actor.inventory and actor.inventory.findItemByPredicate then
+            meat, location = actor.inventory:findItemByPredicate(function(item)
+                local props = item.properties or {}
+                return item.isMonsterMeat == true or item.type == "monster_meat" or
+                    props.monsterMeat == true or props.underworldMeat == true or props.strangeMeat == true
+            end)
+        end
+        if not meat then
+            return false, "Strange monster meat required"
+        end
+
+        local question = request.question or request.subject
+        if not question or tostring(question) == "" then
+            return false, "Underworld question required"
+        end
+
+        local removed = nil
+        if meat.id and actor.inventory and actor.inventory.removeItem and location then
+            removed = actor.inventory:removeItem(meat.id)
+        end
+        local dinner = {
+            source = "lichyard_market",
+            meat = removed or meat,
+            question = tostring(question),
+            rumor = request.rumor or request.answer or "something resembling a helpful Underworld rumor",
+            attendees = request.attendees or request.guilds,
+        }
+        appendActorRecord(actor, "missKinseyDinners", dinner)
+
+        return true, "miss_kinseys_dinner_attended", {
+            actor = actor,
+            action = M.ACTIONS.ATTEND_MISS_KINSEYS_DINING_CLUB,
+            dinner = dinner,
+            rumor = dinner.rumor,
+            removedItem = removed,
+            result = "miss_kinseys_dinner_attended",
+        }
+    end
+
+    function controller:resolveCommissionDwarvenMastercraft(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.commission or actionData.craft or actionData
+        if request.reasonable == false or request.approved == false then
+            return false, "Commission not approved"
+        end
+
+        local description = tostring(request.description or request.name or request.title or "")
+        if description == "" then
+            return false, "Commission description required"
+        end
+        local syllables = resolveSyllables(request)
+        if syllables <= 0 then
+            return false, "Commission description required"
+        end
+        local cost = syllables * 50
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local commissionId = normalizeProjectId(request.commissionId or request.id or description)
+        local commission = {
+            id = commissionId,
+            source = "colonies",
+            name = request.name or request.title or description,
+            description = description,
+            syllables = syllables,
+            cost = cost,
+            mastercraft = true,
+            dwarven = true,
+            improvement = request.improvement or request.bonus or "GM-determined mastercraft improvement",
+            commissionedBy = actor,
+            commissionedById = actorId(actor),
+        }
+        self.commissions[commissionId] = commission
+
+        return true, "dwarven_mastercraft_commissioned", {
+            actor = actor,
+            action = M.ACTIONS.COMMISSION_DWARVEN_MASTERCRAFT,
+            commission = commission,
+            commissionId = commissionId,
+            syllables = syllables,
+            cost = cost,
+            result = "dwarven_mastercraft_commissioned",
+        }
+    end
+
+    function controller:resolveContractAssassination(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.assassination or actionData
+        local targetName = request.targetName or request.name or (request.target and request.target.name)
+        if not targetName or tostring(targetName) == "" then
+            return false, "Assassination target required"
+        end
+        if request.underworld == true or request.inUnderworld == true or request.location == "underworld" then
+            return false, "Court of Coins only targets the Wide World"
+        end
+
+        local price = math.floor(tonumber(request.price or request.cost or request.gold or request.priceGold) or 0)
+        local paymentItem, paymentLocation = findCarriedItem(actor, request,
+            { "paymentItemId", "itemId" },
+            { "paymentItem", "payment" })
+        if price <= 0 and not paymentItem then
+            return false, "Assassination price required"
+        end
+        if price > 0 and currency.getGold(actor) < price then
+            return false, "Not enough gold"
+        end
+        if price > 0 and not currency.spendGold(actor, price) then
+            return false, "Not enough gold"
+        end
+
+        local removedPayment = nil
+        if paymentItem and paymentItem.id and actor.inventory and actor.inventory.removeItem and paymentLocation then
+            removedPayment = actor.inventory:removeItem(paymentItem.id)
+        end
+        local contract = {
+            source = "court_of_coins",
+            targetName = tostring(targetName),
+            targetScope = "wide_world",
+            price = price,
+            paymentItem = removedPayment or paymentItem,
+            withinMonth = true,
+            consented = true,
+        }
+        appendActorRecord(actor, "assassinationContracts", contract)
+
+        return true, "assassination_contracted", {
+            actor = actor,
+            action = M.ACTIONS.CONTRACT_ASSASSINATION,
+            contract = contract,
+            price = price,
+            paymentItem = contract.paymentItem,
+            result = "assassination_contracted",
+        }
+    end
+
+    function controller:resolvePicnic(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.picnic or actionData
+        local participants = normalizeList(request.participants or request.adventurers or request.invitees)
+        local backstories = request.backstories or request.revelations or {}
+        local shares = {}
+        local seen = {}
+        local function addShare(participant, fallback)
+            local id = actorId(participant) or tostring(#shares + 1)
+            if seen[id] then
+                return
+            end
+            seen[id] = true
+            local revelation = backstories[id] or backstories[#shares + 1] or fallback
+            shares[#shares + 1] = {
+                actor = participant,
+                actorId = id,
+                revelation = revelation or "An unknown backstory detail is shared.",
+            }
+        end
+
+        addShare(actor, request.backstory or request.revelation)
+        for _, participant in ipairs(participants) do
+            addShare(participant)
+        end
+
+        local additional = {}
+        for _, share in ipairs(shares) do
+            if actorId(share.actor) ~= actorId(actor) then
+                additional[#additional + 1] = {
+                    actor = share.actor,
+                    action = M.ACTIONS.PICNIC,
+                    result = "picnic_participant",
+                }
+            end
+        end
+
+        local picnic = {
+            source = "garden_of_ravenous_roses",
+            shares = shares,
+            dramaticBackstory = true,
+        }
+        appendActorRecord(actor, "picnics", picnic)
+
+        return true, "picnic_shared", {
+            actor = actor,
+            action = M.ACTIONS.PICNIC,
+            picnic = picnic,
+            shares = shares,
+            additionalCityActors = additional,
+            result = "picnic_shared",
+        }
+    end
+
+    function controller:resolveVisitThePit(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.pitVisit or actionData
+        local alterations = {}
+        if type(request.alterations) == "table" then
+            alterations = shallowClone(request.alterations)
+        end
+
+        if request.swapAttributes then
+            local first = request.swapAttributes[1] or request.swapAttributes.a
+            local second = request.swapAttributes[2] or request.swapAttributes.b
+            if first and second then
+                local oldFirst = actor[first]
+                local oldSecond = actor[second]
+                actor[first], actor[second] = oldSecond, oldFirst
+                if actor.attributes then
+                    actor.attributes[first], actor.attributes[second] = actor[first], actor[second]
+                end
+                alterations[#alterations + 1] = {
+                    type = "swap",
+                    first = first,
+                    second = second,
+                    oldFirst = oldFirst,
+                    oldSecond = oldSecond,
+                }
+            end
+        end
+
+        local field = request.field or request.attribute
+        if field and request.value ~= nil then
+            local oldValue = actor[field]
+            actor[field] = request.value
+            if actor.attributes and actor.attributes[field] ~= nil then
+                actor.attributes[field] = request.value
+            end
+            alterations[#alterations + 1] = {
+                type = "set",
+                field = field,
+                oldValue = oldValue,
+                newValue = request.value,
+            }
+        end
+
+        if #alterations == 0 then
+            return false, "Pit alteration required"
+        end
+
+        local visit = {
+            source = "starfall_pit",
+            alterations = alterations,
+            tableEditedSheet = true,
+            actorInsistsAlwaysTrue = true,
+        }
+        appendActorRecord(actor, "starfallPitVisits", visit)
+
+        return true, "pit_altered_sheet", {
+            actor = actor,
+            action = M.ACTIONS.VISIT_THE_PIT,
+            visit = visit,
+            alterations = alterations,
+            result = "pit_altered_sheet",
+        }
+    end
+
+    function controller:resolveThePlaysTheThing(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.play or actionData
+        local companion = request.companion or request.target or request.character
+        local companionName = request.companionName or request.characterName or (companion and companion.name)
+        local subject = request.subject or request.playSubject or request.topic
+        if not companionName or tostring(companionName) == "" then
+            return false, "Companion required"
+        end
+        if not subject or tostring(subject) == "" then
+            return false, "Play subject required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 25
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local outing = {
+            source = "broken_smiles_district",
+            companion = companion,
+            companionName = tostring(companionName),
+            subject = tostring(subject),
+            opinion = request.opinion or request.reaction or "GM-revealed opinion",
+            cost = cost,
+        }
+        appendActorRecord(actor, "playOutings", outing)
+
+        return true, "companion_opinion_gauged", {
+            actor = actor,
+            action = M.ACTIONS.THE_PLAYS_THE_THING,
+            outing = outing,
+            opinion = outing.opinion,
+            cost = cost,
+            result = "companion_opinion_gauged",
+        }
+    end
+
+    function controller:resolveExchangeGifts(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.giftExchange or actionData
+        local gift, giftLocation = findCarriedItem(actor, request,
+            { "giftId", "itemId" },
+            { "gift", "item" })
+        local giftDescription = request.giftDescription or request.description or (gift and (gift.name or gift.id))
+        if not gift and (not giftDescription or tostring(giftDescription) == "") then
+            return false, "Gift required"
+        end
+
+        local testResult = request.testResult or request.outcome
+        local card, shouldDiscard, drawnDeck
+        if not testResult then
+            card, shouldDiscard, drawnDeck = self:drawMinorCard(actionData)
+            if not card then
+                return false, "Requires minor arcana draw"
+            end
+            testResult = fate_resolver.resolveTest(getCups(actor), nil, card, request.favor)
+        end
+
+        local removedGift = nil
+        if gift and gift.id and actor.inventory and actor.inventory.removeItem and giftLocation then
+            removedGift = actor.inventory:removeItem(gift.id)
+        end
+        if shouldDiscard and drawnDeck and drawnDeck.discard then
+            drawnDeck:discard(card)
+        end
+
+        local rewardName = testResult.success == true and
+            (request.rewardName or request.antiqueName or "Random Antique") or
+            (request.rewardName or request.funnyItemName or "Small Funny Item")
+        local reward = type(request.rewardItem) == "table" and request.rewardItem or inventory.createItem({
+            name = rewardName,
+            type = testResult.success == true and "antique" or "funny_item",
+            properties = {
+                templeGift = true,
+                antique = testResult.success == true,
+                funny = testResult.success ~= true,
+            },
+        })
+        if actor.inventory and actor.inventory.addItem then
+            local added, reason = actor.inventory:addItem(reward, request.location or inventory.LOCATIONS.PACK)
+            if not added then
+                return false, reason or "No inventory space"
+            end
+        end
+
+        local exchange = {
+            source = "temple_of_gods_wives",
+            gift = removedGift or gift,
+            giftDescription = tostring(giftDescription or "ceremonial gift"),
+            reward = reward,
+            success = testResult.success == true,
+            testResult = testResult,
+        }
+        appendActorRecord(actor, "giftExchanges", exchange)
+
+        return true, exchange.success and "antique_received" or "funny_item_received", {
+            actor = actor,
+            action = M.ACTIONS.EXCHANGE_GIFTS,
+            exchange = exchange,
+            reward = reward,
+            card = card,
+            testResult = testResult,
+            result = exchange.success and "antique_received" or "funny_item_received",
+        }
+    end
+
+    function controller:resolveJoinCourtOfWands(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.membership or actionData
+        local cost = tonumber(request.cost or request.costGold) or 100
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local staff = inventory.createItemFromTemplate("wand_archwood", {
+            name = request.staffName or "Archwood Staff",
+            weaponType = "staff",
+            isWeapon = true,
+            isMelee = true,
+            properties = {
+                archwood = true,
+                wand = true,
+                staff = true,
+                polearm = true,
+                gramaryeFocus = true,
+            },
+        })
+        if actor.inventory and actor.inventory.addItem then
+            local added, reason = actor.inventory:addItem(staff, request.location or inventory.LOCATIONS.PACK)
+            if not added then
+                currency.addGold(actor, cost)
+                return false, reason or "No inventory space"
+            end
+        end
+
+        actor.memberships = actor.memberships or {}
+        actor.memberships.court_of_wands = {
+            joined = true,
+            duesPaid = cost,
+            archwoodStaffIssued = true,
+            gramaryeFocus = true,
+        }
+
+        return true, "court_of_wands_joined", {
+            actor = actor,
+            action = M.ACTIONS.JOIN_COURT_OF_WANDS,
+            membership = actor.memberships.court_of_wands,
+            staff = staff,
+            cost = cost,
+            result = "court_of_wands_joined",
+        }
+    end
+
+    function controller:resolveBuyExoticDrugs(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.purchase or actionData
+        if not actor or not actor.inventory or not actor.inventory.addItem then
+            return false, "No inventory for purchase"
+        end
+
+        local orders = normalizeList(request.drugs or request.items or request.drug or request.drugId or request.id)
+        if #orders == 0 then
+            return false, "Choose exotic drug"
+        end
+
+        local planned = {}
+        local purchases = {}
+        local totalCost = 0
+        local location = request.location or inventory.LOCATIONS.PACK
+        for _, order in ipairs(orders) do
+            local entry = type(order) == "table" and order or { id = order }
+            local drugId = slugify(entry.drugId or entry.id or entry.name or entry.drug or entry[1])
+            local config = EXOTIC_DRUGS[drugId]
+            local name = entry.name or (config and config.name) or tostring(entry.drugId or entry.id or entry.drug or "Exotic Drug")
+            local cost = tonumber(entry.cost or entry.costGold or entry.price or (config and config.cost))
+            if not cost then
+                return false, "Drug price required"
+            end
+            local quantity = math.max(1, math.floor(tonumber(entry.quantity or entry.count) or 1))
+            local stackSize = math.max(1, math.floor(tonumber(entry.stackSize or (config and config.stackSize)) or 6))
+            local remaining = quantity
+            while remaining > 0 do
+                local itemQuantity = math.min(stackSize, remaining)
+                local item = inventory.createItem({
+                    name = name,
+                    size = 1,
+                    stackable = true,
+                    stackSize = stackSize,
+                    quantity = itemQuantity,
+                    properties = {
+                        consumable = true,
+                        drug = true,
+                        exoticDrug = true,
+                        dose = true,
+                        affliction = entry.affliction or (config and config.affliction) or drugId,
+                        stageEffects = entry.stageEffects or (config and config.stageEffects),
+                        quitCharges = entry.quitCharges or (config and config.quitCharges),
+                    },
+                })
+                item.drugId = drugId
+                planned[#planned + 1] = { item = item, location = entry.location or location }
+                remaining = remaining - itemQuantity
+            end
+            totalCost = totalCost + (cost * quantity)
+            purchases[#purchases + 1] = {
+                drugId = drugId,
+                name = name,
+                quantity = quantity,
+                costPerDose = cost,
+            }
+        end
+
+        local canAdd, reason = canAddPlannedItemsToInventory(actor.inventory, planned)
+        if not canAdd then
+            return false, reason
+        end
+        if currency.getGold(actor) < totalCost then
+            return false, "Not enough gold"
+        end
+        if totalCost > 0 and not currency.spendGold(actor, totalCost) then
+            return false, "Not enough gold"
+        end
+
+        local items, addErr = addPlannedItems(actor.inventory, planned)
+        if not items then
+            currency.addGold(actor, totalCost)
+            return false, addErr
+        end
+
+        local record = {
+            source = "lotus_eaters_district",
+            purchases = purchases,
+            items = items,
+            cost = totalCost,
+        }
+        appendActorRecord(actor, "exoticDrugPurchases", record)
+
+        return true, "exotic_drugs_purchased", {
+            actor = actor,
+            action = M.ACTIONS.BUY_EXOTIC_DRUGS,
+            purchases = purchases,
+            items = items,
+            cost = totalCost,
+            result = "exotic_drugs_purchased",
+        }
+    end
+
+    function controller:resolveBloodFeast(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.feast or actionData
+        local carcass, carcassLocation = findCarriedItem(actor, request,
+            { "carcassId", "monsterCarcassId", "itemId" },
+            { "carcass", "monsterCarcass", "item" })
+        local carcassDescription = request.carcassDescription or request.monster or request.monsterName or
+            (carcass and carcass.name)
+        if not carcass and not carcassDescription then
+            return false, "Underworld monster carcass required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 50
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local consumedCarcass = nil
+        if carcass and carcassLocation and actor.inventory and actor.inventory.removeItem then
+            consumedCarcass = actor.inventory:removeItem(carcass.id)
+        else
+            consumedCarcass = carcass
+        end
+
+        local feast = {
+            source = "kobalosgaard",
+            cost = cost,
+            carcass = consumedCarcass,
+            carcassDescription = tostring(carcassDescription or "Underworld monster carcass"),
+            nickname = request.nickname or request.orcNickname or "Blood-Friend",
+            gifts = request.gifts or "50g in gifts",
+        }
+        actor.orcNicknames = actor.orcNicknames or {}
+        actor.orcNicknames[#actor.orcNicknames + 1] = feast.nickname
+        appendActorRecord(actor, "bloodFeasts", feast)
+
+        return true, "blood_feast_joined", {
+            actor = actor,
+            action = M.ACTIONS.BLOOD_FEAST,
+            feast = feast,
+            cost = cost,
+            nickname = feast.nickname,
+            result = "blood_feast_joined",
+        }
+    end
+
+    function controller:resolveHuffFumes(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.prophecy or actionData
+        local words = normalizeList(request.words or request.prompts or request.madLibWords)
+        local prophecy = request.prophecy or request.madLib or request.text
+        if not prophecy and #words > 0 then
+            prophecy = table.concat(words, " ")
+        end
+        prophecy = prophecy or "The sacred fumes produce an unfinished nonsense prophecy."
+
+        local record = {
+            source = "plaza_numina",
+            words = words,
+            prophecy = prophecy,
+            gmMayUseInUnderworldPlanning = true,
+        }
+        appendActorRecord(actor, "fumeProphecies", record)
+
+        return true, "fume_prophecy_babbled", {
+            actor = actor,
+            action = M.ACTIONS.HUFF_FUMES,
+            prophecy = prophecy,
+            words = words,
+            result = "fume_prophecy_babbled",
+        }
+    end
+
+    function controller:resolveStrangeCommunions(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.communion or actionData
+        local communion = {
+            source = "street_of_heretics",
+            service = request.service or request.faith or request.religion or "important religious service",
+            expires = "next_expedition",
+            uses = 1,
+            challengeDrawChoice = true,
+            sources = request.sources or { "minor_deck_top", "minor_discard_top" },
+        }
+        actor.nextExpeditionChallengeDrawChoice = communion
+        appendActorRecord(actor, "strangeCommunions", communion)
+
+        return true, "strange_communion_attended", {
+            actor = actor,
+            action = M.ACTIONS.STRANGE_COMMUNIONS,
+            communion = communion,
+            result = "strange_communion_attended",
+        }
+    end
+
+    function controller:resolveAsAboveSoBelow(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.stargazing or actionData
+        local deck = request.deck or request.playerDeck or request.minorDeck or self.playerDeck
+        local cards = normalizeList(request.cards or request.drawnCards)
+        local drewFromDeck = false
+
+        if #cards == 0 then
+            if not deck or not deck.draw then
+                return false, "Requires minor arcana deck"
+            end
+            for _ = 1, 3 do
+                local card = deck:draw()
+                if not card then
+                    return false, "Requires three minor arcana cards"
+                end
+                cards[#cards + 1] = card
+            end
+            drewFromDeck = true
+        end
+        if #cards < 3 then
+            return false, "Requires three minor arcana cards"
+        end
+
+        local ordered = {}
+        local order = normalizeList(request.order or request.cardOrder)
+        if #order > 0 then
+            for _, ref in ipairs(order) do
+                local index = tonumber(ref)
+                if index and cards[index] then
+                    ordered[#ordered + 1] = cards[index]
+                else
+                    local wanted = tostring(ref)
+                    for _, card in ipairs(cards) do
+                        if tostring(card.id or card.name or "") == wanted then
+                            ordered[#ordered + 1] = card
+                            break
+                        end
+                    end
+                end
+            end
+        else
+            ordered = normalizeList(request.orderedCards)
+            if #ordered == 0 then
+                ordered = cards
+            end
+        end
+        if #ordered ~= #cards then
+            return false, "Reorder all drawn cards"
+        end
+
+        if drewFromDeck and deck and deck.draw_pile then
+            for i = #ordered, 1, -1 do
+                deck.draw_pile[#deck.draw_pile + 1] = ordered[i]
+            end
+        end
+
+        local stargazing = {
+            source = "sidereal_house",
+            drawnCards = cards,
+            orderedCards = ordered,
+            reorderedDeck = drewFromDeck and deck and deck.draw_pile ~= nil,
+        }
+        appendActorRecord(actor, "stargazingReadings", stargazing)
+
+        return true, "minor_deck_reordered", {
+            actor = actor,
+            action = M.ACTIONS.AS_ABOVE_SO_BELOW,
+            drawnCards = cards,
+            orderedCards = ordered,
+            stargazing = stargazing,
+            result = "minor_deck_reordered",
+        }
+    end
+
+    function controller:resolveEnterUnderworld(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.entry or actionData
+        local history = self.guildRoster.labyrinthEntries or {}
+        local seen = {}
+        for _, entry in ipairs(history) do
+            seen[entry.location] = true
+        end
+
+        local location = request.location or request.startingRoom or request.roomId
+        if not location then
+            local candidates = normalizeList(request.locations or request.randomLocations or request.underworldLocations)
+            for _, candidate in ipairs(candidates) do
+                local id = type(candidate) == "table" and (candidate.id or candidate.roomId or candidate.name) or candidate
+                if id and not seen[id] then
+                    location = id
+                    break
+                end
+            end
+        end
+        location = location or "random_underworld_location"
+        if seen[location] and request.allowRepeat ~= true then
+            return false, "Labyrinth entry must be different each time"
+        end
+
+        local entry = {
+            source = "labyrinth",
+            location = location,
+            randomLocation = true,
+            neverSame = true,
+            notes = request.notes,
+        }
+        history[#history + 1] = entry
+        self.guildRoster.labyrinthEntries = history
+        self.guildRoster.nextCrawlStart = entry
+        appendActorRecord(actor, "labyrinthEntries", entry)
+
+        return true, "underworld_entry_planned", {
+            actor = actor,
+            action = M.ACTIONS.ENTER_THE_UNDERWORLD,
+            entry = entry,
+            nextCrawlStart = entry,
+            result = "underworld_entry_planned",
+        }
+    end
+
+    function controller:resolveResearchNewSpell(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.research or actionData
+        local spellName = request.spellName or request.name or request.title or
+            (type(request.spell) == "table" and request.spell.name)
+        if not spellName or tostring(spellName) == "" then
+            return false, "Spell name required"
+        end
+
+        local tiles = normalizeTiles(request.tiles or request.drawnTiles or request.tile)
+        if #tiles == 0 then
+            return false, "Research tiles required"
+        end
+
+        local costPerTile = tonumber(request.costPerTile or request.costGold) or 25
+        local cost = costPerTile * #tiles
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        actor.spellResearch = actor.spellResearch or {}
+        local spellId = slugify(request.spellId or spellName)
+        local project = actor.spellResearch[spellId] or {
+            id = spellId,
+            spellName = tostring(spellName),
+            tiles = {},
+            spentGold = 0,
+            source = "tower_gnostic",
+            mechanics = request.mechanics or (type(request.spell) == "table" and request.spell.mechanics),
+        }
+        for _, tile in ipairs(tiles) do
+            project.tiles[#project.tiles + 1] = tile
+        end
+        project.spentGold = (project.spentGold or 0) + cost
+        local complete, remaining = tilesCompleteName(project.spellName, project.tiles)
+        project.complete = complete
+        project.remainingLetters = remaining
+        actor.spellResearch[spellId] = project
+
+        if complete then
+            actor.knownSpells = actor.knownSpells or {}
+            actor.knownSpells[spellId] = actor.knownSpells[spellId] or {
+                id = spellId,
+                name = project.spellName,
+                custom = true,
+                researched = true,
+                mechanics = project.mechanics,
+            }
+        end
+
+        return true, complete and "spell_research_complete" or "spell_research_progress", {
+            actor = actor,
+            action = M.ACTIONS.RESEARCH_A_NEW_SPELL,
+            project = project,
+            spellId = spellId,
+            spellName = project.spellName,
+            tiles = tiles,
+            cost = cost,
+            complete = complete,
+            result = complete and "spell_research_complete" or "spell_research_progress",
+        }
+    end
+
+    function controller:resolveTrialByCombat(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.trial or actionData
+        if request.accused == false then
+            return false, "Accusation required"
+        end
+
+        local survived = request.survived
+        if survived == nil and request.success ~= nil then
+            survived = request.success == true
+        end
+        local trial = {
+            source = "court_martial",
+            accusation = request.accusation or request.charge or "breaking the City's peace",
+            perceivedGuilt = request.perceivedGuilt or request.guilt or "uncertain",
+            strictures = normalizeList(request.strictures or request.tournamentStrictures),
+            chivalricArgument = request.chivalricArgument == true or languageListHas(actor.languages or actor.knownLanguages, "chivalric"),
+            survived = survived,
+            challenge = request.challenge or request.challengeResult,
+        }
+
+        local result = "trial_by_combat_scheduled"
+        if survived == true then
+            trial.declaredInnocent = true
+            result = "declared_innocent"
+        elseif survived == false then
+            actor.conditions = actor.conditions or {}
+            actor.conditions.dead = true
+            actor.dead = true
+            trial.declaredGuilty = true
+            trial.dead = true
+            result = "found_guilty_dead"
+        end
+        appendActorRecord(actor, "trialsByCombat", trial)
+
+        return true, result, {
+            actor = actor,
+            action = M.ACTIONS.TRIAL_BY_COMBAT,
+            trial = trial,
+            result = result,
+        }
+    end
+
+    function controller:resolveSealAway(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.seal or actionData
+        local target = request.target or request.abomination or request.monster
+        local targetName = request.targetName or request.monsterName or request.name or (target and target.name)
+        if not target and not targetName then
+            return false, "Underworld abomination required"
+        end
+
+        local convinced = request.convinced
+        local testResult = request.testResult or request.outcome
+        if convinced == nil and testResult then
+            convinced = testResult.success == true
+        end
+        if convinced == false then
+            return false, "Templars not convinced"
+        end
+
+        if type(target) == "table" then
+            target.sealedAway = true
+            target.state = target.state or "sealed_away"
+            target.conditions = target.conditions or {}
+            target.conditions.sealed = true
+        end
+
+        local sealed = {
+            source = "temple_militant",
+            target = target,
+            targetName = targetName or "Underworld abomination",
+            convincedTemplars = convinced ~= false,
+            evidence = request.evidence,
+            mythrysWill = request.mythrysWill or request.argument,
+        }
+        appendActorRecord(actor, "sealedAbominations", sealed)
+
+        return true, "abomination_sealed_away", {
+            actor = actor,
+            action = M.ACTIONS.SEAL_AWAY,
+            sealed = sealed,
+            target = target,
+            result = "abomination_sealed_away",
+        }
+    end
+
+    function controller:resolveJoinSwordwhores(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.membership or actionData
+        local cost = tonumber(request.cost or request.costGold) or 100
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        actor.memberships = actor.memberships or {}
+        actor.memberships.swordwhores = {
+            joined = true,
+            duesPaid = cost,
+            armorUpkeepTier = "impoverished",
+            ironAndSteelArmorAccess = true,
+        }
+
+        return true, "swordwhores_joined", {
+            actor = actor,
+            action = M.ACTIONS.JOIN_SWORDWHORES,
+            membership = actor.memberships.swordwhores,
+            cost = cost,
+            result = "swordwhores_joined",
+        }
+    end
+
+    function controller:resolveFight(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.fight or actionData
+        local bet = math.floor(tonumber(request.bet or request.gold or request.wager) or 0)
+        if bet <= 0 then
+            return false, "Bet required"
+        end
+        if currency.getGold(actor) < bet then
+            return false, "Not enough gold"
+        end
+
+        local outcome = request.outcome or request.result
+        local bust = tonumber(request.bust or request.bustBy)
+        local playerTotal = tonumber(request.playerTotal)
+        if not bust and playerTotal and playerTotal > 21 then
+            bust = playerTotal - 21
+        end
+        if not outcome then
+            if bust then
+                outcome = "bust"
+            elseif request.won ~= nil then
+                outcome = request.won and "win" or "lose"
+            end
+        end
+        outcome = tostring(outcome or ""):lower()
+        if outcome ~= "win" and outcome ~= "won" and outcome ~= "lose" and outcome ~= "lost" and outcome ~= "bust" then
+            return false, "Fight outcome required"
+        end
+
+        if not currency.spendGold(actor, bet) then
+            return false, "Not enough gold"
+        end
+
+        local winnings = 0
+        local wounds = 0
+        local woundResults = {}
+        local nextCrawlConditions = nil
+        local result = "pit_fight_lost"
+
+        if outcome == "win" or outcome == "won" then
+            winnings = bet + math.floor(bet * 0.25)
+            currency.addGold(actor, winnings)
+            result = "pit_fight_won"
+        elseif outcome == "bust" then
+            bust = math.max(1, math.floor(bust or 1))
+            wounds = math.max(1, bust - getSwords(actor))
+            actor.conditions = actor.conditions or {}
+            for _ = 1, wounds do
+                local woundResult
+                if actor.takeWound then
+                    woundResult = actor:takeWound("normal")
+                else
+                    woundResult = "wound"
+                end
+                if woundResult == "deaths_door" then
+                    actor.conditions.dead = true
+                    actor.dead = true
+                    woundResult = "dead"
+                end
+                woundResults[#woundResults + 1] = woundResult
+                if woundResult == "dead" then
+                    break
+                end
+            end
+            result = "pit_fight_busted"
+        else
+            actor.nextCrawlConditions = actor.nextCrawlConditions or {}
+            actor.nextCrawlConditions.stressed = true
+            nextCrawlConditions = actor.nextCrawlConditions
+        end
+
+        local fight = {
+            source = "court_of_swords",
+            bet = bet,
+            outcome = outcome,
+            winnings = winnings,
+            bust = bust,
+            wounds = wounds,
+            woundResults = woundResults,
+            nextCrawlConditions = nextCrawlConditions,
+        }
+        appendActorRecord(actor, "pitFights", fight)
+
+        return true, result, {
+            actor = actor,
+            action = M.ACTIONS.FIGHT,
+            fight = fight,
+            bet = bet,
+            winnings = winnings,
+            wounds = wounds,
+            woundResults = woundResults,
+            result = result,
+        }
+    end
+
+    function controller:resolvePaleProphecies(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.prophecy or actionData
+        local prophecy = {
+            source = "mortuary_of_the_god_kings",
+            spentNight = true,
+            text = request.text or request.prophecyText or request.message or "The old kings whisper a sad prophecy.",
+        }
+        appendActorRecord(actor, "paleProphecies", prophecy)
+
+        return true, "pale_prophecy_heard", {
+            actor = actor,
+            action = M.ACTIONS.PALE_PROPHECIES,
+            prophecy = prophecy,
+            result = "pale_prophecy_heard",
+        }
+    end
+
+    function controller:resolveExploreHangmansHill(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.exploration or actionData
+        local foundGold = math.max(0, math.floor(tonumber(request.gold or request.foundGold) or 0))
+        if foundGold > 0 then
+            currency.addGold(actor, foundGold)
+        end
+        local exploration = {
+            source = "hangmans_hill",
+            nighttime = true,
+            finding = request.finding or request.treasure or request.description or "The dead had nothing of obvious worth.",
+            goldFound = foundGold,
+        }
+        appendActorRecord(actor, "hangmansHillExplorations", exploration)
+
+        return true, "hangmans_hill_explored", {
+            actor = actor,
+            action = M.ACTIONS.EXPLORE_HANGMANS_HILL,
+            exploration = exploration,
+            goldFound = foundGold,
+            result = "hangmans_hill_explored",
+        }
+    end
+
+    function controller:resolveDuel(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.duel or actionData
+        local testResult = request.testResult or request.outcome
+        local won = request.won
+        if won == nil and testResult then
+            won = testResult.success == true
+        end
+        if won == nil then
+            return false, "Duel outcome required"
+        end
+
+        local sword = nil
+        if won then
+            sword = request.sword or request.prizeSword or request.opponentsSword or {
+                name = request.swordName or "opponent's sword",
+                prettySweet = request.prettySweet ~= false,
+            }
+            appendActorRecord(actor, "duelPrizes", sword)
+        end
+
+        local duel = {
+            source = "iron_street",
+            opponent = request.opponent or request.opponentName or "sword nerd",
+            won = won == true,
+            sword = sword,
+            testResult = testResult,
+        }
+        appendActorRecord(actor, "cityDuels", duel)
+
+        return true, won and "duel_won" or "duel_lost", {
+            actor = actor,
+            action = M.ACTIONS.DUEL,
+            duel = duel,
+            sword = sword,
+            testResult = testResult,
+            result = won and "duel_won" or "duel_lost",
+        }
+    end
+
+    function controller:resolveGetAutographs(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or (type(actionData.autograph) == "table" and actionData.autograph) or actionData
+        local autograph = {
+            source = "temple_of_strength",
+            athlete = request.athlete or request.signer or request.name or "celebrated athlete",
+            inscription = request.inscription,
+        }
+        appendActorRecord(actor, "autographs", autograph)
+
+        return true, "autograph_received", {
+            actor = actor,
+            action = M.ACTIONS.GET_AUTOGRAPHS,
+            autograph = autograph,
+            result = "autograph_received",
+        }
+    end
+
+    function controller:resolveWrestleHereclus(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.wrestle or actionData
+        local offSolidGround = request.offSolidGround == true or request.feetOnSolidGround == false
+        local testResult = request.testResult or request.outcome
+        local won = request.won
+        if won == nil and testResult then
+            won = testResult.success == true
+        end
+        if not offSolidGround then
+            won = false
+        elseif won == nil then
+            return false, "Wrestling outcome required"
+        end
+
+        local prizeGold = tonumber(request.prizeGold) or 500
+        if won then
+            currency.addGold(actor, prizeGold)
+        end
+        local bout = {
+            source = "temple_of_strength",
+            opponent = "Hereclus the Strong",
+            offSolidGround = offSolidGround,
+            won = won == true,
+            prizeGold = won and prizeGold or 0,
+            testResult = testResult,
+        }
+        appendActorRecord(actor, "hereclusBouts", bout)
+
+        return true, won and "hereclus_defeated" or "hereclus_unbeaten", {
+            actor = actor,
+            action = M.ACTIONS.WRESTLE_HERECLUS,
+            bout = bout,
+            prizeGold = bout.prizeGold,
+            testResult = testResult,
+            result = won and "hereclus_defeated" or "hereclus_unbeaten",
+        }
+    end
+
+    function controller:resolveGetTattoos(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or (type(actionData.tattoo) == "table" and actionData.tattoo) or actionData
+        local tattoo = {
+            source = "grey_docks",
+            description = request.description or request.design or "cool tattoo",
+            location = request.location,
+            style = request.style or request.artistStyle,
+        }
+        appendActorRecord(actor, "tattoos", tattoo)
+
+        return true, "tattoo_received", {
+            actor = actor,
+            action = M.ACTIONS.GET_TATTOOS,
+            tattoo = tattoo,
+            result = "tattoo_received",
+        }
+    end
+
+    function controller:resolveKeepAnEarToTheGround(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or (type(actionData.rumor) == "table" and actionData.rumor) or actionData
+        local eventEntry = type(request.event) == "table" and request.event or nil
+        local eventValue = request.eventValue or request.value or request.cardValue
+        if not eventEntry and eventValue then
+            eventEntry = city_events.getEvent(eventValue, request.cityEventsTable or self.cityEventsTable)
+        end
+        if not eventEntry and request.rumor then
+            eventEntry = {
+                category = city_events.CATEGORIES.RUMOR,
+                title = request.title or "Rumor",
+                summary = tostring(request.rumor),
+            }
+        end
+        if not eventEntry then
+            local tableRef = request.cityEventsTable or self.cityEventsTable or city_events.DEFAULT_EVENTS
+            for value = 1, 21 do
+                local candidate = tableRef[value]
+                if candidate and candidate.category == city_events.CATEGORIES.RUMOR then
+                    eventEntry = candidate
+                    eventValue = value
+                    break
+                end
+            end
+        end
+        if not eventEntry or eventEntry.category ~= city_events.CATEGORIES.RUMOR then
+            return false, "City Event rumor required"
+        end
+
+        local record = {
+            source = "bellringers_district",
+            eventValue = eventValue or eventEntry.value,
+            title = eventEntry.title,
+            rumor = eventEntry.summary or eventEntry.title,
+            event = eventEntry,
+        }
+        appendActorRecord(actor, "cityRumors", record)
+
+        return true, "city_event_rumor_heard", {
+            actor = actor,
+            action = M.ACTIONS.KEEP_AN_EAR_TO_THE_GROUND,
+            rumor = record,
+            event = eventEntry,
+            result = "city_event_rumor_heard",
+        }
+    end
+
+    function controller:resolveSpreadRumors(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or (type(actionData.rumor) == "table" and actionData.rumor) or actionData
+        local rumor = request.rumor or request.description or request.claim
+        if not rumor or tostring(rumor) == "" then
+            return false, "Rumor required"
+        end
+
+        local goldSpent = math.max(0, math.floor(tonumber(request.gold or request.cost or request.costGold) or 0))
+        if currency.getGold(actor) < goldSpent then
+            return false, "Not enough gold"
+        end
+
+        local testResult = request.testResult or request.outcome
+        local card, shouldDiscard, drawnDeck
+        if not testResult then
+            card, shouldDiscard, drawnDeck = self:drawMinorCard(actionData)
+            if not card then
+                return false, "Requires minor arcana draw"
+            end
+            local bonus = math.min(math.floor(goldSpent / 20), 5)
+            testResult = fate_resolver.resolveTest(bonus, nil, card, request.favor)
+        end
+
+        if goldSpent > 0 and not currency.spendGold(actor, goldSpent) then
+            return false, "Not enough gold"
+        end
+        if shouldDiscard and drawnDeck and drawnDeck.discard then
+            drawnDeck:discard(card)
+        end
+
+        local bonus = math.min(math.floor(goldSpent / 20), 5)
+        local record = {
+            source = "bellringers_district",
+            rumor = tostring(rumor),
+            goldSpent = goldSpent,
+            bonus = bonus,
+            credible = testResult.success == true,
+            testResult = testResult,
+        }
+        appendActorRecord(actor, "spreadRumors", record)
+
+        return true, "rumor_spread", {
+            actor = actor,
+            action = M.ACTIONS.SPREAD_RUMORS,
+            rumor = record,
+            goldSpent = goldSpent,
+            bonus = bonus,
+            credible = record.credible,
+            card = card,
+            testResult = testResult,
+            result = "rumor_spread",
+        }
+    end
+
+    function controller:resolveLoosenLips(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.loosenLips or actionData
+        local character = request.character or request.npc or request.target
+        local characterName = request.characterName or request.name or (character and character.name)
+        local question = request.question
+        if not characterName or tostring(characterName) == "" then
+            return false, "GM character required"
+        end
+        if not question or tostring(question) == "" then
+            return false, "Direct question required"
+        end
+
+        local goldSpent = math.max(0, math.floor(tonumber(request.gold or request.cost or request.costGold) or 0))
+        if currency.getGold(actor) < goldSpent then
+            return false, "Not enough gold"
+        end
+
+        local testResult = request.testResult or request.outcome
+        local card, shouldDiscard, drawnDeck
+        if not testResult then
+            card, shouldDiscard, drawnDeck = self:drawMinorCard(actionData)
+            if not card then
+                return false, "Requires minor arcana draw"
+            end
+            local bonus = math.min(math.floor(goldSpent / 20), 5)
+            testResult = fate_resolver.resolveTest(bonus, nil, card, request.favor)
+        end
+
+        if goldSpent > 0 and not currency.spendGold(actor, goldSpent) then
+            return false, "Not enough gold"
+        end
+        if shouldDiscard and drawnDeck and drawnDeck.discard then
+            drawnDeck:discard(card)
+        end
+
+        local bonus = math.min(math.floor(goldSpent / 20), 5)
+        local record = {
+            source = "vinegar_district",
+            characterName = characterName,
+            question = tostring(question),
+            answer = testResult.success == true and request.answer or nil,
+            goldSpent = goldSpent,
+            bonus = bonus,
+            honestAnswer = testResult.success == true,
+            testResult = testResult,
+        }
+        appendActorRecord(actor, "loosenedLips", record)
+
+        return true, record.honestAnswer and "lips_loosened" or "lips_not_loosened", {
+            actor = actor,
+            action = M.ACTIONS.LOOSEN_LIPS,
+            inquiry = record,
+            goldSpent = goldSpent,
+            bonus = bonus,
+            honestAnswer = record.honestAnswer,
+            card = card,
+            testResult = testResult,
+            result = record.honestAnswer and "lips_loosened" or "lips_not_loosened",
+        }
+    end
+
+    function controller:resolveSeekTheCursedKing(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.search or actionData
+        local testResult = request.testResult or request.outcome
+        local card, shouldDiscard, drawnDeck
+        if not testResult then
+            card, shouldDiscard, drawnDeck = self:drawMinorCard(actionData)
+            if not card then
+                return false, "Requires minor arcana draw"
+            end
+            testResult = fate_resolver.resolveTest(getWands(actor), constants.SUITS.WANDS, card, request.favor)
+        end
+        if shouldDiscard and drawnDeck and drawnDeck.discard then
+            drawnDeck:discard(card)
+        end
+
+        local record = {
+            source = "bridge_of_mourning",
+            success = testResult.success == true,
+            terribleChoice = testResult.success == true and (request.terribleChoice or request.choice or true) or nil,
+            testResult = testResult,
+        }
+        appendActorRecord(actor, record.success and "cursedKingEncounters" or "cursedKingSearches", record)
+
+        return true, record.success and "cursed_king_found" or "cursed_king_legend", {
+            actor = actor,
+            action = M.ACTIONS.SEEK_THE_CURSED_KING,
+            search = record,
+            card = card,
+            testResult = testResult,
+            result = record.success and "cursed_king_found" or "cursed_king_legend",
+        }
+    end
+
     function controller:resolveRestAndRecuperate(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.rest or actionData
@@ -3938,6 +6096,617 @@ function M.createCityPhaseController(config)
             cost = cost,
             costPerStage = costPerStage,
             result = "affliction_leeched",
+        }
+    end
+
+    function controller:resolveDoomsaying(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.doomsaying or actionData
+        local cost = tonumber(request.cost or request.costGold) or 10
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+
+        local cards = request.cards or request.prophecyCards or {}
+        local drawn = {}
+        local drawnDeck = request.deck or request.playerDeck or request.minorDeck or self.playerDeck
+        local shouldDiscard = false
+        if #cards == 0 and drawnDeck and drawnDeck.draw then
+            for _ = 1, 4 do
+                local card = drawnDeck:draw()
+                if card then
+                    cards[#cards + 1] = card
+                    drawn[#drawn + 1] = card
+                end
+            end
+            shouldDiscard = true
+        end
+        if #cards < 4 then
+            return false, "Requires four minor arcana cards"
+        end
+
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+        if shouldDiscard and drawnDeck and drawnDeck.discard then
+            for _, card in ipairs(drawn) do
+                drawnDeck:discard(card)
+            end
+        end
+
+        local fragments = {}
+        for index = 1, 4 do
+            local card = cards[index]
+            local suitFragments = M.DOOMSAYING_PROPHECY[index] or {}
+            fragments[index] = suitFragments[card and card.suit] or {
+                id = "unclear_omen",
+                text = "An unclear omen",
+            }
+        end
+
+        local prophecy = {
+            cards = { cards[1], cards[2], cards[3], cards[4] },
+            fragments = fragments,
+            cost = cost,
+            fulfilled = false,
+            reward = "refill_resolve",
+        }
+        appendActorRecord(actor, "prophecies", prophecy)
+
+        return true, "prophecy_received", {
+            actor = actor,
+            action = M.ACTIONS.DOOMSAYING,
+            prophecy = prophecy,
+            cards = prophecy.cards,
+            fragments = fragments,
+            cost = cost,
+            result = "prophecy_received",
+        }
+    end
+
+    function controller:resolveSeekTruth(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.truth or actionData
+        local hypothesis = request.hypothesis or request.question or request.theory
+        if not hypothesis or tostring(hypothesis) == "" then
+            return false, "Hypothesis required"
+        end
+
+        local response = tostring(request.response or request.outcome or request.verdict or ""):lower()
+        local veracity = nil
+        if request.correct == true or request.truth == true then
+            veracity = "mostly_correct"
+            response = response ~= "" and response or "cheer"
+        elseif request.correct == false or request.truth == false then
+            veracity = "incorrect"
+            response = response ~= "" and response or "boo"
+        elseif response == "cheer" or response == "cheers" or response == "mostly_correct" or response == "correct" then
+            veracity = "mostly_correct"
+        elseif response == "boo" or response == "boos" or response == "incorrect" or response == "wrong" then
+            veracity = "incorrect"
+        elseif response == "debate" or response == "debates" or response == "kernel" or response == "partial" then
+            veracity = "kernel_of_truth"
+        else
+            return false, "Truth outcome required"
+        end
+
+        local cost = tonumber(request.cost or request.costGold) or 50
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local record = {
+            hypothesis = tostring(hypothesis),
+            response = response,
+            veracity = veracity,
+            cost = cost,
+        }
+        appendActorRecord(actor, "truthsSought", record)
+
+        return true, "truth_sought", {
+            actor = actor,
+            action = M.ACTIONS.SEEK_TRUTH,
+            hypothesis = record.hypothesis,
+            response = response,
+            veracity = veracity,
+            cost = cost,
+            result = "truth_sought",
+        }
+    end
+
+    function controller:resolveSeekInitiation(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.initiation or actionData
+        actor.memberships = actor.memberships or {}
+
+        local membership = getMythrysMembership(actor)
+        if not membership then
+            local koan = request.koan or request.riddle or request.nextKoan or request.nextRiddle or
+                "The first mystery is veiled."
+            membership = {
+                joined = true,
+                cult = "cult_of_mythrys",
+                rank = 1,
+                initiationRank = 1,
+                maxRank = M.MAX_MYTHRYS_INITIATION,
+                currentKoan = tostring(koan),
+                currentRiddle = tostring(koan),
+                expectedAnswer = request.answerKey or request.expectedAnswer or request.koanAnswer,
+                favorOverLowerRanks = true,
+                cityInfluenceFavor = "lower_mythrys_initiates",
+                history = {},
+            }
+            actor.memberships.cult_of_mythrys = membership
+
+            local entry = {
+                result = "cult_initiated",
+                rank = 1,
+                koan = membership.currentKoan,
+            }
+            membership.history[#membership.history + 1] = entry
+            appendActorRecord(actor, "mythrysInitiations", entry)
+
+            return true, "cult_initiated", {
+                actor = actor,
+                action = M.ACTIONS.SEEK_INITIATION,
+                membership = membership,
+                rank = 1,
+                koan = membership.currentKoan,
+                favorOverLowerRanks = true,
+                result = "cult_initiated",
+            }
+        end
+
+        membership.history = membership.history or {}
+        local rank = M.getMythrysInitiationRank(actor)
+        if rank >= M.MAX_MYTHRYS_INITIATION then
+            return false, "Highest initiation already reached"
+        end
+
+        local answer = request.answer or request.guess or request.riddleAnswer
+        local correct
+        if request.correct ~= nil then
+            correct = request.correct == true
+        else
+            local normalizedAnswer = normalizeInitiationAnswer(answer)
+            local expected = normalizeInitiationAnswer(membership.expectedAnswer or membership.answerKey or
+                membership.currentAnswer)
+            if not normalizedAnswer then
+                return false, "Initiation answer required"
+            end
+            if not expected then
+                return false, "Initiation answer adjudication required"
+            end
+            correct = normalizedAnswer == expected
+        end
+
+        local attempt = {
+            rank = rank,
+            koan = membership.currentKoan or membership.currentRiddle,
+            answer = answer,
+            correct = correct,
+        }
+        membership.history[#membership.history + 1] = attempt
+        appendActorRecord(actor, "mythrysInitiations", attempt)
+
+        if not correct then
+            return true, "initiation_answer_incorrect", {
+                actor = actor,
+                action = M.ACTIONS.SEEK_INITIATION,
+                membership = membership,
+                rank = rank,
+                attempt = attempt,
+                result = "initiation_answer_incorrect",
+            }
+        end
+
+        local newRank = rank + 1
+        membership.rank = newRank
+        membership.initiationRank = newRank
+        membership.maxRank = membership.maxRank or M.MAX_MYTHRYS_INITIATION
+        membership.favorOverLowerRanks = true
+        membership.cityInfluenceFavor = membership.cityInfluenceFavor or "lower_mythrys_initiates"
+        local nextKoan = request.nextKoan or request.nextRiddle or
+            string.format("The mystery of initiation %d is veiled.", newRank)
+        membership.currentKoan = tostring(nextKoan)
+        membership.currentRiddle = tostring(nextKoan)
+        membership.expectedAnswer = request.nextAnswerKey or request.nextExpectedAnswer or request.nextKoanAnswer
+        attempt.advancedTo = newRank
+        attempt.nextKoan = membership.currentKoan
+
+        return true, "initiation_advanced", {
+            actor = actor,
+            action = M.ACTIONS.SEEK_INITIATION,
+            membership = membership,
+            rank = newRank,
+            previousRank = rank,
+            attempt = attempt,
+            koan = membership.currentKoan,
+            favorOverLowerRanks = true,
+            result = "initiation_advanced",
+        }
+    end
+
+    function controller:resolveJoinBeggarsGuild(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.membership or actionData
+        local cost = tonumber(request.cost or request.costGold) or 100
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        actor.memberships = actor.memberships or {}
+        actor.memberships.beggars_guild = {
+            joined = true,
+            duesPaid = cost,
+            secretUnderworldEntrance = true,
+            coinTaxWaived = true,
+            portalItemDonationRequired = true,
+        }
+
+        return true, "beggars_guild_joined", {
+            actor = actor,
+            action = M.ACTIONS.JOIN_BEGGARS_GUILD,
+            membership = actor.memberships.beggars_guild,
+            cost = cost,
+            result = "beggars_guild_joined",
+        }
+    end
+
+    function controller:resolvePurchaseAnimalCompanion(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.purchase or actionData
+        local hasExplicitCompanionSpec = type(request.companion) == "table" or type(request.animal) == "table"
+        local companionSpec = type(request.companion) == "table" and request.companion or
+            (type(request.animal) == "table" and request.animal or request)
+        local function firstCommand(value)
+            if type(value) == "string" and value ~= "" then
+                return value
+            elseif type(value) == "table" then
+                if value[1] then
+                    local entry = value[1]
+                    if type(entry) == "table" then
+                        return entry.name or entry.id
+                    end
+                    return entry
+                end
+                for key, entry in pairs(value) do
+                    if type(entry) == "string" then
+                        return entry
+                    elseif type(entry) == "table" then
+                        return entry.name or entry.id
+                    elseif entry then
+                        return key
+                    end
+                end
+            end
+            return nil
+        end
+
+        local cost = math.floor(tonumber(request.cost or request.costGold or request.price or request.rarityCost) or 0)
+        if cost < 100 or cost > 1000 then
+            return false, "Animal rarity cost must be 100-1000g"
+        end
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+
+        local command = firstCommand(request.commandName or request.command or request.startingCommand or
+            request.knownCommand or request.knownCommands or companionSpec.knownCommands or companionSpec.commands)
+        if not command or tostring(command) == "" then
+            return false, "Choose starting command"
+        end
+
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        actor.animalCompanions = actor.animalCompanions or {}
+        local species = companionSpec.species or companionSpec.animalType or companionSpec.kind or "exotic animal"
+        local name = companionSpec.name or request.companionName or ("Hippodrome " .. tostring(species))
+        local index = #actor.animalCompanions + 1
+        local companion = hasExplicitCompanionSpec and shallowClone(companionSpec) or {}
+        companion.id = companion.id or request.companionId or string.format("%s_companion_%02d_%s",
+            slugify(actorId(actor)), index, slugify(name))
+        companion.name = name
+        companion.species = species
+        companion.animalType = companion.animalType or species
+        companion.type = companion.type or "animal_companion"
+        companion.conditions = companion.conditions or {}
+        companion.knownCommands = { tostring(command) }
+        companion.commands = companion.knownCommands
+        companion.purchaseCost = cost
+        companion.rarityCost = cost
+        companion.source = companion.source or "hippodrome_of_amet"
+        companion.animalCompanion = true
+        actor.animalCompanions[#actor.animalCompanions + 1] = companion
+
+        local purchase = {
+            companion = companion,
+            cost = cost,
+            startingCommand = companion.knownCommands[1],
+            source = companion.source,
+        }
+        appendActorRecord(actor, "animalCompanionPurchases", purchase)
+
+        return true, "animal_companion_purchased", {
+            actor = actor,
+            action = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
+            companion = companion,
+            purchase = purchase,
+            cost = cost,
+            startingCommand = companion.knownCommands[1],
+            result = "animal_companion_purchased",
+        }
+    end
+
+    function controller:resolveAssembleGoblinHorde(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.horde or actionData
+        if not hasUsableTalent(actor, "jarl") then
+            return false, "Requires Jarl talent"
+        end
+
+        local xpSpend = math.floor(tonumber(request.xp or request.xpSpent or request.amount) or 0)
+        if xpSpend < 0 then
+            return false, "XP spend cannot be negative"
+        end
+        if (actor.xp or 0) < xpSpend then
+            return false, "Not enough XP"
+        end
+
+        actor.animalCompanions = actor.animalCompanions or {}
+
+        local function installGoblinHordeBehavior(horde)
+            horde.conditions = horde.conditions or {}
+            horde.type = horde.type or "animal_companion"
+            horde.animalCompanion = true
+            horde.goblinHorde = true
+            horde.countsAsOneCreature = true
+            horde.suppliesOwnFood = true
+            horde.commandsAny = true
+            horde.oneWordCommandsOnly = true
+            horde.maxGoblins = 8
+            horde.goblinCount = math.max(0, math.floor(tonumber(horde.goblinCount or horde.count) or 0))
+            horde.count = horde.goblinCount
+            horde.porterSlots = horde.goblinCount
+            horde.takeWound = horde.takeWound or function(self)
+                self.goblinCount = math.max(0, math.floor(tonumber(self.goblinCount or self.count) or 0) - 1)
+                self.count = self.goblinCount
+                self.porterSlots = self.goblinCount
+                self.goblinCasualties = (self.goblinCasualties or 0) + 1
+                self.conditions = self.conditions or {}
+                if self.goblinCount <= 0 then
+                    self.conditions.dead = true
+                    self.dead = true
+                    return "goblin_horde_destroyed"
+                end
+                return "goblin_killed"
+            end
+        end
+
+        local existingHorde = nil
+        for _, companion in ipairs(actor.animalCompanions) do
+            if type(companion) == "table" and companion.goblinHorde == true then
+                existingHorde = companion
+                installGoblinHordeBehavior(existingHorde)
+                break
+            end
+        end
+
+        local existingCount = existingHorde and existingHorde.goblinCount or 0
+        local available = 8 - existingCount
+        if available <= 0 then
+            return false, "Goblin horde at capacity"
+        end
+
+        local requestedGoblins = 2 + xpSpend
+        local recruited = math.min(requestedGoblins, available)
+        actor.xp = (actor.xp or 0) - xpSpend
+
+        local horde = existingHorde
+        if not horde then
+            local index = #actor.animalCompanions + 1
+            horde = {
+                id = request.hordeId or request.companionId or string.format("%s_goblin_horde_%02d",
+                    slugify(actorId(actor)), index),
+                name = request.name or request.hordeName or "Goblin Horde",
+                species = "goblin",
+                animalType = "goblin_horde",
+                knownCommands = {},
+                commands = {},
+                source = "jarl",
+            }
+            installGoblinHordeBehavior(horde)
+            actor.animalCompanions[#actor.animalCompanions + 1] = horde
+        end
+
+        horde.goblinCount = math.min(8, existingCount + recruited)
+        horde.count = horde.goblinCount
+        horde.porterSlots = horde.goblinCount
+        horde.conditions.dead = horde.goblinCount <= 0
+        horde.dead = horde.conditions.dead == true
+        horde.lastRecruitment = {
+            xpSpent = xpSpend,
+            requestedGoblins = requestedGoblins,
+            recruited = recruited,
+        }
+
+        actor.goblinHorde = horde
+        local assembly = {
+            horde = horde,
+            xpSpent = xpSpend,
+            requestedGoblins = requestedGoblins,
+            recruited = recruited,
+            goblinCount = horde.goblinCount,
+            porterSlots = horde.porterSlots,
+            capped = recruited < requestedGoblins,
+        }
+        appendActorRecord(actor, "goblinHordeAssemblies", assembly)
+
+        return true, "goblin_horde_assembled", {
+            actor = actor,
+            action = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+            horde = horde,
+            assembly = assembly,
+            xpSpent = xpSpend,
+            requestedGoblins = requestedGoblins,
+            recruited = recruited,
+            goblinCount = horde.goblinCount,
+            porterSlots = horde.porterSlots,
+            capped = assembly.capped,
+            result = "goblin_horde_assembled",
+        }
+    end
+
+    function controller:resolveMarriageFeast(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.marriage or actionData
+        local partner = request.partner or request.spouse
+        local attendees = request.attendees or request.guests or {}
+        local actorCost = math.max(0, math.floor(tonumber(request.goldFromLastCrawl or request.actorGold or currency.getGold(actor)) or 0))
+        local partnerCost = 0
+        if partner then
+            partnerCost = math.max(0, math.floor(tonumber(request.partnerGoldFromLastCrawl or request.partnerGold or currency.getGold(partner)) or 0))
+        end
+        if currency.getGold(actor) < actorCost or (partner and currency.getGold(partner) < partnerCost) then
+            return false, "Not enough gold"
+        end
+
+        if actorCost > 0 and not currency.spendGold(actor, actorCost) then
+            return false, "Not enough gold"
+        end
+        if partner and partnerCost > 0 and not currency.spendGold(partner, partnerCost) then
+            return false, "Not enough gold"
+        end
+
+        addXP(actor, 2)
+        if partner then
+            addXP(partner, 2)
+        end
+
+        local additional = {}
+        local seen = {}
+        seen[actorId(actor)] = true
+        if partner and not seen[actorId(partner)] then
+            seen[actorId(partner)] = true
+            additional[#additional + 1] = {
+                actor = partner,
+                action = M.ACTIONS.MARRIAGE_FEAST,
+                result = "marriage_partner",
+            }
+        end
+        for _, attendee in ipairs(attendees) do
+            local id = actorId(attendee)
+            if id and not seen[id] then
+                seen[id] = true
+                addXP(attendee, 1)
+                additional[#additional + 1] = {
+                    actor = attendee,
+                    action = M.ACTIONS.MARRIAGE_FEAST,
+                    result = "marriage_guest",
+                }
+            end
+        end
+
+        local feast = {
+            actor = actor,
+            partner = partner,
+            attendees = attendees,
+            actorCost = actorCost,
+            partnerCost = partnerCost,
+            xpGained = 2,
+            attendeeXP = 1,
+        }
+        appendActorRecord(actor, "marriageFeasts", feast)
+
+        return true, "marriage_feast_held", {
+            actor = actor,
+            action = M.ACTIONS.MARRIAGE_FEAST,
+            feast = feast,
+            partner = partner,
+            attendees = attendees,
+            actorCost = actorCost,
+            partnerCost = partnerCost,
+            xpGained = 2,
+            attendeeXP = 1,
+            additionalCityActors = additional,
+            result = "marriage_feast_held",
+        }
+    end
+
+    function controller:resolveCopyTexts(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.copy or actionData
+        local topic = request.topic or request.subject or request.title
+        if not topic or tostring(topic) == "" then
+            return false, "Text topic required"
+        end
+        if request.exists == false or request.available == false then
+            return false, "Text unavailable"
+        end
+
+        local cost = math.floor(tonumber(request.cost or request.costGold or request.price) or 0)
+        if cost < 100 or cost > 1400 then
+            return false, "Copy cost must be 100-1400g"
+        end
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        local copy = {
+            topic = tostring(topic),
+            title = request.title or tostring(topic),
+            cost = cost,
+        }
+        appendActorRecord(actor, "copiedTexts", copy)
+
+        return true, "text_copied", {
+            actor = actor,
+            action = M.ACTIONS.COPY_TEXTS,
+            copy = copy,
+            topic = copy.topic,
+            cost = cost,
+            result = "text_copied",
+        }
+    end
+
+    function controller:resolveTakeOutLoan(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.loan or actionData
+        local amount = math.floor(tonumber(request.amount or request.gold or request.principal) or 0)
+        if amount <= 0 then
+            return false, "Loan amount required"
+        end
+
+        local interestRate = tonumber(request.interestRate or request.interestPercent) or 30
+        local owed = math.floor(amount * (1 + interestRate / 100) + 0.5)
+        currency.addGold(actor, amount)
+        local loan = {
+            principal = amount,
+            interestRate = interestRate,
+            owed = owed,
+            lender = "centrum_bank",
+        }
+        appendActorRecord(actor, "loans", loan)
+
+        return true, "loan_taken", {
+            actor = actor,
+            action = M.ACTIONS.TAKE_OUT_LOAN,
+            loan = loan,
+            amount = amount,
+            owed = owed,
+            interestRate = interestRate,
+            result = "loan_taken",
         }
     end
 
@@ -4028,32 +6797,96 @@ function M.createCityPhaseController(config)
         end
 
         local ok, result, detail
-        if actionId == M.ACTIONS.BANKING then
+        if actionId == M.ACTIONS.ADOPT then
+            ok, result, detail = self:resolveAdopt(actor, actionData)
+        elseif actionId == M.ACTIONS.AS_ABOVE_SO_BELOW then
+            ok, result, detail = self:resolveAsAboveSoBelow(actor, actionData)
+        elseif actionId == M.ACTIONS.ATTEND_MISS_KINSEYS_DINING_CLUB then
+            ok, result, detail = self:resolveAttendMissKinseysDiningClub(actor, actionData)
+        elseif actionId == M.ACTIONS.BANKING then
             ok, result, detail = self:resolveBanking(actor, actionData)
         elseif actionId == M.ACTIONS.BEG_FOR_SCRAPS then
             ok, result, detail = self:resolveBegForScraps(actor, actionData)
         elseif actionId == M.ACTIONS.BEG_AND_BUSK then
             ok, result, detail = self:resolveBegAndBusk(actor, actionData)
+        elseif actionId == M.ACTIONS.BLOOD_FEAST then
+            ok, result, detail = self:resolveBloodFeast(actor, actionData)
         elseif actionId == M.ACTIONS.BUILD then
             ok, result, detail = self:resolveBuild(actor, actionData)
+        elseif actionId == M.ACTIONS.BUY_EXOTIC_DRUGS then
+            ok, result, detail = self:resolveBuyExoticDrugs(actor, actionData)
         elseif actionId == M.ACTIONS.CAMP_ACTION then
             ok, result, detail = self:resolveCampAction(actor, actionData)
         elseif actionId == M.ACTIONS.CAROUSE then
             ok, result, detail = self:resolveCarouse(actor, actionData)
+        elseif actionId == M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE then
+            ok, result, detail = self:resolveChooseMonsterHunterFoe(actor, actionData)
         elseif actionId == M.ACTIONS.COMMISSION_GARGOYLE then
             ok, result, detail = self:resolveCommissionGargoyle(actor, actionData)
         elseif actionId == M.ACTIONS.COMMISSION_PUPPET then
             ok, result, detail = self:resolveCommissionPuppet(actor, actionData)
+        elseif actionId == M.ACTIONS.COMMISSION_DWARVEN_MASTERCRAFT then
+            ok, result, detail = self:resolveCommissionDwarvenMastercraft(actor, actionData)
         elseif actionId == M.ACTIONS.COMMISSION_CRAFT then
             ok, result, detail = self:resolveCommissionCraft(actor, actionData)
+        elseif actionId == M.ACTIONS.CONTRACT_ASSASSINATION then
+            ok, result, detail = self:resolveContractAssassination(actor, actionData)
+        elseif actionId == M.ACTIONS.COPY_TEXTS then
+            ok, result, detail = self:resolveCopyTexts(actor, actionData)
+        elseif actionId == M.ACTIONS.DISPOSE_OF_BODIES then
+            ok, result, detail = self:resolveDisposeOfBodies(actor, actionData)
+        elseif actionId == M.ACTIONS.DOODLEBUG then
+            ok, result, detail = self:resolveDoodlebug(actor, actionData)
+        elseif actionId == M.ACTIONS.DOOMSAYING then
+            ok, result, detail = self:resolveDoomsaying(actor, actionData)
+        elseif actionId == M.ACTIONS.DUEL then
+            ok, result, detail = self:resolveDuel(actor, actionData)
+        elseif actionId == M.ACTIONS.EXPLORE_HANGMANS_HILL then
+            ok, result, detail = self:resolveExploreHangmansHill(actor, actionData)
+        elseif actionId == M.ACTIONS.EXCHANGE_GIFTS then
+            ok, result, detail = self:resolveExchangeGifts(actor, actionData)
+        elseif actionId == M.ACTIONS.FENCE_GOODS then
+            ok, result, detail = self:resolveFenceGoods(actor, actionData)
         elseif actionId == M.ACTIONS.FIT_PROSTHETICS then
             ok, result, detail = self:resolveFitProsthetics(actor, actionData)
+        elseif actionId == M.ACTIONS.FIGHT then
+            ok, result, detail = self:resolveFight(actor, actionData)
+        elseif actionId == M.ACTIONS.GET_AUTOGRAPHS then
+            ok, result, detail = self:resolveGetAutographs(actor, actionData)
+        elseif actionId == M.ACTIONS.GET_TATTOOS then
+            ok, result, detail = self:resolveGetTattoos(actor, actionData)
+        elseif actionId == M.ACTIONS.HUFF_FUMES then
+            ok, result, detail = self:resolveHuffFumes(actor, actionData)
+        elseif actionId == M.ACTIONS.ENTER_THE_UNDERWORLD then
+            ok, result, detail = self:resolveEnterUnderworld(actor, actionData)
+        elseif actionId == M.ACTIONS.JOIN_BEGGARS_GUILD then
+            ok, result, detail = self:resolveJoinBeggarsGuild(actor, actionData)
+        elseif actionId == M.ACTIONS.JOIN_COURT_OF_WANDS then
+            ok, result, detail = self:resolveJoinCourtOfWands(actor, actionData)
+        elseif actionId == M.ACTIONS.JOIN_SWORDWHORES then
+            ok, result, detail = self:resolveJoinSwordwhores(actor, actionData)
+        elseif actionId == M.ACTIONS.ASSEMBLE_GOBLIN_HORDE then
+            ok, result, detail = self:resolveAssembleGoblinHorde(actor, actionData)
+        elseif actionId == M.ACTIONS.KEEP_AN_EAR_TO_THE_GROUND then
+            ok, result, detail = self:resolveKeepAnEarToTheGround(actor, actionData)
+        elseif actionId == M.ACTIONS.LAY_HIGH then
+            ok, result, detail = self:resolveLayHigh(actor, actionData)
         elseif actionId == M.ACTIONS.HOLD_FUNERAL then
             ok, result, detail = self:resolveHoldFuneral(actor, actionData)
+        elseif actionId == M.ACTIONS.LOOSEN_LIPS then
+            ok, result, detail = self:resolveLoosenLips(actor, actionData)
         elseif actionId == M.ACTIONS.MAKEOVER then
             ok, result, detail = self:resolveMakeover(actor, actionData)
+        elseif actionId == M.ACTIONS.MARRIAGE_FEAST then
+            ok, result, detail = self:resolveMarriageFeast(actor, actionData)
+        elseif actionId == M.ACTIONS.MUTATION then
+            ok, result, detail = self:resolveMutation(actor, actionData)
+        elseif actionId == M.ACTIONS.PALE_PROPHECIES then
+            ok, result, detail = self:resolvePaleProphecies(actor, actionData)
         elseif actionId == M.ACTIONS.PILLOW_TALK then
             ok, result, detail = self:resolvePillowTalk(actor, actionData)
+        elseif actionId == M.ACTIONS.PICNIC then
+            ok, result, detail = self:resolvePicnic(actor, actionData)
         elseif actionId == M.ACTIONS.PREPARE_COMPONENTS then
             ok, result, detail = self:resolvePrepareComponents(actor, actionData)
         elseif actionId == M.ACTIONS.PRAY_AT_MYTHRAEUM then
@@ -4070,14 +6903,26 @@ function M.createCityPhaseController(config)
             })
         elseif actionId == M.ACTIONS.PURCHASE_AMULETS then
             ok, result, detail = self:resolvePurchaseAmulets(actor, actionData)
+        elseif actionId == M.ACTIONS.PURCHASE_ANIMAL_COMPANION then
+            ok, result, detail = self:resolvePurchaseAnimalCompanion(actor, actionData)
         elseif actionId == M.ACTIONS.PURCHASE_FATE_HONEY then
             ok, result, detail = self:resolvePurchaseFateHoney(actor, actionData)
         elseif actionId == M.ACTIONS.PURCHASE_FIREWORKS then
             ok, result, detail = self:resolvePurchaseFireworks(actor, actionData)
+        elseif actionId == M.ACTIONS.RESEARCH_A_NEW_SPELL then
+            ok, result, detail = self:resolveResearchNewSpell(actor, actionData)
         elseif actionId == M.ACTIONS.REST_AND_RECUPERATE then
             ok, result, detail = self:resolveRestAndRecuperate(actor, actionData)
+        elseif actionId == M.ACTIONS.SEAL_AWAY then
+            ok, result, detail = self:resolveSealAway(actor, actionData)
+        elseif actionId == M.ACTIONS.SEEK_INITIATION then
+            ok, result, detail = self:resolveSeekInitiation(actor, actionData)
+        elseif actionId == M.ACTIONS.SEEK_TRUTH then
+            ok, result, detail = self:resolveSeekTruth(actor, actionData)
         elseif actionId == M.ACTIONS.SEND_LETTER then
             ok, result, detail = self:resolveSendLetter(actor, actionData)
+        elseif actionId == M.ACTIONS.SEEK_THE_CURSED_KING then
+            ok, result, detail = self:resolveSeekTheCursedKing(actor, actionData)
         elseif actionId == M.ACTIONS.SELL_REAGENT then
             ok, result, detail = alchemy.resolveReagentSale(actor, actionData, {
                 eventBus = self.eventBus,
@@ -4085,12 +6930,26 @@ function M.createCityPhaseController(config)
                 value = actionData.value,
                 gold = actionData.gold,
             })
+        elseif actionId == M.ACTIONS.SPREAD_RUMORS then
+            ok, result, detail = self:resolveSpreadRumors(actor, actionData)
+        elseif actionId == M.ACTIONS.STRANGE_COMMUNIONS then
+            ok, result, detail = self:resolveStrangeCommunions(actor, actionData)
         elseif actionId == M.ACTIONS.STUDY_LANGUAGE then
             ok, result, detail = self:resolveStudyLanguage(actor, actionData)
+        elseif actionId == M.ACTIONS.TAKE_OUT_LOAN then
+            ok, result, detail = self:resolveTakeOutLoan(actor, actionData)
+        elseif actionId == M.ACTIONS.THE_PLAYS_THE_THING then
+            ok, result, detail = self:resolveThePlaysTheThing(actor, actionData)
+        elseif actionId == M.ACTIONS.TRIAL_BY_COMBAT then
+            ok, result, detail = self:resolveTrialByCombat(actor, actionData)
         elseif actionId == M.ACTIONS.UNDERGO_LEECHING then
             ok, result, detail = self:resolveUndergoLeeching(actor, actionData)
         elseif actionId == M.ACTIONS.VISIT_GRAVE then
             ok, result, detail = self:resolveVisitGrave(actor, actionData)
+        elseif actionId == M.ACTIONS.VISIT_THE_PIT then
+            ok, result, detail = self:resolveVisitThePit(actor, actionData)
+        elseif actionId == M.ACTIONS.WRESTLE_HERECLUS then
+            ok, result, detail = self:resolveWrestleHereclus(actor, actionData)
         else
             return false, "Unknown City Action"
         end
