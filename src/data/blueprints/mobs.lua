@@ -206,6 +206,205 @@ M.blueprints = {
         },
     },
 
+    yellow_king_lich = {
+        name = "Lich, The Yellow King",
+        attributes = {
+            swords    = 3,
+            pentacles = 3,
+            cups      = 3,
+            wands     = 6,
+        },
+        health = 5,
+        defense = 9,
+        instantDestruction = true,
+        baseMorale = 20,
+        rank = "dungeon_lord",
+        undead = true,
+        tags = { "undead", "dungeon_lord", "lich", "yellow_king", "sorcerer" },
+        aiTags = { "undead", "lich", "dungeon_lord", "phylactery", "second_sight", "mindless_immune", "spellcaster" },
+        social = {
+            likes = {
+                "rambling_about_unrequited_love",
+                "romantic_poetry",
+                "performative_weeping",
+                "magical_theory",
+            },
+            hates = {
+                "being_interrupted",
+                "strong_acids",
+                "puns",
+            },
+        },
+        notes = {
+            phylactery = "When defeated, the body crumbles to an invulnerable crystal skull and eventually regrows unless the phylactery is destroyed.",
+            crownOfArchwood = "The crown lets the Yellow King use magical powers without held components; Disarm knocks it away until he Recovers it.",
+            breathlessAndUndreaming = "Ignores living-process effects, does not breathe or sleep, and cannot be poisoned.",
+            secondSight = "Can see Shrouded creatures and identify magical effects.",
+            rottingBrains = "Ignores mind manipulation, is immune to Inspire, and cannot see illusions.",
+        },
+        lich = {
+            bodyCrumplesToCrystalSkullOnDefeat = true,
+            bodyRegrowsIfPhylacteryIntact = true,
+            phylactery = {
+                object = "love_letter_from_kloe",
+                location = "shelf_of_similar_letters_in_chambers",
+                vulnerableObjectOfObsession = true,
+                destroyToPreventRegrowth = true,
+                nearby = true,
+                health = 1,
+                defense = 0,
+            },
+            crystalSkull = {
+                impenetrable = true,
+                invulnerable = true,
+                regrowsBodyUnlessPhylacteryDestroyed = true,
+            },
+            body = {
+                health = 5,
+                defense = 9,
+                deathSection = true,
+                breathless = true,
+                undreaming = true,
+                livingProcessImmune = true,
+                cannotBreathe = true,
+                cannotSleep = true,
+                cannotBePoisoned = true,
+                poisonBloodImmune = true,
+                secondSight = {
+                    seesShrouded = true,
+                    identifiesMagicalEffects = true,
+                },
+                rottingBrains = {
+                    mindManipulationImmune = true,
+                    inspireImmune = true,
+                    cannotSeeIllusions = true,
+                },
+            },
+            crownOfArchwood = {
+                health = 1,
+                defense = 4,
+                enablesComponentlessMagic = true,
+                notchedForWounds = 2,
+                destroyedDisables = true,
+                disarmKnocksFromHead = true,
+                recoverRestoresCrown = true,
+                saleValueGold = 1000,
+                gramaryeUserMayUseAsArchwoodWand = true,
+                adventurersCannotUseLichPowers = true,
+                spiteAloneHoldsMeAloft = {
+                    miscellaneousAction = true,
+                    levitatesIndefinitely = true,
+                    upperReachHover = true,
+                    onlyRangedAttacksCanHit = true,
+                },
+                dayOfTearsAndMourning = {
+                    canCastAnyAppendixASpell = true,
+                    noComponentsRequired = true,
+                    lesserDoomSpeakIncantation = true,
+                    greaterDoomInsteadOfResolve = true,
+                    additionalGreaterDoomAddsResolve = 1,
+                },
+            },
+        },
+        lesserDooms = {
+            {
+                id = "death_dealer",
+                name = "Death Dealer",
+                description = "The Yellow King manifests a hateful weapon and makes a melee Attack that deals Piercing damage.",
+                effect = {
+                    type = "melee_attack",
+                    damageType = "piercing",
+                    manifestedWeapon = true,
+                },
+            },
+            {
+                id = "may_failure_be_your_noose",
+                name = "May Failure Be Your Noose",
+                description = "If an adventurer fails to hit the Yellow King's Initiative, he may immediately play a card to make any standard Challenge Action against that adventurer without counting toward the one-card-per-turn limit.",
+                effect = {
+                    type = "reaction_after_failed_initiative_attack",
+                    standardChallengeAction = true,
+                    countsTowardTurnCard = false,
+                },
+            },
+            {
+                id = "sorrow_sorrow_sorrow",
+                name = "Sorrow! Sorrow! Sorrow!",
+                description = "After speaking about unrequited love, play a lesser doom and compare it to every listener's Initiative; add Wands on the Yellow King's turn. Beaten characters are Stunned.",
+                effect = {
+                    type = "audible_zone_stun_test",
+                    addWandsOnOwnTurn = true,
+                    condition = "stunned",
+                },
+            },
+            {
+                id = "poison_wont_take_you",
+                name = "If the Poison Won't Take You My Dogs Will",
+                source = "crown_of_archwood",
+                description = "While wearing the crown, the Yellow King makes arcane-energy Attacks up to one zone away, adding Wands instead of Swords on his turn and never becoming engaged by the attack.",
+                effect = {
+                    type = "ranged_arcane_attack",
+                    rangeZones = 1,
+                    addAttributeOnOwnTurn = "wands",
+                    doesNotEngage = true,
+                    requiresCrown = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "do_you_doubt_me_traitor",
+                name = "Do You Doubt Me, Traitor?",
+                description = "When damaged, discard a greater doom to make the attacker cross something off their character sheet until the end of their next Camp Phase; this does not count toward the one-card-per-turn limit.",
+                effect = {
+                    type = "damage_reaction_temporary_character_sheet_loss",
+                    restoredAtEndOfNextCampPhase = true,
+                    countsTowardTurnCard = false,
+                },
+            },
+            {
+                id = "faithful_servant_tender_companion",
+                name = "Faithful Servant, Tender Companion",
+                description = "Play a greater doom to create a temporary clone of any dead person from the guild's past; the clone knows everything they knew in life and has HD 1/0.",
+                effect = {
+                    type = "summon_dead_guild_clone",
+                    temporary = true,
+                    cloneKnowsLifeMemories = true,
+                    health = 1,
+                    defense = 0,
+                },
+            },
+            {
+                id = "enchant_insane_task",
+                name = "Soft Is Their Throat, Soft Is Their Skull",
+                description = "When the Yellow King Attacks, discard a greater doom to Control one target into an irrational task on success.",
+                effect = {
+                    type = "attack_control_task",
+                    controlledTask = "irrational",
+                },
+            },
+            {
+                id = "day_of_tears_and_mourning",
+                name = "Day of Tears and Mourning",
+                source = "crown_of_archwood",
+                description = "While wearing the crown, cast any Appendix A spell without components by playing a lesser doom Speak Incantation and discarding a greater doom instead of Resolve; extra greater dooms count as additional Resolve.",
+                effect = {
+                    type = "componentless_appendix_a_spellcasting",
+                    requiresCrown = true,
+                    noComponentsRequired = true,
+                    lesserDoomSpeakIncantation = true,
+                    greaterDoomInsteadOfResolve = true,
+                    additionalGreaterDoomAddsResolve = 1,
+                },
+            },
+        },
+        alchemy = {
+            noReagent = true,
+            reason = "undead_lich",
+        },
+        starting_gear = {},
+    },
+
     ----------------------------------------------------------------------------
     -- GOBLINS
     ----------------------------------------------------------------------------
@@ -273,6 +472,222 @@ M.blueprints = {
         starting_gear = {},
     },
 
+    face_rat = {
+        name = "Face Rat",
+        attributes = {
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 2,
+        defense = 0,
+        baseMorale = 10,
+        rank = "minion",
+        tags = { "beast", "minion", "face_rat", "rat", "thief", "affliction" },
+        aiTags = { "beast", "face_rat", "scurry", "belt_thief", "face_stealer" },
+        social = {
+            likes = {
+                "its_mate",
+                "its_weird_pink_babies",
+            },
+            hates = {
+                "fire",
+            },
+        },
+        notes = {
+            scurry = "On its turn, can Move 1 zone without spending a card.",
+            stolenFace = "A successful Steal Face permanently gives the rat a face identical to the victim.",
+        },
+        faceRat = {
+            scurryMoveZones = 1,
+            freeMoveOnTurn = true,
+            badLittleHands = {
+                roughhouseStealsBeltItem = true,
+                holdsStolenItem = true,
+                cannotUseStolenItem = true,
+                canScurryAwayWithStolenItem = true,
+                canBreakFragileStolenItem = true,
+                retrieveByDisarmOrKilling = true,
+            },
+            faceRatDisease = {
+                affliction = true,
+                stages = {
+                    {
+                        id = "featureless_mask",
+                        cureCharges = 1,
+                        wandsInfluenceDisfavor = true,
+                    },
+                    {
+                        id = "skin_over_nose_and_mouth",
+                        cureCharges = 1,
+                        condition = "silenced",
+                    },
+                    {
+                        id = "skin_over_eyes",
+                        cureCharges = 2,
+                        condition = "blind",
+                    },
+                },
+            },
+            stealFace = {
+                blinds = true,
+                silences = true,
+                replacesWound = true,
+                blindAndSilenceRecoverSeparately = true,
+                faceCopiedPermanently = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "bad_little_hands",
+                name = "Bad Little Hands",
+                description = "The face rat can Roughhouse to steal one target belt item; it holds the item but cannot use it, and Disarm or killing the rat gets it back.",
+                effect = {
+                    type = "roughhouse_steal_belt_item",
+                    targetLocation = "belt",
+                    retrieveBy = { "disarm", "kill" },
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "infectious_disease",
+                name = "Infectious Disease",
+                description = "When the face rat Attacks, discard a greater doom to make the bite poisonous; on success, the target contracts Face Rat Disease in addition to a Wound.",
+                effect = {
+                    type = "attack_affliction",
+                    affliction = "face_rat_disease",
+                    alsoDealsWound = true,
+                },
+            },
+            {
+                id = "steal_face",
+                name = "Steal Face",
+                description = "When the face rat Attacks, discard a greater doom to Blind and Silence the target instead of dealing a Wound; the rat permanently copies the target's face.",
+                effect = {
+                    type = "attack_blind_and_silence",
+                    replacesWound = true,
+                    blind = true,
+                    silence = true,
+                    recoverSeparately = true,
+                    copiesFacePermanently = true,
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "face_rat_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    lion = {
+        name = "Lion",
+        attributes = {
+            swords    = 6,
+            pentacles = 2,
+            cups      = 1,
+            wands     = 3,
+        },
+        health = 3,
+        defense = 3,
+        baseMorale = 16,
+        rank = "strategist",
+        tags = { "beast", "strategist", "lion", "noble", "king_of_beasts" },
+        aiTags = { "beast", "lion", "fleet", "untrackable", "mercy", "roar_of_life" },
+        social = {
+            likes = {
+                "its_mate",
+                "its_young",
+                "fresh_ape_meat",
+            },
+            hates = {
+                "creaking_cart_wheels",
+                "white_chickens",
+                "fire",
+            },
+        },
+        notes = {
+            fleet = "On its turn, can Move 1 zone without spending a card.",
+            untrackable = "If it knows it is being hunted, it covers its tracks with its tail and prevents all tracking attempts.",
+            nobleMercy = "Will never kill anything that prostrates itself and asks for mercy.",
+            deadCubs = "Cubs are born dead and are brought to life after the third day by their parents' roaring.",
+        },
+        lion = {
+            kingOfBeasts = true,
+            fleetMoveZones = 1,
+            freeMoveOnTurn = true,
+            untrackable = {
+                requiresKnowingItIsHunted = true,
+                coversTracksWithTail = true,
+                preventsAllTracking = true,
+            },
+            mercy = {
+                prostrationAndMercyRequestPreventsKilling = true,
+            },
+            reproduction = {
+                cubsByLitter = { 5, 4, 3, 2, 1, 0 },
+                sterileAfterSixthLitter = true,
+                lionPlusPardMakesLeopard = true,
+                cubsBornDead = true,
+                roarAfterThirdDayBringsCubsToLife = true,
+            },
+            roarOfLife = {
+                canReviveCreatureThatDiedWithoutSin = true,
+                usuallyChildrenAreSinless = true,
+                cleansedAdultsMayQualify = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "bite",
+                name = "Bite",
+                description = "On a successful Attack, the target is also either Disarmed or Tripped, GM's choice.",
+                effect = {
+                    type = "attack_plus_condition_choice",
+                    choices = { "disarmed", "tripped" },
+                    chooser = "gm",
+                },
+            },
+            {
+                id = "claw",
+                name = "Claw",
+                description = "On a successful Attack, if the lion's total Attack value is double the target's Initiative, deal 2 Wounds.",
+                effect = {
+                    type = "attack_double_initiative_bonus",
+                    wounds = 2,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "cautious_retreat",
+                name = "Cautious Retreat",
+                description = "Discard a greater doom to automatically disengage from a single adventurer; this does not count toward the one-card-per-turn limit.",
+                effect = {
+                    type = "disengage_one",
+                    countsTowardTurnCard = false,
+                },
+            },
+            {
+                id = "roar_of_life",
+                name = "Roar of Life",
+                description = "If a creature dies without sin, a lion's roar can bring them back to life.",
+                effect = {
+                    type = "revive_sinless_dead",
+                    usuallyChildrenAreSinless = true,
+                    cleansedAdultsMayQualify = true,
+                },
+            },
+        },
+        alchemy = {
+            noReagent = true,
+            reason = "not_appendix_b_source",
+        },
+        starting_gear = {},
+    },
+
     ----------------------------------------------------------------------------
     -- ARMORED FOES
     ----------------------------------------------------------------------------
@@ -303,6 +718,299 @@ M.blueprints = {
     ----------------------------------------------------------------------------
     -- ELEMENTALS
     ----------------------------------------------------------------------------
+
+    fungoid = {
+        name = "Fungoid",
+        attributes = {
+            swords    = 4,
+            pentacles = 1,
+            cups      = 2,
+            wands     = 3,
+        },
+        health = 3,
+        defense = 3,
+        baseMorale = 14,
+        rank = "strategist",
+        tags = { "elemental", "strategist", "fungoid", "mushroom", "spores", "illusionist" },
+        aiTags = { "elemental", "fungoid", "spores", "illusion", "poison_immune", "regenerates" },
+        social = {
+            likes = {
+                "learning_about_mortals",
+                "dampness",
+                "rain",
+                "tearing_things_up",
+            },
+            hates = {
+                "open_spaces",
+                "trespassers",
+            },
+        },
+        notes = {
+            brainSpores = "Every successful melee Attack against a fungoid costs the adventurer 1 lore bid.",
+            poisonImmunity = "Fungoids cannot be poisoned.",
+        },
+        fungoid = {
+            brainSpores = {
+                meleeAttackSuccessCostsLoreBids = 1,
+            },
+            poisonImmune = true,
+            chokingSpores = {
+                sameZone = true,
+                condition = "silenced",
+                recoverable = true,
+            },
+            minorIllusion = {
+                nonLivingObjectOnly = true,
+                imageOnly = true,
+                noWeight = true,
+                noSubstance = true,
+                noSound = true,
+                noSmell = true,
+            },
+            perfectImitation = {
+                imitatesPerson = true,
+                impossibleToDistinguishInSameZone = true,
+                targetRedirectChance = 0.5,
+                endsOnWound = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "choking_spores",
+                name = "Choking Spores",
+                description = "Play a lesser doom to Silence all creatures in the same zone as the fungoid; adventurers can Recover to clear the effect.",
+                effect = {
+                    type = "same_zone_condition",
+                    condition = "silenced",
+                    recoverable = true,
+                },
+            },
+            {
+                id = "minor_illusion",
+                name = "Minor Illusion",
+                description = "Play a lesser doom to create a silent, scentless, insubstantial image of any non-living object.",
+                effect = {
+                    type = "minor_illusion",
+                    nonLivingObjectOnly = true,
+                    imageOnly = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "fungal_regeneration",
+                name = "Fungal Regeneration",
+                description = "Discard a greater doom to Heal 1 Wound; this does not count toward the one-card-per-turn limit.",
+                effect = {
+                    type = "heal",
+                    wounds = 1,
+                    countsTowardTurnCard = false,
+                },
+            },
+            {
+                id = "perfect_imitation",
+                name = "Perfect Imitation",
+                description = "Play a greater doom to appear as a perfect duplicate of any person; in the same zone as the original, outside observers cannot tell them apart and targeting the fungoid has a 50% chance to affect the original instead.",
+                effect = {
+                    type = "perfect_imitation",
+                    targetRedirectChance = 0.5,
+                    endsOnWound = true,
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "fungoid_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    harpy = {
+        name = "Harpy",
+        attributes = {
+            swords    = 2,
+            pentacles = 2,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 3,
+        defense = 0,
+        baseMorale = 14,
+        rank = "minion",
+        tags = { "elemental", "minion", "harpy", "flying" },
+        aiTags = { "elemental", "harpy", "flying", "flutter", "gang_up", "shriek" },
+        social = {
+            likes = {
+                "cruel_jokes",
+                "raw_and_rotten_food",
+                "shiny_treasure",
+            },
+            hates = {
+                "clean_water",
+                "beautiful_women",
+                "jokes_at_their_own_expense",
+            },
+        },
+        notes = {
+            flutter = "Harpies Move 1 zone without spending a card each turn.",
+            gangUp = "A harpy prefers to gang up on a single target with her sisters.",
+        },
+        harpy = {
+            flutterMoveZones = 1,
+            freeMoveOnTurn = true,
+            prefersGangUp = true,
+            flight = {
+                requiresEnoughSpace = true,
+                moveAction = true,
+                avoidsMeleeEngagement = true,
+                rangedWeaponsStillApply = true,
+                flyByAttackAllowsMeleeTargetingThisTurn = true,
+                flyByAttackDoesNotCauseEngagement = true,
+            },
+            peltWithStones = {
+                costsAnyCard = true,
+                gathersScenery = true,
+                thrownAsMissileWhileFlying = true,
+            },
+            pullIntoTheAir = {
+                addsPentaclesOnHarpyTurn = true,
+                dealsPiercingDamage = true,
+                harpyBecomesEngaged = true,
+            },
+            shriek = {
+                sameZoneNonHarpiesStunned = true,
+                drawsNearbyCreatures = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "flight",
+                name = "Flight",
+                description = "If there is enough space, the harpy can fly as a Move action; while flying, it stays out of melee engagement but remains vulnerable to ranged weapons.",
+                effect = {
+                    type = "fly_move",
+                    requiresEnoughSpace = true,
+                    avoidsMeleeEngagement = true,
+                    rangedWeaponsStillApply = true,
+                    flyByAttackAllowed = true,
+                },
+            },
+            {
+                id = "pelt_with_stones",
+                name = "Pelt with Stones",
+                description = "Play any card to pick up scenery that can be thrown while flying as a missile Attack.",
+                effect = {
+                    type = "prepare_thrown_scenery",
+                    costsAnyCard = true,
+                    missileAttackWhileFlying = true,
+                },
+            },
+            {
+                id = "pull_into_the_air",
+                name = "Pull Into the Air",
+                description = "Attempt to pull an adventurer into the air and drop them; on the harpy's turn, add Pentacles to the total. This deals Piercing damage and engages the harpy.",
+                effect = {
+                    type = "roughhouse_lift_and_drop",
+                    addsPentaclesOnOwnTurn = true,
+                    damageType = "piercing",
+                    actorBecomesEngaged = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "shriek",
+                name = "Shriek",
+                description = "Play a greater doom to let out an ear-splitting wail; all non-harpies in the same zone are Stunned and nearby creatures are drawn to the sound.",
+                effect = {
+                    type = "same_zone_stun",
+                    excludeTags = { "harpy" },
+                    drawsNearbyCreatures = true,
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "harpy_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    kelpie = {
+        name = "Kelpie",
+        attributes = {
+            swords    = 4,
+            pentacles = 6,
+            cups      = 1,
+            wands     = 1,
+        },
+        health = 5,
+        defense = 0,
+        baseMorale = 14,
+        rank = "brute",
+        tags = { "elemental", "brute", "kelpie", "aquatic", "horse" },
+        aiTags = { "elemental", "kelpie", "aquatic", "threshold", "drowner" },
+        social = {
+            likes = {
+                "young_women",
+                "horses",
+            },
+            hates = {
+                "fire",
+                "silver",
+            },
+            languages = {
+                understands = { "tylwyth" },
+                cannotSpeak = true,
+            },
+        },
+        notes = {
+            bondingBack = "Anyone who attempts to ride a kelpie or touches its mane is automatically Rooted to its back; Recover clears this.",
+            threshold = "Takes no damage until dealt 2 Wounds in one turn or damaged by a silver weapon, then takes damage normally.",
+            waterHorse = "Can swim and walk on water; in water, it can Move 1 zone without spending a card each turn.",
+        },
+        kelpie = {
+            bondingBack = {
+                touchingManeRoots = true,
+                attemptingToRideRoots = true,
+                recoverable = true,
+                rootedVictimMovesWithKelpie = true,
+                underwaterTurnPiercingDamage = 1,
+                metalArmorRecoveryUnderwaterCannotSwim = true,
+            },
+            threshold = {
+                ignoresDamageUntil = {
+                    woundsInSingleTurn = 2,
+                    silverWeaponDamage = true,
+                },
+                thenTakesDamageNormally = true,
+            },
+            waterHorse = {
+                swims = true,
+                walksOnWater = true,
+                waterMoveZones = 1,
+                freeMoveInWaterOnTurn = true,
+            },
+            understandsTylwyth = true,
+            cannotSpeak = true,
+        },
+        lesserDooms = {
+            {
+                id = "trample",
+                name = "Trample",
+                description = "On an unsuccessful Attack, the kelpie may use its Attack action against a second target in the same zone.",
+                effect = {
+                    type = "second_attack_after_miss",
+                    targetScope = "same_zone",
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "kelpie_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
 
     nymph = {
         name = "Nymph",
@@ -575,6 +1283,538 @@ M.blueprints = {
         starting_gear = {},
     },
 
+    cockatrice = {
+        name = "Cockatrice",
+        attributes = {
+            swords    = 4,
+            pentacles = 4,
+            cups      = 4,
+            wands     = 4,
+        },
+        health = 5,
+        defense = 0,
+        baseMorale = 14,
+        rank = "elite",
+        tags = { "beast", "elite", "cockatrice", "flying", "petrifying" },
+        aiTags = { "beast", "elite", "cockatrice", "gaze", "petrification", "flying" },
+        social = {
+            likes = {
+                "warmth_and_heat",
+                "its_young",
+                "dire_rats",
+                "shiny_objects",
+            },
+            hates = {
+                "normal_chickens",
+            },
+        },
+        notes = {
+            gazeOfTheCockatrice = "Once per round, automatically focuses its gaze on one creature without spending a card. Phase 1 Roots the target; Phase 2 petrifies an already Rooted target as a Curse.",
+            mirrorImmunity = "The gaze effect is not reflected by mirrors.",
+            freshBloodCuresStone = "Very fresh cockatrice blood reverses petrification.",
+        },
+        cockatrice = {
+            trueEyesInSerpentHead = true,
+            chickenBodyIsTail = true,
+            canAttackAndFlyWithChickenBody = true,
+            gaze = {
+                oncePerRound = true,
+                automatic = true,
+                spendsCard = false,
+                reflectedByMirrors = false,
+                phase1 = {
+                    condition = "rooted",
+                    recoverable = true,
+                },
+                phase2 = {
+                    requiresCondition = "rooted",
+                    condition = "petrified",
+                    curse = true,
+                    recoverable = false,
+                },
+            },
+            bloodCuresPetrification = {
+                mustBeVeryFresh = true,
+                restoresStoneToFlesh = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "tail_bite",
+                name = "Tail Bite",
+                description = "On a successful Attack, the target both takes a Wound and is Displaced.",
+                effect = {
+                    type = "attack_wound_and_displace",
+                    wounds = 1,
+                    displace = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "backwards_charge",
+                name = "Backwards Charge",
+                description = "When the cockatrice Attacks, discard a greater doom to Move up to 2 zones and cut at a foe with its spurs; on success, the target is Wounded and Tripped. The cockatrice can maintain its gaze and charge.",
+                effect = {
+                    type = "attack_charge",
+                    moveZones = 2,
+                    wounds = 1,
+                    trips = true,
+                    canMaintainGaze = true,
+                },
+            },
+            {
+                id = "flutter",
+                name = "Flutter",
+                description = "Play a greater doom card to automatically disengage from all adventurers and fly 1 zone away.",
+                effect = {
+                    type = "disengage_and_move",
+                    disengageAll = true,
+                    moveZones = 1,
+                    flying = true,
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "cockatrice_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    dragon = {
+        name = "Dragon",
+        attributes = {
+            swords    = 6,
+            pentacles = 3,
+            cups      = 3,
+            wands     = 3,
+        },
+        health = 5,
+        defense = 10,
+        baseMorale = 18,
+        rank = "elite",
+        size = "huge",
+        tags = { "beast", "elite", "dragon", "huge", "flying", "fire_breath", "tough" },
+        aiTags = { "beast", "elite", "dragon", "huge", "tough", "flight", "fire_breath", "tail_whip" },
+        social = {
+            likes = {
+                "fire",
+                "gold",
+                "royalty",
+                "traps",
+            },
+            hates = {
+                "cold",
+                "panthers",
+            },
+            languages = {
+                intelligent = true,
+                successfullyCommunicated = false,
+            },
+        },
+        notes = {
+            dragonfear = "Seeing a dragon for the first time is awe-inspiring and terrifying.",
+            huge = "Immune to being Roughhoused unless the adventurer can affect a creature of giant size.",
+            tough = "Actions that target the dragon must exceed, not just match, its Initiative.",
+            flight = "If there is enough space, the dragon can fly as a Move action and lazily circle out of melee engagement.",
+        },
+        dragon = {
+            enigmatic = true,
+            intelligent = true,
+            noKnownSuccessfulCommunication = true,
+            dragonfear = true,
+            huge = {
+                immuneToRoughhouseUnlessGiantSized = true,
+                giantSizeRequired = true,
+            },
+            tough = {
+                mustExceedInitiative = true,
+            },
+            flight = {
+                requiresEnoughSpace = true,
+                moveAction = true,
+                avoidsMeleeEngagement = true,
+                rangedWeaponsStillApply = true,
+                flyByAttackAllowsMeleeTargetingThisTurn = true,
+                flyByAttackDoesNotCauseEngagement = true,
+            },
+            breathOfFire = {
+                rangeZones = 1,
+                metalArmorCriticalDamage = true,
+                unarmoredWounds = 3,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "claw",
+                name = "Claw",
+                description = "On a successful Attack, if the dragon's total Attack value is double the target's Initiative, deal 2 Wounds.",
+                effect = {
+                    type = "attack_double_initiative_bonus",
+                    wounds = 2,
+                },
+            },
+            {
+                id = "flight",
+                name = "Flight",
+                description = "If there is enough space, the dragon can fly as a Move action; while flying, it stays out of melee engagement but remains vulnerable to ranged weapons.",
+                effect = {
+                    type = "fly_move",
+                    requiresEnoughSpace = true,
+                    avoidsMeleeEngagement = true,
+                    rangedWeaponsStillApply = true,
+                    flyByAttackAllowed = true,
+                },
+            },
+            {
+                id = "tail_whip",
+                name = "Tail Whip",
+                description = "The dragon's Attack targets all adventurers in its zone.",
+                effect = {
+                    type = "attack_all_adventurers_in_zone",
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "armored_scales",
+                name = "Armored Scales",
+                description = "The dragon can play a greater doom card as its Initiative.",
+                effect = {
+                    type = "greater_doom_as_initiative",
+                },
+            },
+            {
+                id = "breath_of_fire",
+                name = "Breath of Fire",
+                description = "When the dragon Attacks, discard a greater doom to breathe fire up to 1 zone away; metal-armored targets take Critical damage on a hit, while unarmored targets take 3 Wounds.",
+                effect = {
+                    type = "attack_fire_breath",
+                    rangeZones = 1,
+                    metalArmorDamageType = "critical",
+                    unarmoredWounds = 3,
+                },
+            },
+            {
+                id = "overwhelming_bite",
+                name = "Overwhelming Bite",
+                description = "The dragon can play a greater doom as an Attack action; on success, the target takes a Wound and is either Disarmed or Tripped.",
+                effect = {
+                    type = "greater_doom_attack_action",
+                    wounds = 1,
+                    choices = { "disarmed", "tripped" },
+                },
+            },
+        },
+        alchemy = {
+            noReagent = true,
+            reason = "not_appendix_b_source",
+        },
+        starting_gear = {},
+    },
+
+    griffin = {
+        name = "Griffin",
+        attributes = {
+            swords    = 4,
+            pentacles = 3,
+            cups      = 1,
+            wands     = 1,
+        },
+        health = 7,
+        defense = 0,
+        baseMorale = 14,
+        rank = "brute",
+        tags = { "beast", "brute", "griffin", "heraldic", "flying" },
+        aiTags = { "beast", "brute", "griffin", "fleet", "flying", "grabber", "fly_by" },
+        social = {
+            likes = {
+                "compliments",
+                "its_mate",
+                "its_nest",
+                "other_birds",
+            },
+            hates = {
+                "fire",
+                "harpies",
+                "lions",
+            },
+            languages = {
+                understands = { "chivalric" },
+                cannotSpeak = true,
+            },
+        },
+        notes = {
+            fleet = "On its turn, can Move 2 zones without spending a card.",
+            flight = "Can fly as a Move action when there is enough space; while flying, it stays out of melee engagement but remains vulnerable to ranged weapons.",
+            flyByAttack = "A fly-by Attack lets melee attacks target the griffin that turn without making it engaged.",
+        },
+        griffin = {
+            fleetMoveZones = 2,
+            freeMoveOnTurn = true,
+            understandsChivalric = true,
+            cannotSpeak = true,
+            flight = {
+                requiresEnoughSpace = true,
+                moveAction = true,
+                avoidsMeleeEngagement = true,
+                rangedWeaponsStillApply = true,
+                flyByAttackAllowsMeleeTargetingThisTurn = true,
+                flyByAttackDoesNotCauseEngagement = true,
+            },
+            talons = {
+                doubleTargetInitiativeDealsWounds = 2,
+            },
+            grab = {
+                roughhouseGreaterDoom = true,
+                targetRooted = true,
+                targetMovesWithGriffin = true,
+                canDropVictimAsFreeActionWhileFlying = true,
+                droppedVictimSuffersFallingDamage = true,
+                recoverAllowed = true,
+                recoverWhileFlyingCausesFallingDamage = true,
+                missedAttacksHitGrabbedVictim = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "flight",
+                name = "Flight",
+                description = "If there is enough space, the griffin can fly as a Move action; while flying, it stays out of melee engagement but remains vulnerable to ranged weapons.",
+                effect = {
+                    type = "fly_move",
+                    requiresEnoughSpace = true,
+                    avoidsMeleeEngagement = true,
+                    rangedWeaponsStillApply = true,
+                    flyByAttackAllowed = true,
+                },
+            },
+            {
+                id = "talons",
+                name = "Talons",
+                description = "On a successful Attack, if the griffin's total Attack value is double the target's Initiative, deal 2 Wounds.",
+                effect = {
+                    type = "attack_double_initiative_bonus",
+                    wounds = 2,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "grab",
+                name = "Grab",
+                description = "When the griffin Roughhouses, discard a greater doom to grab the target; on success, the target is Rooted and moves with the griffin.",
+                effect = {
+                    type = "roughhouse_grab",
+                    targetRooted = true,
+                    targetMovesWithActor = true,
+                    missedAttacksHitGrabbedVictim = true,
+                    flyingDrop = {
+                        freeAction = true,
+                        causesFallingDamage = true,
+                        recoverAlsoCausesFallingDamage = true,
+                    },
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "griffin_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    ----------------------------------------------------------------------------
+    -- SORCEROUS CONSTRUCTS
+    ----------------------------------------------------------------------------
+
+    animate_statue = {
+        name = "Animate Statue",
+        attributes = {
+            swords    = 5,
+            pentacles = 5,
+            cups      = 1,
+            wands     = 1,
+        },
+        health = 1,
+        defense = 15,
+        baseMorale = 14,
+        rank = "brute",
+        construct = true,
+        tags = { "sorcerous", "construct", "brute", "animate_statue", "bronze", "magic_sensitive" },
+        aiTags = { "construct", "animate_statue", "tough", "magic_null", "sense_magic", "grabber" },
+        social = {
+            likes = {
+                "sleeping",
+                "being_admired",
+                "sculptors",
+            },
+            hates = {
+                "sorcerers",
+                "iconoclasts",
+            },
+            languages = {
+                intelligent = true,
+                cannotSpeak = true,
+            },
+        },
+        notes = {
+            boundSpirit = "Animated by a bound spirit in a bronze statue body.",
+            runeWeakSpot = "Low Health and high Defense represent the magical rune weak point that binds the spirit.",
+            construct = "Treats Notches as 2 Wounds.",
+            magicallyNull = "Immune to magic except magic that specifically targets objects, at GM discretion.",
+            senseMagic = "Can sense magical effects and identify sorcerers by sight.",
+            tough = "Actions that target the animate statue must exceed, not just match, its Initiative.",
+        },
+        animateStatue = {
+            boundSpirit = true,
+            bronzeBody = true,
+            intelligent = true,
+            cannotSpeak = true,
+            runeWeakSpot = true,
+            treatsNotchesAsWounds = 2,
+            magicNull = {
+                immuneToMagic = true,
+                objectTargetingMagicMayAffect = true,
+                gmDiscretion = true,
+            },
+            senseMagic = {
+                sensesMagicalEffects = true,
+                identifiesSorcerersBySight = true,
+            },
+            tough = {
+                mustExceedInitiative = true,
+            },
+            grab = {
+                targetRooted = true,
+                targetMovesWithStatue = true,
+                holdCapacity = 2,
+                enablesSqueeze = true,
+                missedAttacksHitGrabbedTarget = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "haymaker",
+                name = "Haymaker",
+                description = "When the animate statue Attacks on its turn, the Attack targets all adventurers in its zone.",
+                effect = {
+                    type = "attack_all_adventurers_in_zone",
+                    onlyOnOwnTurn = true,
+                },
+            },
+            {
+                id = "grab",
+                name = "Grab",
+                description = "The animate statue can Roughhouse to grab a foe; grabbed adventurers are Rooted, move with the statue, can be squeezed, and missed Attacks against the statue hit a grabbed foe instead.",
+                effect = {
+                    type = "roughhouse_grab",
+                    targetRooted = true,
+                    targetMovesWithActor = true,
+                    holdCapacity = 2,
+                    enablesSqueeze = true,
+                    missedAttacksHitGrabbedTarget = true,
+                },
+            },
+            {
+                id = "throw_stones",
+                name = "Throw Stones",
+                description = "The animate statue can Attack by throwing heavy things such as armor, stones, or held foes; a thrown grabbed adventurer automatically takes a Wound.",
+                effect = {
+                    type = "throw_heavy_object",
+                    canThrowHeldFoe = true,
+                    thrownHeldFoeAutomaticWound = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "squeeze",
+                name = "Squeeze",
+                description = "Play a greater doom to squeeze all grabbed adventurers, automatically dealing each a Wound.",
+                effect = {
+                    type = "wound_grabbed_targets",
+                    wounds = 1,
+                },
+            },
+        },
+        alchemy = {
+            noReagent = true,
+            reason = "construct",
+        },
+        starting_gear = {},
+    },
+
+    ----------------------------------------------------------------------------
+    -- SORCEROUS MINIONS
+    ----------------------------------------------------------------------------
+
+    bloodybones = {
+        name = "Bloodybones",
+        attributes = {
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 999999,
+        defense = 0,
+        infiniteHealth = true,
+        neverTakesWounds = true,
+        baseMorale = 14,
+        rank = "minion",
+        tags = { "sorcerous", "minion", "ooze", "bloodybones", "invulnerable", "magic_sensitive" },
+        aiTags = { "sorcerous", "bloodybones", "invulnerable", "smell_magic", "unthinking" },
+        social = {
+            likes = {
+                "screams_of_pain",
+                "eating_nerve_clusters",
+                "uranium_deposits",
+            },
+            hates = {
+                "music",
+                "childrens_laughter",
+            },
+            languages = {
+                speechless = true,
+                cannotSpeak = true,
+            },
+        },
+        notes = {
+            oozeSkeleton = "A speechless, unthinking ooze shaped like a skeleton; it is not undead.",
+            immuneToDamage = "Invulnerable to every type of harm, has effectively infinite Health, and never takes a Wound.",
+            practicalWeakness = "Weakness is procedural: it can be trapped, pushed into hazards, or simply walked away from.",
+            smellMagic = "Can smell magical effects and identify sorcerers by scent.",
+        },
+        bloodybones = {
+            sorcerousMinion = true,
+            oozeShapedLikeSkeleton = true,
+            notUndead = true,
+            speechless = true,
+            unthinking = true,
+            invulnerable = {
+                immuneToAllHarm = true,
+                infiniteHealth = true,
+                neverTakesWounds = true,
+                canBeTrapped = true,
+                canBePushedIntoPits = true,
+                canBeAvoided = true,
+            },
+            smellMagic = {
+                smellsMagicalEffects = true,
+                identifiesSorcerersByScent = true,
+            },
+        },
+        lesserDooms = {},
+        greaterDooms = {},
+        alchemy = {
+            noReagent = true,
+            reason = "not_appendix_b_source",
+        },
+        starting_gear = {},
+    },
+
     ----------------------------------------------------------------------------
     -- SORCEROUS CONSTRUCTS
     ----------------------------------------------------------------------------
@@ -616,11 +1856,18 @@ M.blueprints = {
                 id = "harden",
                 name = "Harden",
                 description = "Discard a greater doom card to become immune to the last weapon type that Wounded the mimic.",
+                effect = {
+                    type = "mimic_harden_weapon_immunity",
+                    countsTowardTurnCard = false,
+                },
             },
             {
                 id = "riot_of_teeth",
                 name = "Riot of Teeth",
                 description = "Discard a greater doom card when the mimic Attacks; on success, the Attack deals Piercing damage.",
+                effect = {
+                    type = "attack_piercing",
+                },
             },
         },
         alchemy = {
@@ -638,35 +1885,106 @@ M.blueprints = {
     brain_spider = {
         name = "Brain Spider",
         attributes = {
-            swords    = 3,
+            swords    = 1,
             pentacles = 4,
-            cups      = 3,
-            wands     = 5,  -- Psychic powers
+            cups      = 2,
+            wands     = 3,
         },
-        -- HD: 2/2 - Chitinous hide provides some defense
-        health = 2,
-        defense = 2,  -- Chitinous carapace
-        baseMorale = 14,  -- S12.3: Cunning predators, will retreat if outmatched
-        disposition = "surprise",  -- S12.4: Psychic predators assess before acting
-        tags = { "monster", "arachnid", "brain_spider" },
+        health = 3,
+        defense = 3,
+        baseMorale = 14,
+        rank = "strategist",
+        tags = { "sorcerous", "strategist", "arachnid", "brain_spider", "telepathic" },
+        aiTags = { "sorcerous", "brain_spider", "strategist", "leaper", "wall_crawler", "webber" },
+        social = {
+            likes = {
+                "eating_brains",
+                "puzzles_and_riddles",
+            },
+            hates = {
+                "paladins",
+                "feeling_stupid",
+            },
+            languages = {
+                telepathic = true,
+                communicatesWithAnyLanguage = true,
+            },
+        },
+        notes = {
+            squishy = "Immune to bludgeoning and smashing weapons, such as hammers and maces.",
+            telepathic = "Speaks telepathically and can communicate with anyone regardless of language.",
+        },
+        brainSpider = {
+            squishy = {
+                immuneToBludgeoning = true,
+                immuneToSmashing = true,
+                examples = { "hammers", "maces" },
+            },
+            telepathic = {
+                speaksTelepathically = true,
+                communicatesRegardlessOfLanguage = true,
+            },
+            greatLeap = {
+                dashJumpZones = 2,
+                clearsInterveningObstacles = true,
+            },
+            wallCrawling = {
+                effortlessClimb = true,
+                moveOntoWallCanAvoidAndLeave = true,
+            },
+            web = {
+                replacesAttackDamage = true,
+                targetRootedUntilAllLimbsFreed = true,
+                recoverFreesOneLimbAtATime = true,
+            },
+        },
         alchemy = {
             reagentTemplateId = "brain_spider_reagent",
             yield = 1,
         },
-        starting_gear = {},  -- Natural weapons (fangs and psychic attacks)
-
-        -- Appendix E: Web. When the brain spider Attacks, discard a greater
-        -- doom card to web a target instead of dealing damage.
+        starting_gear = {},
+        lesserDooms = {
+            {
+                id = "great_leap",
+                name = "Great Leap",
+                description = "The brain spider can jump 2 zones when Dashing, clearing intervening obstacles such as pits, hazardous terrain, or blocking adventurers.",
+                effect = {
+                    type = "dash_jump",
+                    moveZones = 2,
+                    clearsInterveningObstacles = true,
+                },
+            },
+            {
+                id = "wall_crawling",
+                name = "Wall Crawling",
+                description = "The brain spider can effortlessly climb walls; moving onto a wall can let it avoid adventurers and leave the area unless they can keep up.",
+                effect = {
+                    type = "wall_crawl",
+                    avoidsAdventurers = true,
+                    canLeaveArea = true,
+                },
+            },
+        },
         greaterDooms = {
+            {
+                id = "tactics",
+                name = "Tactics",
+                description = "Discard a greater doom card to turn a standard Challenge Action into an interrupt.",
+                effect = {
+                    type = "standard_action_as_interrupt",
+                },
+            },
             {
                 id = "web",
                 name = "Web",
                 activation = "attack_rider",
-                description = "On a successful Attack, deal no damage but wrap the target in webs. The target is Rooted until all limbs are freed with Recover.",
+                description = "When the brain spider Attacks, discard a greater doom to wrap the target in webs instead of dealing damage. The target is Rooted until each limb is freed with Recover.",
                 effect = {
                     type = "web",
                     limbs = 4,
                     suppressDamage = true,
+                    rootUntilAllLimbsFreed = true,
+                    recoverFreesOneLimb = true,
                 },
             },
         },
@@ -1440,6 +2758,255 @@ M.blueprints = {
         starting_gear = {},
     },
 
+    devil = {
+        name = "Devil, Gluttony",
+        attributes = {
+            swords    = 1,
+            pentacles = 5,
+            cups      = 2,
+            wands     = 3,
+        },
+        health = 3,
+        defense = 0,
+        baseMorale = 18,
+        rank = "strategist",
+        tags = { "spirit", "strategist", "devil", "gluttony", "wastes" },
+        aiTags = { "spirit", "devil", "gluttony", "contract", "bite", "swallow", "stinking_cloud" },
+        social = {
+            likes = {
+                "making_contracts",
+                "eating_people",
+                "turning_people_into_cannibals",
+            },
+            hates = {
+                "vegans",
+                "clean_water",
+            },
+            languages = {
+                contracts = { "archaic_vetus" },
+                loremasterReadableContract = true,
+            },
+        },
+        notes = {
+            deadlySinExample = "Gluttony is the example devil; other devils can be made by varying this template.",
+            contract = "Offers a lifetime of desired food in exchange for permission to devour the adventurer after death.",
+            endlessGullet = "Cannot be poisoned and is immune to seablooded orc Poison Blood.",
+            untouchedByHotIron = "Immune to crafted or forged weapons, but vulnerable to natural dangers and improvised natural weapons.",
+        },
+        devil = {
+            type = "gluttony",
+            deadlySinsTemplate = true,
+            contract = {
+                offersDesiredFoodForLife = true,
+                claimsBodyAfterDeath = true,
+                contractMaterial = "hogskin",
+                writtenInFilth = true,
+                language = "archaic_vetus",
+                onlyLoremastersReadProperly = true,
+                loopholes = {
+                    mustEatAllDevilBroughtFood = true,
+                    cannotGiveAwayDevilBroughtFood = true,
+                    devouredCannotReturnFromDeathsDoor = true,
+                },
+            },
+            endlessGullet = {
+                poisonImmune = true,
+                poisonBloodImmune = true,
+            },
+            untouchedByHotIron = {
+                immuneToCraftedWeapons = true,
+                immuneToForgedWeapons = true,
+                vulnerableToNaturalDangers = {
+                    "fire",
+                    "falls",
+                    "drowning",
+                },
+                vulnerableToImprovisedNaturalWeapons = {
+                    "branch",
+                    "stone",
+                },
+            },
+            bite = {
+                action = "roughhouse",
+                targetRooted = true,
+                targetMovesWithDevil = true,
+                maxBittenTargets = 4,
+                enablesSwallow = true,
+                missedAttacksHitBittenTarget = true,
+            },
+            stinkingCloud = {
+                spellId = "stinking_cloud",
+                sameZoneOrOneZoneAway = true,
+                otherCreaturesBeginRoundStunned = true,
+                otherCreaturesDrawOneFewerCard = true,
+            },
+            swallow = {
+                requiresBittenTarget = true,
+                extradimensionalHolding = true,
+                defeatingDevilReleasesSwallowed = true,
+                testFate = {
+                    attribute = "swords",
+                    successesToEscape = 3,
+                    failuresToAnnihilation = 3,
+                },
+            },
+        },
+        lesserDooms = {
+            {
+                id = "bite",
+                name = "Bite",
+                description = "The devil can Roughhouse to bite a foe; while bitten, the target is Rooted, moves with the devil, can be swallowed, and missed Attacks against the devil hit a bitten foe instead.",
+                effect = {
+                    type = "roughhouse_bite_hold",
+                    targetRooted = true,
+                    targetMovesWithActor = true,
+                    maxHeldTargets = 4,
+                    enablesSwallow = true,
+                    missedAttacksHitHeldTarget = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "fiendish_retreat",
+                name = "Fiendish Retreat",
+                description = "Discard a greater doom to automatically disengage from an adventurer; this does not count toward the one-card-per-turn limit.",
+                effect = {
+                    type = "disengage_one",
+                    countsTowardTurnCard = false,
+                },
+            },
+            {
+                id = "stinking_cloud",
+                name = "Stinking Cloud",
+                description = "Play a greater doom to create Stinking Cloud in the devil's zone or one zone away; other creatures beginning the round in the cloud are Stunned and draw 1 fewer card.",
+                effect = {
+                    type = "cast_spell_like_effect",
+                    spellId = "stinking_cloud",
+                    zoneRange = 1,
+                    excludeSelf = true,
+                    beginRoundCondition = "stunned",
+                    drawPenalty = 1,
+                },
+            },
+            {
+                id = "swallow",
+                name = "Swallow",
+                description = "If holding someone in its mouth, play a greater doom to swallow them into an extradimensional space; three Swords Test Fate successes make the devil vomit them up, while three failures annihilate them.",
+                effect = {
+                    type = "swallow_held_target",
+                    requiresHeldTarget = true,
+                    extradimensionalHolding = true,
+                    escapeTest = {
+                        action = "test_fate",
+                        attribute = "swords",
+                        successesToEscape = 3,
+                        failuresToAnnihilation = 3,
+                    },
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "devil_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
+    jinn = {
+        name = "Jinn",
+        attributes = {
+            swords    = 4,
+            pentacles = 4,
+            cups      = 4,
+            wands     = 4,
+        },
+        health = 7,
+        defense = 0,
+        baseMorale = 20,
+        rank = "elite",
+        tags = { "spirit", "elite", "jinn", "weird" },
+        aiTags = { "spirit", "jinn", "elite", "second_sight", "shrouded" },
+        social = {
+            likes = {
+                "flattery",
+                "drugs",
+                "rare_books",
+                "human_dreams",
+            },
+            hates = {
+                "iron",
+                "rudeness",
+                "violence",
+            },
+            languages = {
+                speaks = { "tylwyth" },
+            },
+        },
+        notes = {
+            secondSight = "Can see Shrouded creatures and instantly identify magical effects.",
+            nicheWisdom = "Embodies one concept, emotion, or science and gives excellent advice about that subject when pleased.",
+        },
+        jinn = {
+            secondSight = {
+                seesShrouded = true,
+                identifiesMagicalEffects = true,
+            },
+            nicheWisdom = {
+                subjectChosenByGM = true,
+            },
+            bodyOfSmokelessFire = {
+                canBecomeTangibleOrIntangible = true,
+                physicalObjectsPassThroughWhileIntangible = true,
+                countsTowardTurnCard = false,
+            },
+            invisible = {
+                becomesShrouded = true,
+                stillAndQuietCannotBeDeliberatelyTargeted = true,
+                physicalInteractionEndsEffect = true,
+            },
+        },
+        lesserDooms = {
+            {
+                id = "body_of_smokeless_fire",
+                name = "Body of Smokeless Fire",
+                description = "Discard any card to become tangible or intangible; while intangible, physical objects pass harmlessly through the jinn.",
+                effect = {
+                    type = "toggle_tangibility",
+                    costsAnyCard = true,
+                    countsTowardTurnCard = false,
+                },
+            },
+            {
+                id = "invisible",
+                name = "Invisible",
+                description = "Play any card to become Shrouded until the jinn interacts with the physical world.",
+                effect = {
+                    type = "become_shrouded",
+                    costsAnyCard = true,
+                    endsOnPhysicalInteraction = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "possess",
+                name = "Possess",
+                description = "When the jinn Attacks, discard a greater doom to Control the target into an immediate commanded action instead of dealing damage.",
+                effect = {
+                    type = "attack_control_command",
+                    replacesWound = true,
+                    controlledActionValue = "attack_lesser_doom_value",
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "jinn_reagent",
+            yield = 1,
+        },
+        starting_gear = {},
+    },
+
     ----------------------------------------------------------------------------
     -- MALEFICENCE SPAWNS
     ----------------------------------------------------------------------------
@@ -1461,6 +3028,27 @@ M.blueprints = {
             likes = { "weird_stinks" },
             hates = { "iron", "cats", "clean_water" },
         },
+        notes = {
+            wimps = "Imps always play the lowest card for their Initiative.",
+            desireByMinorDiscard = "The top minor discard sets what the imp wants.",
+        },
+        imp = {
+            wimps = {
+                alwaysLowestInitiative = true,
+            },
+            wantsByMinorSuit = {
+                swords = "meat",
+                pentacles = "shiniest_thing_then_deep_pit",
+                cups = "pet",
+                wands = "sorcerer_blood",
+            },
+            reproducesFromViolence = true,
+            badLuckMachine = {
+                interruptRetargetsAction = true,
+                newTargetSameZone = true,
+                actionGainsDisfavor = true,
+            },
+        },
         lesserDooms = {
             {
                 id = "vomit",
@@ -1472,6 +3060,22 @@ M.blueprints = {
                 name = "Piss and Shit",
                 description = "A successful Roughhouse can also make the target Stressed.",
             },
+        },
+        greaterDooms = {
+            {
+                id = "bad_luck_machine",
+                name = "Bad Luck Machine",
+                description = "Discard a greater doom as an interrupt to retarget an action against the imp to another same-zone creature with disfavor.",
+                effect = {
+                    type = "interrupt_retarget_action",
+                    newTargetSameZone = true,
+                    appliesDisfavor = true,
+                },
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "imp_reagent",
+            yield = 1,
         },
         starting_gear = {},
     },

@@ -70,6 +70,12 @@ M.ACTION_TYPES = {
     TRIVIAL_ACTION = "trivial_action", -- Simple uncontested action
     VIGILANCE  = "vigilance",   -- Prepared triggered response
     SNEAK      = "sneak",       -- Talent procedure: off-stage sneaking and dramatic arrival
+    CREATURE_GAZE = "creature_gaze", -- Cardless creature gaze/effect procedure
+    COCKATRICE_GAZE = "cockatrice_gaze", -- Automatic Cockatrice gaze
+    GRIFFIN_DROP = "griffin_drop", -- Cardless Griffin free-action drop
+    HARPY_SHRIEK = "harpy_shriek", -- Greater-doom Harpy area stun
+    LION_CAUTIOUS_RETREAT = "lion_cautious_retreat", -- Greater-doom Lion disengage
+    MIMIC_HARDEN = "mimic_harden", -- Greater-doom Mimic weapon immunity
 
     -- Defensive Actions (S4.9)
     DODGE      = "dodge",       -- Adds card value to defense difficulty
@@ -234,6 +240,47 @@ local function entityHasNormalizedTag(entity, tag)
     return normalizedTableContains(entity.tags, tag) or
         normalizedTableContains(entity.aiTags, tag) or
         normalizedTableContains(entity.traits, tag)
+end
+
+local function normalizedEntitySize(entity)
+    if not entity then
+        return nil
+    end
+    return normalizeTalentKey(entity.size or entity.sizeCategory or entity.scale or entity.category)
+end
+
+local function isGiantSizedEntity(entity)
+    if not entity then
+        return false
+    end
+    if entity.giantSized or entity.giantSize or entity.huge or entity.massive or entity.giant then
+        return true
+    end
+    local size = normalizedEntitySize(entity)
+    return size == "huge" or size == "giant" or size == "massive" or
+        size == "gargantuan" or size == "colossal" or size == "titanic"
+end
+
+local function targetRequiresGiantSizeToRoughhouse(target)
+    if not target then
+        return false
+    end
+    if target.roughhouseImmuneUnlessGiantSized or target.roughhouseRequiresGiantSize then
+        return true
+    end
+    local dragonHuge = target.dragon and target.dragon.huge
+    return dragonHuge and dragonHuge.immuneToRoughhouseUnlessGiantSized
+end
+
+local function actionCanAffectGiantSizedTarget(action)
+    if not action then
+        return false
+    end
+    if action.canAffectGiantSize or action.affectsGiantSize or action.giantSizedRoughhouse or
+       action.canRoughhouseHuge then
+        return true
+    end
+    return isGiantSizedEntity(action.actor)
 end
 
 local UP_MY_SLEEVE_TEMPLATE_ALIASES = {
@@ -1818,6 +1865,20 @@ local function clearPetrification(target)
         malediction.ended = true
         malediction.endReason = "cockatrice_oil"
         cured = true
+    end
+
+    local function clearPetrificationEntry(entry)
+        if type(entry) == "table" and (entry.curseId == "petrification" or entry.petrification == true or
+           (entry.curse and entry.curse.id == "petrification")) then
+            entry.active = false
+            entry.ended = true
+            entry.endReason = "cockatrice_oil"
+            cured = true
+        end
+    end
+    clearPetrificationEntry(target.petrificationMalediction)
+    if type(target.maledictions) == "table" then
+        clearPetrificationEntry(target.maledictions.petrification)
     end
 
     return cured
@@ -5021,6 +5082,13 @@ function M.createActionResolver(config)
             result.effects[#result.effects + 1] = "bloody_tears_vision_disfavor"
         end
 
+        if action.actor and action.actor.faceRatDiseaseWandsDisfavor and
+           (actionType == M.ACTION_TYPES.BANTER or actionType == M.ACTION_TYPES.PARLEY or
+            action.socialInfluence == true or action.influenceOthers == true) then
+            favor = combineFavorState(favor, false)
+            result.effects[#result.effects + 1] = "face_rat_disease_wands_disfavor"
+        end
+
         if actionType == M.ACTION_TYPES.SPEAK_INCANTATION and
            (actorConditions.deaf or actorConditions.deafened) then
             favor = combineFavorState(favor, false)
@@ -5976,6 +6044,758 @@ function M.createActionResolver(config)
         }
     end
 
+    function resolver:getActionRound(action)
+        if action and action.round then
+            return action.round
+        end
+        local controller = (action and action.challengeController) or self.challengeController
+        return controller and controller.currentRound or nil
+    end
+
+    function resolver:markPetrifiedByCockatriceGaze(target, action)
+        target.conditions = target.conditions or {}
+        target.conditions.petrified = true
+        target.conditions.petrification = true
+        target.petrified = true
+        target.curseOfPetrification = true
+        target.petrificationCurse = true
+        target.material = "stone"
+
+        target.nonRecoverableConditions = target.nonRecoverableConditions or {}
+        target.nonRecoverableConditions.petrified = "cockatrice_gaze"
+        target.nonRecoverableConditions.petrification = "cockatrice_gaze"
+
+        local source = action and action.actor
+        local malediction = {
+            active = true,
+            curseId = "petrification",
+            curseName = "Petrification",
+            petrification = true,
+            source = "cockatrice_gaze",
+            sourceId = source and source.id or nil,
+            sourceName = source and source.name or nil,
+            curse = {
+                id = "petrification",
+                name = "Petrification",
+            },
+        }
+        target.petrificationMalediction = malediction
+        target.maledictions = target.maledictions or {}
+        target.maledictions.petrification = malediction
+        if type(target.malediction) ~= "table" or not target.malediction.active or
+           target.malediction.curseId == "petrification" or
+           (target.malediction.curse and target.malediction.curse.id == "petrification") then
+            target.malediction = malediction
+        end
+
+        if target.cockatriceGazeRooted or target.rootedBy == "cockatrice_gaze" then
+            target.conditions.rooted = false
+            target.cockatriceGazeRooted = false
+            if target.rootedBy == "cockatrice_gaze" then
+                target.rootedBy = nil
+            end
+        end
+    end
+
+    function resolver:resolveCreatureGaze(action, result)
+        result.effects = result.effects or {}
+        action = action or {}
+        local actor = action.actor
+        local target = action.target
+
+        if not actor then
+            result.success = false
+            result.description = "No actor for creature gaze."
+            result.effects[#result.effects + 1] = "missing_actor"
+            return result
+        end
+        if not target then
+            result.success = false
+            result.description = "No target for creature gaze."
+            result.effects[#result.effects + 1] = "missing_target"
+            return result
+        end
+
+        local gaze = action.gaze or (actor.cockatrice and actor.cockatrice.gaze)
+        local isCockatrice = action.type == M.ACTION_TYPES.COCKATRICE_GAZE or
+            entityHasNormalizedTag(actor, "cockatrice") or (actor.cockatrice and actor.cockatrice.gaze)
+        if not isCockatrice or not gaze then
+            result.success = false
+            result.description = "Creature gaze is not defined."
+            result.effects[#result.effects + 1] = "creature_gaze_missing"
+            return result
+        end
+
+        local round = self:getActionRound(action)
+        if gaze.oncePerRound and round and actor.cockatriceGazeUsedRound == round then
+            result.success = false
+            result.description = "Cockatrice gaze already used this round."
+            result.effects[#result.effects + 1] = "cockatrice_gaze_round_spent"
+            return result
+        end
+        if gaze.oncePerRound and round then
+            actor.cockatriceGazeUsedRound = round
+        end
+
+        result.success = true
+        result.automatic = true
+        result.cardValue = 0
+        result.testValue = 0
+        result.difficulty = 0
+        result.gaze = gaze
+        result.effects[#result.effects + 1] = "creature_gaze"
+        result.effects[#result.effects + 1] = "cockatrice_gaze"
+
+        if action.reflectedByMirror or action.mirrorReflection then
+            result.effects[#result.effects + 1] = "cockatrice_gaze_not_reflected_by_mirror"
+        end
+
+        target.conditions = target.conditions or {}
+        if target.conditions.rooted then
+            self:markPetrifiedByCockatriceGaze(target, action)
+            result.effects[#result.effects + 1] = "cockatrice_gaze_petrified"
+            result.effects[#result.effects + 1] = "petrification_curse"
+            result.effects[#result.effects + 1] = "condition_petrified"
+            result.description = (target.name or "Target") .. " is turned to stone by the Cockatrice's gaze."
+        else
+            self:applyRooted(target, { action = action, reason = "cockatrice_gaze" })
+            target.cockatriceGazeRooted = true
+            target.cockatriceGazeSource = actor.id or actor.name
+            target.cockatriceGazeRound = round
+            target.rootedBy = "cockatrice_gaze"
+            result.effects[#result.effects + 1] = "cockatrice_gaze_rooted"
+            result.effects[#result.effects + 1] = "rooted"
+            result.description = (target.name or "Target") .. " is Rooted by the Cockatrice's gaze."
+        end
+
+        self.eventBus:emit("creature_gaze_resolved", {
+            actor = actor,
+            target = target,
+            action = action,
+            result = result,
+        })
+
+        action.result = result
+        return result
+    end
+
+    function resolver:requiresGreaterDoomForGriffinGrab(action)
+        if not action then
+            return true
+        end
+        local doom = action.greaterDoom or action.doom
+        local effect = doom and doom.effect
+        if effect and effect.type == "roughhouse_grab" then
+            return false
+        end
+        return not (action.greaterDoomCard or action.discardedGreaterDoom or action.useGreaterDoom == true or
+            action.griffinGrabGreaterDoom == true)
+    end
+
+    function resolver:isGriffinGrabRoughhouse(action, effect)
+        if effect == "grab" or effect == "griffin_grab" then
+            return true
+        end
+        if action and (action.griffinGrab == true or action.grab == true) then
+            return true
+        end
+        local doom = action and (action.greaterDoom or action.doom)
+        local doomEffect = doom and doom.effect
+        return doomEffect and doomEffect.type == "roughhouse_grab"
+    end
+
+    function resolver:isBadLittleHandsRoughhouse(action, effect)
+        if effect ~= "steal_belt_item" then
+            return false
+        end
+        if not action then
+            return false
+        end
+        if action.badLittleHands == true or action.stealBeltItem == true then
+            return true
+        end
+
+        local doom = action.lesserDoom or action.doom
+        local doomEffect = doom and doom.effect
+        if doomEffect and doomEffect.type == "roughhouse_steal_belt_item" then
+            return true
+        end
+
+        return entityHasNormalizedTag(action.actor, "face_rat")
+    end
+
+    function resolver:getBadLittleHandsTargetItem(action)
+        local target = action and action.target
+        local inv = target and target.inventory
+        if not inv or not inv.getItems then
+            return nil, nil, "missing_inventory"
+        end
+
+        if action.itemId and inv.findItem then
+            local item, location = inv:findItem(action.itemId)
+            if item and location == inventory.LOCATIONS.BELT then
+                return item, location, nil
+            end
+            return nil, location, "selected_item_not_on_belt"
+        end
+
+        if action.item and action.item.id and inv.findItem then
+            local item, location = inv:findItem(action.item.id)
+            if item and location == inventory.LOCATIONS.BELT then
+                return item, location, nil
+            end
+            return nil, location, "selected_item_not_on_belt"
+        end
+
+        local beltItems = inv:getItems(inventory.LOCATIONS.BELT) or {}
+        return beltItems[1], inventory.LOCATIONS.BELT, nil
+    end
+
+    function resolver:recordBadLittleHandsItem(faceRat, owner, item, location, action)
+        faceRat.badLittleHands = faceRat.badLittleHands or {}
+        faceRat.stolenItems = faceRat.stolenItems or {}
+
+        local record = {
+            item = item,
+            from = owner,
+            fromId = owner and owner.id or nil,
+            fromName = owner and owner.name or nil,
+            location = location or inventory.LOCATIONS.BELT,
+            retrieveBy = { "disarm", "kill" },
+            reason = "bad_little_hands",
+            action = action,
+        }
+
+        faceRat.badLittleHands[#faceRat.badLittleHands + 1] = item
+        faceRat.stolenItems[#faceRat.stolenItems + 1] = record
+
+        item.stolenBy = faceRat.id
+        item.stolenByName = faceRat.name
+        item.stolenFrom = owner and owner.id or nil
+        item.stolenFromName = owner and owner.name or nil
+        item.heldInBadLittleHands = true
+
+        return record
+    end
+
+    function resolver:peekBadLittleHandsItem(faceRat)
+        if not faceRat then
+            return nil, nil
+        end
+        if faceRat.stolenItems and #faceRat.stolenItems > 0 then
+            local record = faceRat.stolenItems[1]
+            return record.item, record
+        end
+        if faceRat.badLittleHands and #faceRat.badLittleHands > 0 then
+            local item = faceRat.badLittleHands[1]
+            return item, { item = item, location = inventory.LOCATIONS.BELT }
+        end
+        return nil, nil
+    end
+
+    function resolver:popBadLittleHandsItem(faceRat)
+        if not faceRat then
+            return nil, nil
+        end
+
+        local record = nil
+        local item = nil
+        if faceRat.stolenItems and #faceRat.stolenItems > 0 then
+            record = table.remove(faceRat.stolenItems, 1)
+            item = record and record.item
+        end
+        if faceRat.badLittleHands and #faceRat.badLittleHands > 0 then
+            if item and item.id then
+                for i, held in ipairs(faceRat.badLittleHands) do
+                    if held == item or held.id == item.id then
+                        table.remove(faceRat.badLittleHands, i)
+                        break
+                    end
+                end
+            else
+                item = table.remove(faceRat.badLittleHands, 1)
+            end
+        end
+
+        if item and not record then
+            record = { item = item, location = inventory.LOCATIONS.BELT }
+        end
+
+        return item, record
+    end
+
+    function resolver:clearBadLittleHandsItemMetadata(item)
+        if not item then
+            return
+        end
+        item.stolenBy = nil
+        item.stolenByName = nil
+        item.stolenFrom = nil
+        item.stolenFromName = nil
+        item.heldInBadLittleHands = nil
+    end
+
+    function resolver:returnBadLittleHandsItem(faceRat, item, record, reason)
+        local owner = record and record.from or nil
+        local recovered = {
+            item = item,
+            owner = owner,
+            ownerId = record and record.fromId or nil,
+            reason = reason or "bad_little_hands_recovered",
+            returned = false,
+        }
+
+        self:clearBadLittleHandsItemMetadata(item)
+
+        if owner and owner.inventory and owner.inventory.addItem then
+            local tried = {}
+            local function tryLocation(location)
+                if not location or tried[location] then
+                    return false
+                end
+                tried[location] = true
+                local ok, addReason = owner.inventory:addItem(item, location)
+                if ok then
+                    recovered.returned = true
+                    recovered.location = location
+                    return true
+                end
+                recovered.error = addReason
+                return false
+            end
+
+            tryLocation(record and record.location)
+            if not recovered.returned then
+                tryLocation(inventory.LOCATIONS.BELT)
+            end
+            if not recovered.returned then
+                tryLocation(inventory.LOCATIONS.PACK)
+            end
+            if not recovered.returned then
+                tryLocation(inventory.LOCATIONS.HANDS)
+            end
+        end
+
+        if not recovered.returned and faceRat then
+            faceRat.droppedItems = faceRat.droppedItems or {}
+            faceRat.droppedItems[#faceRat.droppedItems + 1] = item
+            recovered.dropped = true
+        end
+
+        self.eventBus:emit(events.EVENTS.INVENTORY_CHANGED, {
+            entity = owner or faceRat,
+            item = item,
+            reason = reason or "bad_little_hands_recovered",
+            source = faceRat,
+            recovery = recovered,
+        })
+
+        return recovered
+    end
+
+    function resolver:releaseBadLittleHandsItem(faceRat, reason)
+        local item, record = self:popBadLittleHandsItem(faceRat)
+        if not item then
+            return nil
+        end
+        return self:returnBadLittleHandsItem(faceRat, item, record, reason)
+    end
+
+    function resolver:releaseAllBadLittleHandsItems(faceRat, reason)
+        local released = {}
+        while self:peekBadLittleHandsItem(faceRat) do
+            local recovery = self:releaseBadLittleHandsItem(faceRat, reason)
+            if not recovery then
+                break
+            end
+            released[#released + 1] = recovery
+        end
+        return released
+    end
+
+    function resolver:releaseGriffinGrab(griffin, victim, reason)
+        griffin = griffin or (victim and victim.griffinGrabbedBy)
+        victim = victim or (griffin and griffin.grabbedVictim)
+        if not victim then
+            return nil
+        end
+
+        if victim.conditions and (victim.griffinGrabbedBy or victim.rootedBy == "griffin_grab") then
+            victim.conditions.rooted = false
+        end
+        victim.griffinGrabbedBy = nil
+        victim.griffinGrabbedById = nil
+        victim.griffinGrabbedByName = nil
+        victim.griffinGrabMovesWith = nil
+        victim.griffinGrabRecoverCausesFallingDamage = nil
+        victim.griffinGrabFallHeightFeet = nil
+        if victim.rootedBy == "griffin_grab" then
+            victim.rootedBy = nil
+        end
+
+        if griffin then
+            griffin.grabbedVictim = nil
+            griffin.griffinGrab = nil
+        end
+
+        return {
+            victim = victim,
+            griffin = griffin,
+            reason = reason or "released",
+        }
+    end
+
+    function resolver:applyGriffinGrabMove(actor, oldZone, newZone, action, result)
+        local grab = actor and actor.griffinGrab
+        local victim = grab and grab.victim
+        if not victim or not grab.targetMovesWithActor or not newZone then
+            return nil
+        end
+
+        local victimOldZone = victim.zone
+        if self.zoneSystem and victim.id then
+            self.zoneSystem:placeEntity(victim.id, newZone)
+        end
+        victim.zone = newZone
+        result.griffinGrabMovedVictim = {
+            victim = victim,
+            oldZone = victimOldZone,
+            newZone = newZone,
+        }
+        result.effects[#result.effects + 1] = "griffin_grab_victim_moved"
+
+        self.eventBus:emit("entity_zone_changed", {
+            entity = victim,
+            oldZone = victimOldZone or oldZone,
+            newZone = newZone,
+            reason = "griffin_grab",
+        })
+
+        return victim
+    end
+
+    function resolver:redirectMissedAttackToGrabbedVictim(action, result, opts)
+        opts = opts or {}
+        local griffin = action and action.target
+        local grab = griffin and griffin.griffinGrab
+        local victim = grab and grab.victim
+        if not victim or not grab.missedAttacksHitGrabbedVictim then
+            return false
+        end
+        if victim.conditions and (victim.conditions.dead or victim.conditions.deaths_door) then
+            return false
+        end
+
+        local damage = opts.damage or action.griffinGrabRedirectDamage or 1
+        result.griffinGrabRedirect = {
+            griffin = griffin,
+            victim = victim,
+            damage = damage,
+        }
+        result.effects[#result.effects + 1] = "miss_redirected_to_grabbed_victim"
+        result.effects[#result.effects + 1] = "griffin_grab_victim_hit"
+        result.description = (result.description or "Miss!") .. " The missed Attack hits the grabbed victim."
+
+        if damage > 0 then
+            self:applyDamage(victim, damage, result.effects, action.weapon, action.allEntities,
+                self:getActionWoundOptions(action, victim), {
+                    source = "griffin_grab_missed_attack",
+                    action = action,
+                    useAegis = action.useAegis,
+                })
+        end
+
+        return true
+    end
+
+    function resolver:applyGriffinGrabFall(victim, action, result, reason)
+        if not victim then
+            return nil
+        end
+
+        local heightFeet = action and (action.heightFeet or action.roomHeightFeet or action.fallHeightFeet) or
+            victim.griffinGrabFallHeightFeet or 0
+        local fall = self:resolveFall(victim, heightFeet, {
+            card = action and action.fallCard,
+            testResult = action and action.fallTestResult,
+            success = action and action.fallSuccess,
+            greatSuccess = action and action.fallGreatSuccess,
+            greatFailure = action and action.fallGreatFailure,
+            allEntities = action and action.allEntities,
+            woundOptions = action and action.fallWoundOptions,
+        })
+        result.griffinGrabFall = fall
+        result.effects[#result.effects + 1] = "griffin_grab_fall"
+        for _, effect in ipairs(fall.effects or {}) do
+            result.effects[#result.effects + 1] = effect
+        end
+        result.description = (result.description or "") .. " " .. (fall.description or "Victim falls.")
+        return fall
+    end
+
+    function resolver:resolveGriffinDrop(action, result)
+        result.effects = result.effects or {}
+        action = action or {}
+        local actor = action.actor
+        local grab = actor and actor.griffinGrab
+        local victim = action.target or (grab and grab.victim)
+
+        if not actor or not victim or not grab then
+            result.success = false
+            result.description = "No grabbed victim to drop."
+            result.effects[#result.effects + 1] = "griffin_drop_blocked"
+            return result
+        end
+
+        local causesFall = action.causesFallingDamage ~= false and
+            (action.heightFeet or action.roomHeightFeet or action.fallHeightFeet or grab.flying or actor.flying)
+        if not action.heightFeet and not action.roomHeightFeet and not action.fallHeightFeet and grab.heightFeet then
+            action.heightFeet = grab.heightFeet
+        end
+        self:releaseGriffinGrab(actor, victim, "griffin_drop")
+
+        result.success = true
+        result.effects[#result.effects + 1] = "griffin_drop"
+        result.effects[#result.effects + 1] = "griffin_grab_released"
+        result.description = (actor.name or "Griffin") .. " drops " .. (victim.name or "the victim") .. "."
+
+        if causesFall then
+            self:applyGriffinGrabFall(victim, action, result, "griffin_drop")
+        end
+
+        action.result = result
+        return result
+    end
+
+    function resolver:resolveHarpyShriek(action, result)
+        result.effects = result.effects or {}
+        action = action or {}
+        local actor = action.actor
+
+        if not actor then
+            result.success = false
+            result.description = "No harpy for Shriek."
+            result.effects[#result.effects + 1] = "missing_actor"
+            return result
+        end
+        if not (entityHasNormalizedTag(actor, "harpy") or actor.harpy) then
+            result.success = false
+            result.description = "Shriek requires a harpy."
+            result.effects[#result.effects + 1] = "harpy_shriek_blocked"
+            return result
+        end
+
+        local doom = action.greaterDoom or action.doom
+        local effect = doom and doom.effect
+        if not (action.greaterDoomCard or action.discardedGreaterDoom or action.useGreaterDoom == true or
+           (effect and effect.type == "same_zone_stun")) then
+            result.success = false
+            result.description = "Harpy Shriek requires a greater doom."
+            result.effects[#result.effects + 1] = "harpy_shriek_requires_greater_doom"
+            return result
+        end
+
+        local zone = action.zone or actor.zone
+        local affected = {}
+        local skipped = {}
+        local candidates = action.targets or action.allEntities or {}
+        for _, candidate in ipairs(candidates) do
+            if candidate ~= actor and candidate.zone == zone and not entityHasNormalizedTag(candidate, "harpy") then
+                self:applyStun(candidate, {
+                    action = action,
+                    instant = true,
+                    hand = candidate.challengeHand,
+                    handData = candidate.challengeHandData,
+                    playerHand = action.playerHand,
+                    playerDeck = action.playerDeck,
+                    gmDeck = action.gmDeck,
+                    npcAI = action.npcAI,
+                })
+                affected[#affected + 1] = candidate
+            elseif candidate ~= actor then
+                skipped[#skipped + 1] = candidate
+            end
+        end
+
+        result.success = true
+        result.affected = affected
+        result.skipped = skipped
+        result.drawsNearbyCreatures = true
+        result.loudNoise = {
+            source = actor,
+            kind = "harpy_shriek",
+            zone = zone,
+            drawsNearbyCreatures = true,
+        }
+        actor.lastLoudNoise = result.loudNoise
+        if action.room then
+            action.room.loudNoise = result.loudNoise
+        end
+
+        result.effects[#result.effects + 1] = "harpy_shriek"
+        result.effects[#result.effects + 1] = "same_zone_stun"
+        result.effects[#result.effects + 1] = "loud_noise"
+        result.effects[#result.effects + 1] = "draws_nearby_creatures"
+        result.description = "Harpy Shriek stuns " .. tostring(#affected) .. " non-harpy creature(s)."
+
+        self.eventBus:emit("harpy_shriek", {
+            actor = actor,
+            zone = zone,
+            affected = affected,
+            skipped = skipped,
+            loudNoise = result.loudNoise,
+        })
+
+        action.result = result
+        return result
+    end
+
+    function resolver:resolveLionCautiousRetreat(action, result)
+        result.effects = result.effects or {}
+        action = action or {}
+        local actor = action.actor
+        local target = action.target
+
+        if not actor then
+            result.success = false
+            result.description = "No lion for Cautious Retreat."
+            result.effects[#result.effects + 1] = "missing_actor"
+            return result
+        end
+        if not (entityHasNormalizedTag(actor, "lion") or actor.lion) then
+            result.success = false
+            result.description = "Cautious Retreat requires a lion."
+            result.effects[#result.effects + 1] = "lion_cautious_retreat_blocked"
+            return result
+        end
+        if not target then
+            result.success = false
+            result.description = "No adventurer to disengage from."
+            result.effects[#result.effects + 1] = "lion_cautious_retreat_missing_target"
+            return result
+        end
+
+        local doom = action.greaterDoom or action.doom
+        local effect = doom and doom.effect
+        if not (action.greaterDoomCard or action.discardedGreaterDoom or action.useGreaterDoom == true or
+           (effect and effect.type == "disengage_one")) then
+            result.success = false
+            result.description = "Lion Cautious Retreat requires a greater doom."
+            result.effects[#result.effects + 1] = "lion_cautious_retreat_requires_greater_doom"
+            return result
+        end
+
+        self:breakEngagement(actor, target)
+
+        result.success = true
+        result.cardless = true
+        result.countsTowardTurnCard = false
+        result.effects[#result.effects + 1] = "lion_cautious_retreat"
+        result.effects[#result.effects + 1] = "greater_doom"
+        result.effects[#result.effects + 1] = "disengaged"
+        result.greaterDoom = {
+            name = doom and doom.name or "Cautious Retreat",
+            card = action.greaterDoomCard,
+        }
+        result.description = (actor.name or "Lion") .. " disengages from " ..
+            (target.name or "one adventurer") .. " without spending its turn card."
+
+        self.eventBus:emit("lion_cautious_retreat", {
+            actor = actor,
+            target = target,
+            action = action,
+            result = result,
+        })
+
+        action.result = result
+        return result
+    end
+
+    function resolver:isMimicTarget(entity)
+        return entity and (entity.isMimic == true or entity.mimic ~= nil or entityHasNormalizedTag(entity, "mimic"))
+    end
+
+    function resolver:mimicRequiresExceedInitiative(entity)
+        if not self:isMimicTarget(entity) then
+            return false
+        end
+        if entity.mimic and entity.mimic.mustExceedInitiative == false then
+            return false
+        end
+        return true
+    end
+
+    function resolver:getWeaponImmunityKey(weapon)
+        if not weapon then
+            return nil
+        end
+        return normalizeTalentKey(weapon.weaponType or weapon.type or weapon.name or weapon.templateId)
+    end
+
+    function resolver:resolveMimicHarden(action, result)
+        result.effects = result.effects or {}
+        action = action or {}
+        local actor = action.actor
+
+        if not actor then
+            result.success = false
+            result.description = "No mimic for Harden."
+            result.effects[#result.effects + 1] = "missing_actor"
+            return result
+        end
+        if not self:isMimicTarget(actor) then
+            result.success = false
+            result.description = "Harden requires a mimic."
+            result.effects[#result.effects + 1] = "mimic_harden_blocked"
+            return result
+        end
+
+        local doom = action.greaterDoom or action.doom
+        local effect = doom and doom.effect
+        if not (action.greaterDoomCard or action.discardedGreaterDoom or action.useGreaterDoom == true or
+           (effect and effect.type == "mimic_harden_weapon_immunity")) then
+            result.success = false
+            result.description = "Mimic Harden requires a greater doom."
+            result.effects[#result.effects + 1] = "mimic_harden_requires_greater_doom"
+            return result
+        end
+
+        local weaponType = actor.lastWoundingWeaponType
+        if not weaponType or weaponType == "" then
+            result.success = false
+            result.description = "Mimic Harden has no last wounding weapon type."
+            result.effects[#result.effects + 1] = "mimic_harden_no_wounding_weapon"
+            return result
+        end
+
+        actor.mimicWeaponImmunityType = weaponType
+        actor.mimicWeaponImmunityName = actor.lastWoundingWeaponName or weaponType
+        actor.mimicHarden = {
+            weaponType = weaponType,
+            weaponName = actor.mimicWeaponImmunityName,
+            source = doom and doom.name or "Harden",
+        }
+
+        result.success = true
+        result.cardless = true
+        result.countsTowardTurnCard = false
+        result.effects[#result.effects + 1] = "mimic_harden"
+        result.effects[#result.effects + 1] = "greater_doom"
+        result.effects[#result.effects + 1] = "weapon_immunity"
+        result.weaponImmunityType = weaponType
+        result.description = (actor.name or "Mimic") .. " hardens against " ..
+            tostring(actor.mimicWeaponImmunityName) .. " attacks."
+
+        self.eventBus:emit("mimic_harden", {
+            actor = actor,
+            action = action,
+            result = result,
+        })
+
+        action.result = result
+        return result
+    end
+
     ----------------------------------------------------------------------------
     -- MAIN RESOLUTION ENTRY POINT
     ----------------------------------------------------------------------------
@@ -5999,6 +6819,26 @@ function M.createActionResolver(config)
         action = action or {}
         local actionType = self:normalizeActionType(action.type or "generic")
         action.normalizedType = actionType
+
+        if actionType == M.ACTION_TYPES.CREATURE_GAZE or actionType == M.ACTION_TYPES.COCKATRICE_GAZE then
+            return self:resolveCreatureGaze(action, result)
+        end
+
+        if actionType == M.ACTION_TYPES.GRIFFIN_DROP then
+            return self:resolveGriffinDrop(action, result)
+        end
+
+        if actionType == M.ACTION_TYPES.HARPY_SHRIEK then
+            return self:resolveHarpyShriek(action, result)
+        end
+
+        if actionType == M.ACTION_TYPES.LION_CAUTIOUS_RETREAT then
+            return self:resolveLionCautiousRetreat(action, result)
+        end
+
+        if actionType == M.ACTION_TYPES.MIMIC_HARDEN then
+            return self:resolveMimicHarden(action, result)
+        end
 
         if actionType == M.ACTION_TYPES.SNEAK then
             return self:resolveSneak(action, result)
@@ -6606,6 +7446,196 @@ function M.createActionResolver(config)
         return notchResult
     end
 
+    function resolver:applyAttackAffliction(target, effect, action, result)
+        if not target then
+            return nil
+        end
+
+        local afflictionId = effect.affliction or effect.afflictionId or "affliction"
+        target.afflictions = target.afflictions or {}
+        local affliction = target.afflictions[afflictionId]
+        if not affliction then
+            affliction = {
+                id = afflictionId,
+                name = effect.afflictionName or (afflictionId == "face_rat_disease" and "Face Rat Disease") or afflictionId,
+                source = effect.source or "greater_doom_attack",
+                sourceId = action and action.actor and action.actor.id or nil,
+                stage = 1,
+                maxStage = 3,
+                stageCosts = {
+                    [1] = 1,
+                    [2] = 1,
+                    [3] = 2,
+                },
+                stages = {
+                    {
+                        id = "featureless_mask",
+                        cureCharges = 1,
+                        wandsInfluenceDisfavor = true,
+                    },
+                    {
+                        id = "skin_over_nose_and_mouth",
+                        cureCharges = 1,
+                        condition = "silenced",
+                    },
+                    {
+                        id = "skin_over_eyes",
+                        cureCharges = 2,
+                        condition = "blind",
+                    },
+                },
+            }
+            target.afflictions[afflictionId] = affliction
+        else
+            affliction.stage = math.max(affliction.stage or 1, 1)
+        end
+
+        if afflictionId == "face_rat_disease" then
+            target.faceRatDisease = affliction
+            target.faceRatDiseaseWandsDisfavor = true
+        end
+
+        result.attackAffliction = affliction
+        result.effects[#result.effects + 1] = "attack_affliction"
+        result.effects[#result.effects + 1] = afflictionId
+        return affliction
+    end
+
+    function resolver:applyStealFaceAttack(target, effect, action, result)
+        if not target then
+            return nil
+        end
+
+        target.conditions = target.conditions or {}
+        target.conditions.blind = effect.blind ~= false
+        target.conditions.blinded = effect.blind ~= false
+        target.conditions.silenced = effect.silence ~= false
+        target.silenced = effect.silence ~= false
+        target.faceStolen = true
+        target.faceStolenBy = action and action.actor
+        target.faceStolenById = action and action.actor and action.actor.id or nil
+
+        local actor = action and action.actor
+        if actor then
+            actor.stolenFaces = actor.stolenFaces or {}
+            actor.stolenFaces[#actor.stolenFaces + 1] = {
+                victim = target,
+                victimId = target.id,
+                victimName = target.name,
+                permanent = effect.copiesFacePermanently ~= false,
+            }
+            actor.currentFace = target.name or target.id
+        end
+
+        if effect.replacesWound ~= false then
+            result.damageDealt = 0
+            result.effects[#result.effects + 1] = "wound_replaced"
+        end
+        result.stealFace = {
+            actor = actor,
+            target = target,
+            blind = effect.blind ~= false,
+            silence = effect.silence ~= false,
+        }
+        result.effects[#result.effects + 1] = "steal_face"
+        result.effects[#result.effects + 1] = "blind"
+        result.effects[#result.effects + 1] = "silenced"
+        return result.stealFace
+    end
+
+    function resolver:getActionLesserDoomEffect(action)
+        local doom = action and (action.lesserDoom or action.attackDoom)
+        if not doom then
+            return nil, nil
+        end
+        return doom.effect or {}, doom
+    end
+
+    function resolver:applyAttackConditionChoice(target, effect, action, result, doom)
+        local choice = action.lesserDoomChoice or action.doomChoice or action.conditionChoice or
+            action.choice or effect.choice or effect.defaultChoice or (effect.choices and effect.choices[1])
+        choice = self:normalizeRoughhouseEffect(choice)
+
+        result.attackConditionChoice = choice
+        result.effects[#result.effects + 1] = "attack_condition_choice"
+        if doom and doom.id == "bite" and entityHasNormalizedTag(action.actor, "lion") then
+            result.effects[#result.effects + 1] = "lion_bite"
+        end
+
+        if choice == "disarmed" or choice == "disarm" then
+            local droppedItem = nil
+            if target.inventory and target.inventory.getItems then
+                local handsItems = target.inventory:getItems(inventory.LOCATIONS.HANDS) or {}
+                droppedItem = handsItems[1]
+            elseif target.weapon then
+                droppedItem = target.weapon
+            end
+
+            if droppedItem then
+                droppedItem = self:dropCarriedItem(target, droppedItem, "attack_condition_choice", action)
+                target.conditions = target.conditions or {}
+                target.conditions.disarmed = true
+                result.droppedItem = droppedItem
+                result.effects[#result.effects + 1] = "disarmed"
+                result.effects[#result.effects + 1] = "lion_bite_disarm"
+                result.description = result.description .. (doom and doom.name or "Attack") ..
+                    " disarms [" .. (droppedItem.name or "item") .. "]! "
+            else
+                result.effects[#result.effects + 1] = "disarm_no_item"
+                result.description = result.description .. (doom and doom.name or "Attack") ..
+                    " tries to disarm, but the target holds nothing. "
+            end
+        elseif choice == "tripped" or choice == "trip" then
+            target.conditions = target.conditions or {}
+            target.conditions.prone = true
+            self:clearAllEngagements(target, action.allEntities)
+            result.effects[#result.effects + 1] = "prone"
+            result.effects[#result.effects + 1] = "lion_bite_trip"
+            result.description = result.description .. (doom and doom.name or "Attack") .. " trips the target! "
+        end
+    end
+
+    function resolver:applyDoubleInitiativeAttackBonus(target, effect, action, result, doom)
+        local targetInitiative = result.difficulty or self:getTargetInitiative(target, action) or 0
+        if targetInitiative <= 0 then
+            return
+        end
+        if (result.testValue or 0) < targetInitiative * 2 then
+            return
+        end
+
+        local previousDamage = result.damageDealt or 0
+        result.damageDealt = math.max(previousDamage, effect.wounds or 2)
+        result.doubleInitiativeAttackBonus = {
+            previousDamage = previousDamage,
+            damageDealt = result.damageDealt,
+            targetInitiative = targetInitiative,
+            attackValue = result.testValue,
+        }
+        result.effects[#result.effects + 1] = "double_initiative_attack_bonus"
+        if doom and doom.id == "claw" and entityHasNormalizedTag(action.actor, "lion") then
+            result.effects[#result.effects + 1] = "lion_claw_double_initiative"
+        end
+        if result.damageDealt > previousDamage then
+            result.effects[#result.effects + 1] = "damage_increased"
+            result.description = result.description .. (doom and doom.name or "Attack") ..
+                " lands with overwhelming force! "
+        end
+    end
+
+    function resolver:applyAttackLesserDoom(action, result, target)
+        local effect, doom = self:getActionLesserDoomEffect(action)
+        if not effect or not target then
+            return
+        end
+
+        if effect.type == "attack_plus_condition_choice" then
+            self:applyAttackConditionChoice(target, effect, action, result, doom)
+        elseif effect.type == "attack_double_initiative_bonus" then
+            self:applyDoubleInitiativeAttackBonus(target, effect, action, result, doom)
+        end
+    end
+
     function resolver:applyAttackGreaterDoom(action, result, target)
         local doom = action.greaterDoom
         if not doom or not target then
@@ -6632,6 +7662,21 @@ function M.createActionResolver(config)
             if effect.suppressDamage or effect.noDamage then
                 result.damageDealt = 0
             end
+        elseif effect.type == "attack_affliction" then
+            self:applyAttackAffliction(target, effect, action, result)
+            result.description = result.description .. (doom.name or "Greater doom") .. "! Target contracts " ..
+                tostring(effect.afflictionName or effect.affliction or "an affliction") .. ". "
+        elseif effect.type == "attack_blind_and_silence" then
+            self:applyStealFaceAttack(target, effect, action, result)
+            result.description = result.description .. (doom.name or "Greater doom") ..
+                "! Target is Blinded and Silenced instead of wounded. "
+        elseif effect.type == "attack_piercing" then
+            result.effects[#result.effects + 1] = "piercing"
+            if doom.id == "riot_of_teeth" or entityHasNormalizedTag(action.actor, "mimic") then
+                result.effects[#result.effects + 1] = "mimic_riot_of_teeth"
+            end
+            result.description = result.description .. (doom.name or "Greater doom") ..
+                "! Attack deals Piercing damage. "
         else
             result.description = result.description .. (doom.name or "Greater doom") .. "! "
         end
@@ -6667,6 +7712,7 @@ function M.createActionResolver(config)
         local attackValue = result.testValue
         local baseInitiative = result.difficulty
         local defenderHasShield = target and self:entityHasShield(target)
+        local targetRequiresExceed = self:mimicRequiresExceedInitiative(target)
 
         -- Check engagement (must be in same zone as target)
         if self.zoneSystem and target then
@@ -6706,6 +7752,7 @@ function M.createActionResolver(config)
                     result.success = false
                     result.description = "Dodged! "
                     result.effects[#result.effects + 1] = "dodged"
+                    self:redirectMissedAttackToGrabbedVictim(action, result)
                     return
                 else
                     result.effects[#result.effects + 1] = "dodge_failed"
@@ -6720,10 +7767,13 @@ function M.createActionResolver(config)
 
         -- Resolve hit against Initiative (ties go to attacker unless defender has shield)
         result.success = (attackValue > baseInitiative) or
-                         (attackValue == baseInitiative and not defenderHasShield)
+                         (attackValue == baseInitiative and not defenderHasShield and not targetRequiresExceed)
+        if targetRequiresExceed and attackValue == baseInitiative then
+            result.effects[#result.effects + 1] = "mimic_tough_requires_exceed"
+        end
 
         -- S7.6: Flail specialization - ties count as success
-        if not result.success and action.weapon and M.isWeaponType(action.weapon, "FLAIL") then
+        if not result.success and not targetRequiresExceed and action.weapon and M.isWeaponType(action.weapon, "FLAIL") then
             if attackValue == baseInitiative then
                 result.success = true
                 result.description = "Flail tie-breaker! "
@@ -6778,6 +7828,7 @@ function M.createActionResolver(config)
                 end
             end
 
+            self:applyAttackLesserDoom(action, result, target)
             self:applyAttackGreaterDoom(action, result, target)
             self:applyAmbusherDamageBonus(action, result)
 
@@ -6792,6 +7843,7 @@ function M.createActionResolver(config)
             end
         else
             result.description = "Miss!"
+            self:redirectMissedAttackToGrabbedVictim(action, result)
             if action.greaterDoom then
                 result.description = result.description .. " " .. (action.greaterDoom.name or "Greater doom") .. " wasted."
                 result.effects[#result.effects + 1] = "greater_doom_wasted"
@@ -6834,6 +7886,7 @@ function M.createActionResolver(config)
         local baseInitiative = result.difficulty
         local target = action.target
         local defenderHasShield = target and self:entityHasShield(target)
+        local targetRequiresExceed = self:mimicRequiresExceedInitiative(target)
         local dodged = false
         local riposteTriggered = false
         local riposteDefense = nil
@@ -6901,7 +7954,10 @@ function M.createActionResolver(config)
         elseif not dodged then
             -- Resolve hit against Initiative (ties go to attacker unless defender has shield)
             result.success = (attackValue > baseInitiative) or
-                             (attackValue == baseInitiative and not defenderHasShield)
+                             (attackValue == baseInitiative and not defenderHasShield and not targetRequiresExceed)
+            if targetRequiresExceed and attackValue == baseInitiative then
+                result.effects[#result.effects + 1] = "mimic_tough_requires_exceed"
+            end
         end
 
         -- S7.8: Crossbow must be loaded
@@ -6957,6 +8013,7 @@ function M.createActionResolver(config)
                 end
             end
 
+            self:applyAttackLesserDoom(action, result, target)
             self:applyAmbusherDamageBonus(action, result)
 
             if action.target then
@@ -6971,6 +8028,7 @@ function M.createActionResolver(config)
             if not result.description or result.description == "" then
                 result.description = "Miss!"
             end
+            self:redirectMissedAttackToGrabbedVictim(action, result)
         end
 
         self:applyMaledictionWeaponRust(action, result)
@@ -7096,6 +8154,13 @@ function M.createActionResolver(config)
         if effect == "grapple" or effect == "rooted" then
             return "root"
         end
+        if effect == "griffin_grab" then
+            return "grab"
+        end
+        if effect == "bad_little_hands" or effect == "roughhouse_steal_belt_item" or
+           effect == "steal_belt" or effect == "steal_belt_item" then
+            return "steal_belt_item"
+        end
         if effect == "push" or effect == "push_back" then
             return "displace"
         end
@@ -7119,6 +8184,128 @@ function M.createActionResolver(config)
         return effect == "exhaust" or effect == "notch" or effect == "silence"
     end
 
+    function resolver:resolveGriffinGrab(action, result)
+        local actor = action.actor
+        local target = action.target
+
+        if not actor or not target then
+            result.success = false
+            result.description = "No target to grab!"
+            result.effects[#result.effects + 1] = "griffin_grab_blocked"
+            return
+        end
+        if self:requiresGreaterDoomForGriffinGrab(action) then
+            result.success = false
+            result.description = "Griffin Grab requires a greater doom."
+            result.effects[#result.effects + 1] = "griffin_grab_requires_greater_doom"
+            return
+        end
+
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
+            return
+        end
+
+        if result.success then
+            self:applyRooted(target, { action = action, reason = "griffin_grab" })
+
+            local heightFeet = action.heightFeet or action.roomHeightFeet or action.fallHeightFeet
+            local isFlying = actor.flying == true or action.flying == true or action.flyByAttack == true or
+                (actor.conditions and actor.conditions.flying == true)
+            actor.grabbedVictim = target
+            actor.griffinGrab = {
+                victim = target,
+                targetMovesWithActor = true,
+                missedAttacksHitGrabbedVictim = true,
+                flying = isFlying,
+                heightFeet = heightFeet,
+            }
+
+            target.griffinGrabbedBy = actor
+            target.griffinGrabbedById = actor.id
+            target.griffinGrabbedByName = actor.name
+            target.griffinGrabMovesWith = actor
+            target.griffinGrabRecoverCausesFallingDamage = isFlying
+            target.griffinGrabFallHeightFeet = heightFeet
+            target.rootedBy = "griffin_grab"
+
+            result.description = "Grabbed! Target is Rooted and moves with the griffin."
+            result.effects[#result.effects + 1] = "griffin_grab"
+            result.effects[#result.effects + 1] = "rooted"
+            result.effects[#result.effects + 1] = "target_moves_with_griffin"
+            if isFlying then
+                result.effects[#result.effects + 1] = "griffin_grab_flying"
+            end
+        else
+            result.description = "Failed to grab!"
+        end
+
+        self:appendRoughhouseRiposte(action, result, contest)
+    end
+
+    function resolver:resolveStealBeltItem(action, result)
+        local actor = action.actor
+        local target = action.target
+
+        if not actor or not target then
+            result.success = false
+            result.description = "No target to steal from!"
+            result.effects[#result.effects + 1] = "bad_little_hands_blocked"
+            return
+        end
+        if not self:isBadLittleHandsRoughhouse(action, "steal_belt_item") then
+            result.success = false
+            result.description = "Bad Little Hands is a Face Rat lesser doom."
+            result.effects[#result.effects + 1] = "bad_little_hands_requires_face_rat"
+            return
+        end
+
+        local contest = self:resolveInitiativeContest(action, result, {
+            tieWins = false,
+        })
+
+        if contest.dodged then
+            return
+        end
+
+        if result.success then
+            local item, location, itemReason = self:getBadLittleHandsTargetItem(action)
+            if not item then
+                result.success = false
+                result.description = "No belt item to steal!"
+                result.effects[#result.effects + 1] = "bad_little_hands_no_belt_item"
+                result.badLittleHandsFailure = itemReason
+            else
+                local stolen = nil
+                if target.inventory and target.inventory.removeItem and item.id then
+                    stolen = target.inventory:removeItem(item.id)
+                end
+                stolen = stolen or item
+
+                local record = self:recordBadLittleHandsItem(actor, target, stolen, location, action)
+                result.description = "Bad Little Hands steals [" .. (stolen.name or "belt item") .. "]!"
+                result.effects[#result.effects + 1] = "bad_little_hands"
+                result.effects[#result.effects + 1] = "belt_item_stolen"
+                result.stolenItem = stolen
+                result.stolenItemRecord = record
+
+                self.eventBus:emit(events.EVENTS.INVENTORY_CHANGED, {
+                    entity = target,
+                    item = stolen,
+                    reason = "bad_little_hands_stolen",
+                    source = actor,
+                })
+            end
+        else
+            result.description = "Failed to steal belt item!"
+        end
+
+        self:appendRoughhouseRiposte(action, result, contest)
+    end
+
     function resolver:resolveRoughhouse(action, result)
         local effect = self:normalizeRoughhouseEffect(
             action.roughhouseEffect or action.effect or action.maneuver or action.outcome
@@ -7127,10 +8314,25 @@ function M.createActionResolver(config)
         result.effects[#result.effects + 1] = "roughhouse"
         result.effects[#result.effects + 1] = "roughhouse_" .. effect
 
+        if self:isGriffinGrabRoughhouse(action, effect) then
+            return self:resolveGriffinGrab(action, result)
+        end
+        if effect == "steal_belt_item" then
+            return self:resolveStealBeltItem(action, result)
+        end
+
         if self:isFightDirtyRoughhouseEffect(effect) and not entityHasUsableTalent(action.actor, "fight_dirty") then
             result.success = false
             result.description = "Requires Fight Dirty."
             result.effects[#result.effects + 1] = "fight_dirty_required"
+            return
+        end
+
+        if targetRequiresGiantSizeToRoughhouse(action.target) and not actionCanAffectGiantSizedTarget(action) then
+            result.success = false
+            result.description = "Target is too huge to Roughhouse."
+            result.effects[#result.effects + 1] = "roughhouse_target_too_huge"
+            result.effects[#result.effects + 1] = "roughhouse_requires_giant_size"
             return
         end
 
@@ -7207,8 +8409,9 @@ function M.createActionResolver(config)
             return
         end
 
-        -- Check if target has anything in hands
+        -- Check if target has anything in hands or Face Rat Bad Little Hands.
         local droppedItem = nil
+        local badLittleHandsItem = self:peekBadLittleHandsItem(target)
         if target.inventory and target.inventory.getItems then
             local handsItems = target.inventory:getItems("hands")
             if handsItems and #handsItems > 0 then
@@ -7219,7 +8422,21 @@ function M.createActionResolver(config)
         end
 
         if result.success then
-            if droppedItem then
+            if badLittleHandsItem then
+                local recovery = self:releaseBadLittleHandsItem(target, "disarm")
+                local recoveredItem = recovery and recovery.item or badLittleHandsItem
+                result.description = "Disarmed stolen [" .. (recoveredItem.name or "item") .. "] from Bad Little Hands!"
+                result.effects[#result.effects + 1] = "disarmed"
+                result.effects[#result.effects + 1] = "bad_little_hands_item_recovered"
+                result.effects[#result.effects + 1] = "belt_item_recovered"
+                result.recoveredItem = recoveredItem
+                result.recovery = recovery
+
+                -- Set disarmed condition on target
+                if target.conditions then
+                    target.conditions.disarmed = true
+                end
+            elseif droppedItem then
                 droppedItem = self:dropCarriedItem(target, droppedItem, "disarm", action)
                 result.description = "Disarmed [" .. (droppedItem.name or "item") .. "]!"
                 result.effects[#result.effects + 1] = "disarmed"
@@ -7430,6 +8647,20 @@ function M.createActionResolver(config)
         end
 
         if result.success then
+            if self:isMimicTarget(target) then
+                local wounds = target.mimic and target.mimic.treatsNotchesAsWounds or 2
+                result.description = "Notched mimic for " .. tostring(wounds) .. " Wounds!"
+                result.effects[#result.effects + 1] = "mimic_construct_notch_wounds"
+                result.effects[#result.effects + 1] = "mimic_notched"
+                result.damageDealt = wounds
+                self:applyDamage(target, wounds, result.effects, nil, action.allEntities, nil, {
+                    source = "notch",
+                    action = action,
+                })
+                self:appendRoughhouseRiposte(action, result, contest)
+                return
+            end
+
             local item = self:getRoughhouseNotchItem(action)
             if item then
                 local notchResult = inventory.addNotch(item)
@@ -10088,8 +11319,21 @@ function M.createActionResolver(config)
         -- Priority order for clearing conditions (per S7.4 spec)
         local conditions = actor.conditions
         local cleared = nil
+        local requested = normalizeTalentKey(action.recoverEffect or action.condition or action.effect or action.recover)
+        local function wants(...)
+            if requested == "" then
+                return true
+            end
+            for _, name in ipairs({ ... }) do
+                if requested == name then
+                    return true
+                end
+            end
+            return false
+        end
 
-        if conditions.webbed or (actor.webbedLimbs and actor.webbedLimbs > 0) then
+        if wants("webbed", "web", "webbed_limb", "webbed_limbs") and
+           (conditions.webbed or (actor.webbedLimbs and actor.webbedLimbs > 0)) then
             local remainingLimbs = actor.webbedLimbs or 1
             if remainingLimbs > 1 then
                 actor.webbedLimbs = remainingLimbs - 1
@@ -10103,14 +11347,35 @@ function M.createActionResolver(config)
                 cleared = "webbed"
                 result.description = "Freed from webs!"
             end
-        elseif conditions.rooted and not (conditions.bindingRooted or actor.bindingRootedBy or
+        elseif wants("rooted", "root") and conditions.rooted and not (conditions.bindingRooted or actor.bindingRootedBy or
                (actor.nonRecoverableConditions and actor.nonRecoverableConditions.rooted)) then
             conditions.rooted = false
+            if actor.cockatriceGazeRooted or actor.rootedBy == "cockatrice_gaze" then
+                actor.cockatriceGazeRooted = false
+                actor.cockatriceGazeSource = nil
+                actor.cockatriceGazeRound = nil
+                if actor.rootedBy == "cockatrice_gaze" then
+                    actor.rootedBy = nil
+                end
+            end
+            if actor.griffinGrabbedBy or actor.rootedBy == "griffin_grab" then
+                local griffin = actor.griffinGrabbedBy
+                local causesFall = actor.griffinGrabRecoverCausesFallingDamage
+                local fallHeight = actor.griffinGrabFallHeightFeet
+                if not action.heightFeet and not action.roomHeightFeet and not action.fallHeightFeet and fallHeight then
+                    action.heightFeet = fallHeight
+                end
+                self:releaseGriffinGrab(griffin, actor, "recover")
+                result.effects[#result.effects + 1] = "griffin_grab_released"
+                if causesFall then
+                    self:applyGriffinGrabFall(actor, action, result, "recover")
+                end
+            end
             cleared = "rooted"
-        elseif conditions.prone then
+        elseif wants("prone", "trip", "tripped") and conditions.prone then
             conditions.prone = false
             cleared = "prone"
-        elseif conditions.blind or conditions.blinded then
+        elseif wants("blind", "blinded") and (conditions.blind or conditions.blinded) then
             conditions.blind = false
             conditions.blinded = false
             if actor.conditionDurations then
@@ -10118,7 +11383,7 @@ function M.createActionResolver(config)
                 actor.conditionDurations.blinded = nil
             end
             cleared = "blind"
-        elseif conditions.deaf or conditions.deafened then
+        elseif wants("deaf", "deafened") and (conditions.deaf or conditions.deafened) then
             conditions.deaf = false
             conditions.deafened = false
             if actor.conditionDurations then
@@ -10126,26 +11391,27 @@ function M.createActionResolver(config)
                 actor.conditionDurations.deafened = nil
             end
             cleared = "deaf"
-        elseif conditions.silenced then
+        elseif wants("silence", "silent", "silenced") and conditions.silenced then
             conditions.silenced = false
             actor.silenced = false
             if actor.conditionDurations then
                 actor.conditionDurations.silenced = nil
             end
             cleared = "silenced"
-        elseif conditions.exhausted and not (actor.nonRecoverableConditions and actor.nonRecoverableConditions.exhausted) then
+        elseif wants("exhausted", "exhaust") and conditions.exhausted and
+               not (actor.nonRecoverableConditions and actor.nonRecoverableConditions.exhausted) then
             conditions.exhausted = false
             actor.exhausted = false
             if actor.conditionDurations then
                 actor.conditionDurations.exhausted = nil
             end
             cleared = "exhausted"
-        elseif conditions.burning or conditions.onFire then
+        elseif wants("burning", "on_fire", "fire") and (conditions.burning or conditions.onFire) then
             conditions.burning = false
             conditions.onFire = false
             actor.onFire = false
             cleared = "burning"
-        elseif conditions.disarmed then
+        elseif wants("disarmed", "disarm", "dropped_item", "weapon") and conditions.disarmed then
             local recoveredItem, recoverErr = self:recoverDroppedItem(actor)
             if recoverErr then
                 result.success = false
@@ -10158,10 +11424,10 @@ function M.createActionResolver(config)
             result.recoveredItem = recoveredItem
             result.description = "Recovered Weapon!"
             result.effects[#result.effects + 1] = "weapon_recovered"
-        elseif conditions.rooted then
+        elseif wants("rooted", "root") and conditions.rooted then
             result.description = "Rooted by Binding; the spell must be countered or interrupted."
             result.effects[#result.effects + 1] = "binding_rooted"
-        elseif conditions.maledicted then
+        elseif wants("maledicted", "malediction", "curse", "cursed") and conditions.maledicted then
             result.description = "Malediction is a Curse; Recover cannot clear it."
             result.effects[#result.effects + 1] = "malediction_recover_blocked"
         end
@@ -10178,7 +11444,12 @@ function M.createActionResolver(config)
         else
             result.success = false
             if not result.description or result.description == "" then
-                result.description = "Nothing to recover from."
+                if requested ~= "" then
+                    result.description = "Cannot recover from " .. requested .. "."
+                    result.effects[#result.effects + 1] = "recover_effect_unavailable"
+                else
+                    result.description = "Nothing to recover from."
+                end
             end
         end
     end
@@ -10240,6 +11511,10 @@ function M.createActionResolver(config)
             result.effects[#result.effects + 1] = "malediction_social_disfavor"
             result.effects[#result.effects + 1] = "desiccated_corpse_hostility"
             result.maledictionSocialModifier = maledictionModifier
+        end
+        if action.actor and action.actor.faceRatDiseaseWandsDisfavor then
+            favorModifier = favorModifier - 3
+            result.effects[#result.effects + 1] = "face_rat_disease_wands_disfavor"
         end
 
         -- Override difficulty with morale + disposition modifier
@@ -20647,6 +21922,7 @@ function M.createActionResolver(config)
             end
 
             actor.zone = destZone
+            self:applyGriffinGrabMove(actor, oldZone, destZone, action, result)
             result.description = "Moved to " .. destZone
 
             -- Emit event for arena view to update display
@@ -20994,6 +22270,22 @@ function M.createActionResolver(config)
     function resolver:applyDamage(entity, amount, effects, weapon, allEntities, woundOptions, damageContext)
         effects = effects or {}
 
+        local weaponImmunityKey = self:getWeaponImmunityKey(weapon)
+        if self:isMimicTarget(entity) and entity.mimicWeaponImmunityType and
+           weaponImmunityKey == entity.mimicWeaponImmunityType then
+            effects[#effects + 1] = "mimic_harden_immune"
+            self.eventBus:emit("mimic_harden_immune", {
+                entity = entity,
+                weapon = weapon,
+                weaponType = weaponImmunityKey,
+            })
+            return {
+                result = "immune",
+                immune = true,
+                weaponType = weaponImmunityKey,
+            }
+        end
+
         -- S7.7: Determine damage type from effects
         local damageType = "normal"
         for _, eff in ipairs(effects) do
@@ -21040,6 +22332,15 @@ function M.createActionResolver(config)
                 wasDefeated = true
                 if entity.conditions.dead then
                     print("[DEFEAT] " .. (entity.name or entity.id) .. " is DEAD!")
+                    local releasedBadLittleHands = self:releaseAllBadLittleHandsItems(entity, "kill")
+                    if #releasedBadLittleHands > 0 then
+                        effects[#effects + 1] = "bad_little_hands_items_released_on_defeat"
+                        self.eventBus:emit("bad_little_hands_items_released", {
+                            entity = entity,
+                            released = releasedBadLittleHands,
+                            reason = "kill",
+                        })
+                    end
                     -- S6.3: Clear all engagements when defeated
                     self:clearAllEngagements(entity)
 
@@ -21049,6 +22350,11 @@ function M.createActionResolver(config)
                 end
                 break
             end
+        end
+
+        if self:isMimicTarget(entity) and weaponImmunityKey and amount > 0 then
+            entity.lastWoundingWeaponType = weaponImmunityKey
+            entity.lastWoundingWeaponName = weapon and (weapon.weaponType or weapon.name or weapon.templateId) or weaponImmunityKey
         end
 
         -- S7.6: Axe Cleave - on defeat, free attack on another enemy in same zone

@@ -324,6 +324,10 @@ function M.createEntity(config)
 
         -- Whether this NPC skips Death's Door on defeat (undead, constructs)
         instantDestruction = config.instantDestruction or false,
+
+        -- Whether this NPC ignores the normal HD wound track.
+        infiniteHealth = config.infiniteHealth or false,
+        neverTakesWounds = config.neverTakesWounds or false,
     }
 
     ----------------------------------------------------------------------------
@@ -776,6 +780,10 @@ function M.createEntity(config)
     ----------------------------------------------------------------------------
 
     function entity:takeWoundNPC(damageType)
+        if self.infiniteHealth or self.neverTakesWounds then
+            return "invulnerable"
+        end
+
         -- Piercing and Critical bypass Defense, hit Health directly
         local bypassDefense = (damageType == "piercing" or damageType == "critical")
 

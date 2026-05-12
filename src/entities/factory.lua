@@ -28,6 +28,27 @@ local function deepCopy(value)
     return copy
 end
 
+local blueprintFactoryFields = {
+    attributes = true,
+    starting_gear = true,
+    tags = true,
+    aiTags = true,
+    lesserDooms = true,
+    greaterDooms = true,
+    greaterDoom = true,
+    social = true,
+    alchemy = true,
+    notes = true,
+}
+
+local function copyCreatureMetadata(entity, blueprint)
+    for key, value in pairs(blueprint or {}) do
+        if type(value) == "table" and not blueprintFactoryFields[key] then
+            entity[key] = deepCopy(value)
+        end
+    end
+end
+
 --------------------------------------------------------------------------------
 -- BLUEPRINT REGISTRY
 -- Combine all blueprint sources into one lookup table
@@ -161,6 +182,8 @@ function M.createEntity(template_id, overrides)
         health           = blueprint.health or blueprint.npcHealth or 3,
         defense          = blueprint.defense or blueprint.npcDefense or blueprint.armorSlots or 0,
         instantDestruction = blueprint.instantDestruction or false,  -- Undead/constructs skip Death's Door
+        infiniteHealth   = blueprint.infiniteHealth or false,
+        neverTakesWounds = blueprint.neverTakesWounds or false,
 
         isPC = false,
     })
@@ -182,18 +205,7 @@ function M.createEntity(template_id, overrides)
     entity.social = deepCopy(blueprint.social)
     entity.alchemy = deepCopy(blueprint.alchemy)
     entity.notes = deepCopy(blueprint.notes)
-    entity.zombie = deepCopy(blueprint.zombie)
-    entity.mimic = deepCopy(blueprint.mimic)
-    entity.nymph = deepCopy(blueprint.nymph)
-    entity.ogre = deepCopy(blueprint.ogre)
-    entity.questingBeast = deepCopy(blueprint.questingBeast)
-    entity.skeleton = deepCopy(blueprint.skeleton)
-    entity.slime = deepCopy(blueprint.slime)
-    entity.titan = deepCopy(blueprint.titan)
-    entity.ungoat = deepCopy(blueprint.ungoat)
-    entity.vampire = deepCopy(blueprint.vampire)
-    entity.wraith = deepCopy(blueprint.wraith)
-    entity.winterWolf = deepCopy(blueprint.winterWolf)
+    copyCreatureMetadata(entity, blueprint)
 
     -- Attach inventory
     entity.inventory = inventory.createInventory()

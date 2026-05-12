@@ -2371,6 +2371,43 @@ local function checkStartingGuildData()
 end
 
 local function checkAppendixCDenizenBlueprintData()
+    local appendixCBestiaryBlueprints = {
+        { id = "animate_statue", name = "Animate Statue" },
+        { id = "bloodybones", name = "Bloodybones" },
+        { id = "brain_spider", name = "Brain Spider" },
+        { id = "cockatrice", name = "Cockatrice" },
+        { id = "devil", name = "Devil, Gluttony" },
+        { id = "dragon", name = "Dragon" },
+        { id = "face_rat", name = "Face Rat" },
+        { id = "fungoid", name = "Fungoid" },
+        { id = "griffin", name = "Griffin" },
+        { id = "harpy", name = "Harpy" },
+        { id = "imp", name = "Imp" },
+        { id = "jinn", name = "Jinn" },
+        { id = "kelpie", name = "Kelpie" },
+        { id = "yellow_king_lich", name = "Lich, The Yellow King" },
+        { id = "lion", name = "Lion" },
+        { id = "mimic", name = "Mimic" },
+        { id = "nymph", name = "Nymph" },
+        { id = "ogre", name = "Ogre" },
+        { id = "questing_beast", name = "Questing Beast" },
+        { id = "skeleton_brute", name = "Skeleton" },
+        { id = "slime", name = "Slime" },
+        { id = "titan_sporehulk", name = "Titan, The Sporehulk" },
+        { id = "ungoat", name = "Ungoat" },
+        { id = "vampire", name = "Vampire" },
+        { id = "wraith", name = "Wraith" },
+        { id = "winter_wolf", name = "Winter Wolf" },
+        { id = "zombie", name = "Zombie" },
+    }
+
+    for _, denizen in ipairs(appendixCBestiaryBlueprints) do
+        assertTrue(entity_factory.hasBlueprint(denizen.id),
+            "Appendix C bestiary blueprint should be registered: " .. denizen.name)
+        assertTrue(entity_factory.createEntity(denizen.id) ~= nil,
+            "Appendix C bestiary blueprint should instantiate: " .. denizen.name)
+    end
+
     assertTrue(entity_factory.hasBlueprint("zombie"), "Zombie denizen blueprint should be registered")
 
     local zombie = entity_factory.createEntity("zombie")
@@ -2430,6 +2467,267 @@ local function checkAppendixCDenizenBlueprintData()
     assertEqual(skeleton.greaterDooms[1].id, "absorb_bones",
         "Skeleton should expose Absorb Bones greater doom")
 
+    assertTrue(entity_factory.hasBlueprint("yellow_king_lich"),
+        "Yellow King Lich denizen blueprint should be registered")
+
+    local lich = entity_factory.createEntity("yellow_king_lich")
+    assertTrue(lich ~= nil, "Yellow King Lich blueprint should instantiate through the entity factory")
+    assertEqual(lich.swords, 3, "Yellow King Lich should use canonical Swords")
+    assertEqual(lich.pentacles, 3, "Yellow King Lich should use canonical Pentacles")
+    assertEqual(lich.cups, 3, "Yellow King Lich should use canonical Cups")
+    assertEqual(lich.wands, 6, "Yellow King Lich should use canonical Wands")
+    assertEqual(lich.npcHealth, 5, "Yellow King Lich body should use canonical Health")
+    assertEqual(lich.npcDefense, 9, "Yellow King Lich body should use canonical Defense")
+    assertTrue(lich.undead and hasValue(lich.tags, "dungeon_lord") and hasValue(lich.tags, "lich"),
+        "Yellow King Lich should be tagged as an undead dungeon lord lich")
+    assertTrue(lich.lich and lich.lich.bodyCrumplesToCrystalSkullOnDefeat and
+        lich.lich.bodyRegrowsIfPhylacteryIntact,
+        "Yellow King Lich should preserve body-crumble and regrowth rules")
+    assertEqual(lich.lich.phylactery.object, "love_letter_from_kloe",
+        "Yellow King Lich should preserve the Kloe letter phylactery")
+    assertTrue(lich.lich.phylactery.destroyToPreventRegrowth and
+        lich.lich.crystalSkull.invulnerable,
+        "Yellow King Lich should preserve phylactery and crystal skull immortality")
+    assertEqual(lich.lich.crownOfArchwood.defense, 4,
+        "Yellow King crown should preserve canonical Defense")
+    assertTrue(lich.lich.crownOfArchwood.enablesComponentlessMagic and
+        lich.lich.crownOfArchwood.recoverRestoresCrown,
+        "Yellow King crown should preserve componentless magic and Recover restoration")
+    assertEqual(lich.lich.crownOfArchwood.saleValueGold, 1000,
+        "Yellow King crown should preserve City sale value")
+    assertTrue(lich.lich.crownOfArchwood.spiteAloneHoldsMeAloft.onlyRangedAttacksCanHit,
+        "Yellow King crown should preserve levitation/ranged-only targeting")
+    assertTrue(lich.lich.body.breathless and lich.lich.body.undreaming and
+        lich.lich.body.cannotBePoisoned,
+        "Yellow King Lich should preserve Breathless and Undreaming")
+    assertTrue(lich.lich.body.secondSight.seesShrouded and
+        lich.lich.body.secondSight.identifiesMagicalEffects,
+        "Yellow King Lich should preserve Second Sight")
+    assertTrue(lich.lich.body.rottingBrains.inspireImmune and
+        lich.lich.body.rottingBrains.cannotSeeIllusions,
+        "Yellow King Lich should preserve Rotting Brains")
+    assertEqual(lich.social.likes[1], "rambling_about_unrequited_love",
+        "Yellow King Lich should like rambling about unrequited love")
+    assertEqual(lich.social.hates[3], "puns", "Yellow King Lich should hate puns")
+    assertEqual(lich.lesserDooms[1].id, "death_dealer",
+        "Yellow King Lich should expose Death Dealer lesser doom")
+    assertEqual(lich.lesserDooms[2].id, "may_failure_be_your_noose",
+        "Yellow King Lich should expose May Failure Be Your Noose lesser doom")
+    assertEqual(lich.lesserDooms[3].id, "sorrow_sorrow_sorrow",
+        "Yellow King Lich should expose Sorrow lesser doom")
+    assertEqual(lich.lesserDooms[4].id, "poison_wont_take_you",
+        "Yellow King crown should expose arcane attack lesser doom")
+    assertEqual(lich.greaterDooms[1].id, "do_you_doubt_me_traitor",
+        "Yellow King Lich should expose temporary sheet-loss greater doom")
+    assertEqual(lich.greaterDooms[2].effect.health, 1,
+        "Yellow King clone doom should create HD 1/0 clones")
+    assertEqual(lich.greaterDooms[3].effect.type, "attack_control_task",
+        "Yellow King enchant doom should Control an irrational task")
+    assertEqual(lich.greaterDooms[4].id, "day_of_tears_and_mourning",
+        "Yellow King crown should expose componentless spellcasting greater doom")
+    assertTrue(lich.alchemy.noReagent and lich.alchemy.reason == "undead_lich",
+        "Yellow King Lich should explicitly yield no alchemical reagent")
+
+    assertTrue(entity_factory.hasBlueprint("face_rat"), "Face Rat denizen blueprint should be registered")
+
+    local faceRat = entity_factory.createEntity("face_rat")
+    assertTrue(faceRat ~= nil, "Face Rat blueprint should instantiate through the entity factory")
+    assertEqual(faceRat.swords, 0, "Face Rat should use canonical Swords")
+    assertEqual(faceRat.pentacles, 0, "Face Rat should use canonical Pentacles")
+    assertEqual(faceRat.cups, 0, "Face Rat should use canonical Cups")
+    assertEqual(faceRat.wands, 0, "Face Rat should use canonical Wands")
+    assertEqual(faceRat.npcHealth, 2, "Face Rat should use canonical Health")
+    assertEqual(faceRat.npcDefense, 0, "Face Rat should use canonical Defense")
+    assertTrue(hasValue(faceRat.tags, "beast") and hasValue(faceRat.tags, "minion") and
+        hasValue(faceRat.tags, "face_rat"), "Face Rat should be tagged as a beast minion face rat")
+    assertTrue(faceRat.faceRat and faceRat.faceRat.scurryMoveZones == 1 and faceRat.faceRat.freeMoveOnTurn,
+        "Face Rat should preserve Scurry movement")
+    assertTrue(faceRat.faceRat.badLittleHands.roughhouseStealsBeltItem and
+        faceRat.faceRat.badLittleHands.retrieveByDisarmOrKilling,
+        "Face Rat should preserve Bad Little Hands item theft")
+    assertEqual(faceRat.faceRat.faceRatDisease.stages[3].condition, "blind",
+        "Face Rat disease should preserve its Blind final stage")
+    assertTrue(faceRat.faceRat.stealFace.blinds and faceRat.faceRat.stealFace.silences and
+        faceRat.faceRat.stealFace.blindAndSilenceRecoverSeparately,
+        "Face Rat should preserve Steal Face Blind/Silence recovery")
+    assertEqual(faceRat.social.likes[1], "its_mate", "Face Rat should like its mate")
+    assertEqual(faceRat.social.hates[1], "fire", "Face Rat should hate fire")
+    assertEqual(faceRat.lesserDooms[1].id, "bad_little_hands",
+        "Face Rat should expose Bad Little Hands lesser doom")
+    assertEqual(faceRat.greaterDooms[1].id, "infectious_disease",
+        "Face Rat should expose Infectious Disease greater doom")
+    assertEqual(faceRat.greaterDooms[2].id, "steal_face",
+        "Face Rat should expose Steal Face greater doom")
+    assertEqual(faceRat.alchemy.reagentTemplateId, "face_rat_reagent",
+        "Face Rat should harvest into a Face Rat reagent")
+
+    assertTrue(entity_factory.hasBlueprint("lion"), "Lion denizen blueprint should be registered")
+
+    local lion = entity_factory.createEntity("lion")
+    assertTrue(lion ~= nil, "Lion blueprint should instantiate through the entity factory")
+    assertEqual(lion.swords, 6, "Lion should use canonical Swords")
+    assertEqual(lion.pentacles, 2, "Lion should use canonical Pentacles")
+    assertEqual(lion.cups, 1, "Lion should use canonical Cups")
+    assertEqual(lion.wands, 3, "Lion should use canonical Wands")
+    assertEqual(lion.npcHealth, 3, "Lion should use canonical Health")
+    assertEqual(lion.npcDefense, 3, "Lion should use canonical Defense")
+    assertTrue(hasValue(lion.tags, "beast") and hasValue(lion.tags, "strategist") and hasValue(lion.tags, "lion"),
+        "Lion should be tagged as a beast strategist lion")
+    assertTrue(lion.lion and lion.lion.fleetMoveZones == 1 and lion.lion.freeMoveOnTurn,
+        "Lion should preserve Fleet movement")
+    assertTrue(lion.lion.untrackable.requiresKnowingItIsHunted and
+        lion.lion.untrackable.preventsAllTracking,
+        "Lion should preserve Untrackable")
+    assertTrue(lion.lion.mercy.prostrationAndMercyRequestPreventsKilling,
+        "Lion should preserve noble mercy behavior")
+    assertTrue(lion.lion.reproduction.cubsBornDead and
+        lion.lion.reproduction.roarAfterThirdDayBringsCubsToLife,
+        "Lion should preserve cub resurrection lore")
+    assertTrue(lion.lion.roarOfLife.canReviveCreatureThatDiedWithoutSin,
+        "Lion should preserve Roar of Life")
+    assertEqual(lion.social.likes[3], "fresh_ape_meat", "Lion should like fresh ape meat")
+    assertEqual(lion.social.hates[2], "white_chickens", "Lion should hate white chickens")
+    assertEqual(lion.lesserDooms[1].id, "bite", "Lion should expose Bite lesser doom")
+    assertTrue(lion.lesserDooms[1].effect.choices[1] == "disarmed" and
+        lion.lesserDooms[1].effect.choices[2] == "tripped",
+        "Lion Bite should allow GM choice of Disarmed or Tripped")
+    assertEqual(lion.lesserDooms[2].id, "claw", "Lion should expose Claw lesser doom")
+    assertEqual(lion.lesserDooms[2].effect.wounds, 2,
+        "Lion Claw should deal 2 Wounds on double Initiative")
+    assertEqual(lion.greaterDooms[1].id, "cautious_retreat",
+        "Lion should expose Cautious Retreat greater doom")
+    assertEqual(lion.greaterDooms[2].id, "roar_of_life",
+        "Lion should expose Roar of Life greater doom")
+    assertTrue(lion.alchemy.noReagent and lion.alchemy.reason == "not_appendix_b_source",
+        "Lion should explicitly yield no alchemical reagent")
+
+    assertTrue(entity_factory.hasBlueprint("animate_statue"),
+        "Animate Statue denizen blueprint should be registered")
+
+    local animateStatue = entity_factory.createEntity("animate_statue")
+    assertTrue(animateStatue ~= nil, "Animate Statue blueprint should instantiate through the entity factory")
+    assertEqual(animateStatue.swords, 5, "Animate Statue should use canonical Swords")
+    assertEqual(animateStatue.pentacles, 5, "Animate Statue should use canonical Pentacles")
+    assertEqual(animateStatue.cups, 1, "Animate Statue should use canonical Cups")
+    assertEqual(animateStatue.wands, 1, "Animate Statue should use canonical Wands")
+    assertEqual(animateStatue.npcHealth, 1, "Animate Statue should use canonical Health")
+    assertEqual(animateStatue.npcDefense, 15, "Animate Statue should use canonical Defense")
+    assertTrue(animateStatue.construct and hasValue(animateStatue.tags, "sorcerous") and
+        hasValue(animateStatue.tags, "animate_statue"),
+        "Animate Statue should be tagged as a sorcerous construct")
+    assertTrue(animateStatue.animateStatue and animateStatue.animateStatue.boundSpirit and
+        animateStatue.animateStatue.bronzeBody,
+        "Animate Statue should preserve bound-spirit bronze body")
+    assertEqual(animateStatue.animateStatue.treatsNotchesAsWounds, 2,
+        "Animate Statue should preserve Construct Notch conversion")
+    assertTrue(animateStatue.animateStatue.magicNull.immuneToMagic and
+        animateStatue.animateStatue.magicNull.objectTargetingMagicMayAffect,
+        "Animate Statue should preserve Magically Null")
+    assertTrue(animateStatue.animateStatue.senseMagic.identifiesSorcerersBySight,
+        "Animate Statue should preserve Sense Magic")
+    assertTrue(animateStatue.animateStatue.tough.mustExceedInitiative,
+        "Animate Statue should preserve Tough exceed-Initiative rule")
+    assertEqual(animateStatue.animateStatue.grab.holdCapacity, 2,
+        "Animate Statue should hold two grabbed adventurers")
+    assertTrue(animateStatue.animateStatue.grab.missedAttacksHitGrabbedTarget,
+        "Animate Statue should redirect missed attacks to grabbed targets")
+    assertEqual(animateStatue.social.likes[3], "sculptors",
+        "Animate Statue should like sculptors")
+    assertEqual(animateStatue.social.hates[1], "sorcerers",
+        "Animate Statue should hate sorcerers")
+    assertTrue(animateStatue.social.languages.cannotSpeak,
+        "Animate Statue should be unable to speak")
+    assertEqual(animateStatue.lesserDooms[1].id, "haymaker",
+        "Animate Statue should expose Haymaker lesser doom")
+    assertEqual(animateStatue.lesserDooms[2].id, "grab",
+        "Animate Statue should expose Grab lesser doom")
+    assertEqual(animateStatue.lesserDooms[3].id, "throw_stones",
+        "Animate Statue should expose Throw Stones lesser doom")
+    assertTrue(animateStatue.lesserDooms[3].effect.thrownHeldFoeAutomaticWound,
+        "Animate Statue Throw Stones should Wound thrown grabbed foes")
+    assertEqual(animateStatue.greaterDooms[1].id, "squeeze",
+        "Animate Statue should expose Squeeze greater doom")
+    assertTrue(animateStatue.alchemy.noReagent and animateStatue.alchemy.reason == "construct",
+        "Animate Statue should explicitly yield no alchemical reagent")
+
+    assertTrue(entity_factory.hasBlueprint("bloodybones"),
+        "Bloodybones denizen blueprint should be registered")
+
+    local bloodybones = entity_factory.createEntity("bloodybones")
+    assertTrue(bloodybones ~= nil, "Bloodybones blueprint should instantiate through the entity factory")
+    assertEqual(bloodybones.swords, 0, "Bloodybones should use canonical Swords")
+    assertEqual(bloodybones.pentacles, 0, "Bloodybones should use canonical Pentacles")
+    assertEqual(bloodybones.cups, 0, "Bloodybones should use canonical Cups")
+    assertEqual(bloodybones.wands, 0, "Bloodybones should use canonical Wands")
+    assertEqual(bloodybones.npcDefense, 0, "Bloodybones should use canonical Defense")
+    assertTrue(bloodybones.infiniteHealth and bloodybones.neverTakesWounds,
+        "Bloodybones should preserve infinite Health and never-takes-Wounds rules")
+    assertTrue(hasValue(bloodybones.tags, "sorcerous") and hasValue(bloodybones.tags, "minion") and
+        hasValue(bloodybones.tags, "ooze") and hasValue(bloodybones.tags, "bloodybones"),
+        "Bloodybones should be tagged as a sorcerous ooze minion")
+    assertTrue(not bloodybones.undead and bloodybones.bloodybones and bloodybones.bloodybones.notUndead,
+        "Bloodybones should explicitly remain non-undead")
+    assertTrue(bloodybones.bloodybones.invulnerable.immuneToAllHarm and
+        bloodybones.bloodybones.invulnerable.canBePushedIntoPits,
+        "Bloodybones should preserve invulnerability and practical weakness metadata")
+    assertTrue(bloodybones.bloodybones.smellMagic.smellsMagicalEffects and
+        bloodybones.bloodybones.smellMagic.identifiesSorcerersByScent,
+        "Bloodybones should preserve Smell Magic")
+    assertTrue(bloodybones.social.languages.cannotSpeak and bloodybones.bloodybones.unthinking,
+        "Bloodybones should preserve speechless and unthinking behavior")
+    assertEqual(bloodybones.social.likes[3], "uranium_deposits",
+        "Bloodybones should like uranium deposits")
+    assertEqual(bloodybones.social.hates[2], "childrens_laughter",
+        "Bloodybones should hate children's laughter")
+    local bloodybonesHealth = bloodybones.npcHealth
+    assertEqual(bloodybones:takeWound("piercing"), "invulnerable",
+        "Bloodybones should ignore Wounds instead of losing Health")
+    assertEqual(bloodybones.npcHealth, bloodybonesHealth,
+        "Bloodybones Health should not change after a Wound")
+    assertTrue(#bloodybones.lesserDooms == 0 and #bloodybones.greaterDooms == 0,
+        "Bloodybones should have no bespoke doom actions")
+    assertTrue(bloodybones.alchemy.noReagent and bloodybones.alchemy.reason == "not_appendix_b_source",
+        "Bloodybones should explicitly yield no alchemical reagent")
+
+    assertTrue(entity_factory.hasBlueprint("brain_spider"), "Brain Spider denizen blueprint should be registered")
+
+    local brainSpider = entity_factory.createEntity("brain_spider")
+    assertTrue(brainSpider ~= nil, "Brain Spider blueprint should instantiate through the entity factory")
+    assertEqual(brainSpider.swords, 1, "Brain Spider should use canonical Swords")
+    assertEqual(brainSpider.pentacles, 4, "Brain Spider should use canonical Pentacles")
+    assertEqual(brainSpider.cups, 2, "Brain Spider should use canonical Cups")
+    assertEqual(brainSpider.wands, 3, "Brain Spider should use canonical Wands")
+    assertEqual(brainSpider.npcHealth, 3, "Brain Spider should use canonical Health")
+    assertEqual(brainSpider.npcDefense, 3, "Brain Spider should use canonical Defense")
+    assertTrue(hasValue(brainSpider.tags, "sorcerous") and hasValue(brainSpider.tags, "strategist") and
+        hasValue(brainSpider.tags, "brain_spider"),
+        "Brain Spider should be tagged as a sorcerous strategist brain spider")
+    assertTrue(brainSpider.brainSpider and brainSpider.brainSpider.squishy.immuneToBludgeoning and
+        brainSpider.brainSpider.squishy.immuneToSmashing,
+        "Brain Spider should preserve Squishy weapon immunities")
+    assertTrue(brainSpider.brainSpider.telepathic.speaksTelepathically and
+        brainSpider.brainSpider.telepathic.communicatesRegardlessOfLanguage,
+        "Brain Spider should preserve Telepathic communication")
+    assertEqual(brainSpider.brainSpider.greatLeap.dashJumpZones, 2,
+        "Brain Spider should preserve Great Leap distance")
+    assertTrue(brainSpider.brainSpider.wallCrawling.moveOntoWallCanAvoidAndLeave,
+        "Brain Spider should preserve Wall Crawling escape")
+    assertTrue(brainSpider.brainSpider.web.targetRootedUntilAllLimbsFreed and
+        brainSpider.brainSpider.web.recoverFreesOneLimbAtATime,
+        "Brain Spider should preserve Web limb recovery")
+    assertEqual(brainSpider.social.likes[1], "eating_brains", "Brain Spider should like eating brains")
+    assertEqual(brainSpider.social.hates[2], "feeling_stupid", "Brain Spider should hate feeling stupid")
+    assertEqual(brainSpider.lesserDooms[1].id, "great_leap",
+        "Brain Spider should expose Great Leap lesser doom")
+    assertEqual(brainSpider.lesserDooms[2].id, "wall_crawling",
+        "Brain Spider should expose Wall Crawling lesser doom")
+    assertEqual(brainSpider.greaterDooms[1].id, "tactics",
+        "Brain Spider should expose Tactics greater doom")
+    assertEqual(brainSpider.greaterDooms[2].id, "web",
+        "Brain Spider should expose Web greater doom")
+    assertEqual(brainSpider.alchemy.reagentTemplateId, "brain_spider_reagent",
+        "Brain Spider should harvest into a Brain Spider reagent")
+
     assertTrue(entity_factory.hasBlueprint("mimic"), "Mimic denizen blueprint should be registered")
 
     local mimic = entity_factory.createEntity("mimic")
@@ -2452,6 +2750,110 @@ local function checkAppendixCDenizenBlueprintData()
     assertEqual(mimic.greaterDooms[2].id, "riot_of_teeth", "Mimic should expose Riot of Teeth greater doom")
     assertEqual(mimic.alchemy.reagentTemplateId, "mimic_reagent",
         "Mimic should harvest into a Mimic reagent")
+
+    assertTrue(entity_factory.hasBlueprint("fungoid"), "Fungoid denizen blueprint should be registered")
+
+    local fungoid = entity_factory.createEntity("fungoid")
+    assertTrue(fungoid ~= nil, "Fungoid blueprint should instantiate through the entity factory")
+    assertEqual(fungoid.swords, 4, "Fungoid should use canonical Swords")
+    assertEqual(fungoid.pentacles, 1, "Fungoid should use canonical Pentacles")
+    assertEqual(fungoid.cups, 2, "Fungoid should use canonical Cups")
+    assertEqual(fungoid.wands, 3, "Fungoid should use canonical Wands")
+    assertEqual(fungoid.npcHealth, 3, "Fungoid should use canonical Health")
+    assertEqual(fungoid.npcDefense, 3, "Fungoid should use canonical Defense")
+    assertTrue(hasValue(fungoid.tags, "elemental") and hasValue(fungoid.tags, "strategist") and
+        hasValue(fungoid.tags, "fungoid"), "Fungoid should be tagged as an elemental strategist fungoid")
+    assertEqual(fungoid.fungoid.brainSpores.meleeAttackSuccessCostsLoreBids, 1,
+        "Fungoid should preserve Brain Spores lore bid loss")
+    assertTrue(fungoid.fungoid.poisonImmune, "Fungoid should preserve poison immunity")
+    assertTrue(fungoid.fungoid.chokingSpores.sameZone and fungoid.fungoid.chokingSpores.recoverable,
+        "Fungoid should preserve Choking Spores recovery")
+    assertTrue(fungoid.fungoid.minorIllusion.nonLivingObjectOnly and
+        fungoid.fungoid.minorIllusion.noSubstance,
+        "Fungoid should preserve Minor Illusion limits")
+    assertEqual(fungoid.fungoid.perfectImitation.targetRedirectChance, 0.5,
+        "Fungoid should preserve Perfect Imitation retarget chance")
+    assertEqual(fungoid.social.likes[1], "learning_about_mortals",
+        "Fungoid should like learning about mortals")
+    assertEqual(fungoid.social.hates[1], "open_spaces", "Fungoid should hate open spaces")
+    assertEqual(fungoid.lesserDooms[1].id, "choking_spores",
+        "Fungoid should expose Choking Spores lesser doom")
+    assertEqual(fungoid.lesserDooms[2].id, "minor_illusion",
+        "Fungoid should expose Minor Illusion lesser doom")
+    assertEqual(fungoid.greaterDooms[1].id, "fungal_regeneration",
+        "Fungoid should expose Fungal Regeneration greater doom")
+    assertEqual(fungoid.greaterDooms[2].id, "perfect_imitation",
+        "Fungoid should expose Perfect Imitation greater doom")
+    assertEqual(fungoid.alchemy.reagentTemplateId, "fungoid_reagent",
+        "Fungoid should harvest into a Fungoid reagent")
+
+    assertTrue(entity_factory.hasBlueprint("harpy"), "Harpy denizen blueprint should be registered")
+
+    local harpy = entity_factory.createEntity("harpy")
+    assertTrue(harpy ~= nil, "Harpy blueprint should instantiate through the entity factory")
+    assertEqual(harpy.swords, 2, "Harpy should use canonical Swords")
+    assertEqual(harpy.pentacles, 2, "Harpy should use canonical Pentacles")
+    assertEqual(harpy.cups, 0, "Harpy should use canonical Cups")
+    assertEqual(harpy.wands, 0, "Harpy should use canonical Wands")
+    assertEqual(harpy.npcHealth, 3, "Harpy should use canonical Health")
+    assertEqual(harpy.npcDefense, 0, "Harpy should use canonical Defense")
+    assertTrue(hasValue(harpy.tags, "elemental") and hasValue(harpy.tags, "minion") and
+        hasValue(harpy.tags, "harpy"), "Harpy should be tagged as an elemental minion harpy")
+    assertTrue(harpy.harpy.flutterMoveZones == 1 and harpy.harpy.freeMoveOnTurn,
+        "Harpy should preserve Flutter movement")
+    assertTrue(harpy.harpy.flight.avoidsMeleeEngagement and
+        harpy.harpy.flight.flyByAttackDoesNotCauseEngagement,
+        "Harpy should preserve Flight and fly-by engagement semantics")
+    assertTrue(harpy.harpy.peltWithStones.thrownAsMissileWhileFlying,
+        "Harpy should preserve Pelt with Stones")
+    assertTrue(harpy.harpy.pullIntoTheAir.addsPentaclesOnHarpyTurn and
+        harpy.harpy.pullIntoTheAir.dealsPiercingDamage,
+        "Harpy should preserve Pull Into the Air")
+    assertTrue(harpy.harpy.shriek.sameZoneNonHarpiesStunned and
+        harpy.harpy.shriek.drawsNearbyCreatures,
+        "Harpy should preserve Shriek")
+    assertEqual(harpy.social.likes[1], "cruel_jokes", "Harpy should like cruel jokes")
+    assertEqual(harpy.social.hates[1], "clean_water", "Harpy should hate clean water")
+    assertEqual(harpy.lesserDooms[1].id, "flight", "Harpy should expose Flight lesser doom")
+    assertEqual(harpy.lesserDooms[2].id, "pelt_with_stones",
+        "Harpy should expose Pelt with Stones lesser doom")
+    assertEqual(harpy.lesserDooms[3].id, "pull_into_the_air",
+        "Harpy should expose Pull Into the Air lesser doom")
+    assertEqual(harpy.greaterDooms[1].id, "shriek", "Harpy should expose Shriek greater doom")
+    assertEqual(harpy.alchemy.reagentTemplateId, "harpy_reagent",
+        "Harpy should harvest into a Harpy reagent")
+
+    assertTrue(entity_factory.hasBlueprint("kelpie"), "Kelpie denizen blueprint should be registered")
+
+    local kelpie = entity_factory.createEntity("kelpie")
+    assertTrue(kelpie ~= nil, "Kelpie blueprint should instantiate through the entity factory")
+    assertEqual(kelpie.swords, 4, "Kelpie should use canonical Swords")
+    assertEqual(kelpie.pentacles, 6, "Kelpie should use canonical Pentacles")
+    assertEqual(kelpie.cups, 1, "Kelpie should use canonical Cups")
+    assertEqual(kelpie.wands, 1, "Kelpie should use canonical Wands")
+    assertEqual(kelpie.npcHealth, 5, "Kelpie should use canonical Health")
+    assertEqual(kelpie.npcDefense, 0, "Kelpie should use canonical Defense")
+    assertTrue(hasValue(kelpie.tags, "elemental") and hasValue(kelpie.tags, "brute") and
+        hasValue(kelpie.tags, "kelpie"), "Kelpie should be tagged as an elemental brute kelpie")
+    assertTrue(kelpie.kelpie.bondingBack.touchingManeRoots and
+        kelpie.kelpie.bondingBack.recoverable,
+        "Kelpie should preserve Bonding Back recovery")
+    assertEqual(kelpie.kelpie.bondingBack.underwaterTurnPiercingDamage, 1,
+        "Kelpie should preserve underwater piercing damage")
+    assertEqual(kelpie.kelpie.threshold.ignoresDamageUntil.woundsInSingleTurn, 2,
+        "Kelpie should preserve Threshold two-Wound trigger")
+    assertTrue(kelpie.kelpie.threshold.ignoresDamageUntil.silverWeaponDamage,
+        "Kelpie should preserve silver weapon threshold bypass")
+    assertTrue(kelpie.kelpie.waterHorse.swims and kelpie.kelpie.waterHorse.walksOnWater,
+        "Kelpie should preserve Water Horse")
+    assertEqual(kelpie.social.languages.understands[1], "tylwyth",
+        "Kelpie should understand Tylwyth")
+    assertTrue(kelpie.social.languages.cannotSpeak, "Kelpie should be unable to speak")
+    assertEqual(kelpie.social.likes[1], "young_women", "Kelpie should like young women")
+    assertEqual(kelpie.social.hates[2], "silver", "Kelpie should hate silver")
+    assertEqual(kelpie.lesserDooms[1].id, "trample", "Kelpie should expose Trample lesser doom")
+    assertEqual(kelpie.alchemy.reagentTemplateId, "kelpie_reagent",
+        "Kelpie should harvest into a Kelpie reagent")
 
     assertTrue(entity_factory.hasBlueprint("nymph"), "Nymph denizen blueprint should be registered")
 
@@ -2541,6 +2943,151 @@ local function checkAppendixCDenizenBlueprintData()
         "Questing Beast should expose Tactics greater doom")
     assertEqual(questingBeast.alchemy.reagentTemplateId, "questing_beast_reagent",
         "Questing Beast should harvest into a Questing Beast reagent")
+
+    assertTrue(entity_factory.hasBlueprint("cockatrice"), "Cockatrice denizen blueprint should be registered")
+
+    local cockatrice = entity_factory.createEntity("cockatrice")
+    assertTrue(cockatrice ~= nil, "Cockatrice blueprint should instantiate through the entity factory")
+    assertEqual(cockatrice.swords, 4, "Cockatrice should use canonical Swords")
+    assertEqual(cockatrice.pentacles, 4, "Cockatrice should use canonical Pentacles")
+    assertEqual(cockatrice.cups, 4, "Cockatrice should use canonical Cups")
+    assertEqual(cockatrice.wands, 4, "Cockatrice should use canonical Wands")
+    assertEqual(cockatrice.npcHealth, 5, "Cockatrice should use canonical Health")
+    assertEqual(cockatrice.npcDefense, 0, "Cockatrice should use canonical Defense")
+    assertTrue(hasValue(cockatrice.tags, "beast") and hasValue(cockatrice.tags, "elite") and
+        hasValue(cockatrice.tags, "cockatrice"), "Cockatrice should be tagged as a beast elite cockatrice")
+    assertTrue(cockatrice.cockatrice and cockatrice.cockatrice.gaze.oncePerRound and
+        cockatrice.cockatrice.gaze.spendsCard == false,
+        "Cockatrice should preserve automatic once-per-round gaze")
+    assertEqual(cockatrice.cockatrice.gaze.phase1.condition, "rooted",
+        "Cockatrice gaze Phase 1 should Root the target")
+    assertTrue(cockatrice.cockatrice.gaze.phase1.recoverable,
+        "Cockatrice gaze Phase 1 should be recoverable")
+    assertTrue(cockatrice.cockatrice.gaze.phase2.curse and
+        cockatrice.cockatrice.gaze.phase2.recoverable == false,
+        "Cockatrice gaze Phase 2 should be a nonrecoverable petrification Curse")
+    assertTrue(cockatrice.cockatrice.bloodCuresPetrification.mustBeVeryFresh,
+        "Cockatrice should preserve the fresh-blood petrification cure")
+    assertEqual(cockatrice.social.likes[1], "warmth_and_heat",
+        "Cockatrice should like warmth and heat")
+    assertEqual(cockatrice.social.hates[1], "normal_chickens",
+        "Cockatrice should hate normal chickens")
+    assertEqual(cockatrice.lesserDooms[1].id, "tail_bite",
+        "Cockatrice should expose Tail Bite lesser doom")
+    assertEqual(cockatrice.greaterDooms[1].id, "backwards_charge",
+        "Cockatrice should expose Backwards Charge greater doom")
+    assertTrue(cockatrice.greaterDooms[1].effect.canMaintainGaze,
+        "Cockatrice Backwards Charge should preserve gaze-maintenance")
+    assertEqual(cockatrice.greaterDooms[2].id, "flutter",
+        "Cockatrice should expose Flutter greater doom")
+    assertEqual(cockatrice.alchemy.reagentTemplateId, "cockatrice_reagent",
+        "Cockatrice should harvest into a Cockatrice reagent")
+
+    assertTrue(entity_factory.hasBlueprint("dragon"), "Dragon denizen blueprint should be registered")
+
+    local dragon = entity_factory.createEntity("dragon")
+    assertTrue(dragon ~= nil, "Dragon blueprint should instantiate through the entity factory")
+    assertEqual(dragon.swords, 6, "Dragon should use canonical Swords")
+    assertEqual(dragon.pentacles, 3, "Dragon should use canonical Pentacles")
+    assertEqual(dragon.cups, 3, "Dragon should use canonical Cups")
+    assertEqual(dragon.wands, 3, "Dragon should use canonical Wands")
+    assertEqual(dragon.npcHealth, 5, "Dragon should use canonical Health")
+    assertEqual(dragon.npcDefense, 10, "Dragon should use canonical Defense")
+    assertEqual(dragon.size, "huge", "Dragon should preserve huge size")
+    assertTrue(hasValue(dragon.tags, "beast") and hasValue(dragon.tags, "elite") and
+        hasValue(dragon.tags, "dragon"), "Dragon should be tagged as a beast elite dragon")
+    assertTrue(dragon.dragon and dragon.dragon.huge.immuneToRoughhouseUnlessGiantSized,
+        "Dragon should preserve huge Roughhouse immunity")
+    assertTrue(dragon.dragon.tough.mustExceedInitiative,
+        "Dragon should preserve Tough exceed-Initiative rule")
+    assertTrue(dragon.dragon.flight.flyByAttackAllowsMeleeTargetingThisTurn and
+        dragon.dragon.flight.flyByAttackDoesNotCauseEngagement,
+        "Dragon should preserve fly-by Attack limits")
+    assertEqual(dragon.dragon.breathOfFire.unarmoredWounds, 3,
+        "Dragon should preserve Breath of Fire unarmored damage")
+    assertEqual(dragon.social.likes[3], "royalty", "Dragon should like royalty")
+    assertEqual(dragon.social.hates[2], "panthers", "Dragon should hate panthers")
+    assertEqual(dragon.lesserDooms[1].id, "claw", "Dragon should expose Claw lesser doom")
+    assertEqual(dragon.lesserDooms[1].effect.wounds, 2,
+        "Dragon Claw should deal 2 Wounds on double Initiative")
+    assertEqual(dragon.lesserDooms[2].id, "flight", "Dragon should expose Flight lesser doom")
+    assertEqual(dragon.lesserDooms[3].effect.type, "attack_all_adventurers_in_zone",
+        "Dragon Tail Whip should target all adventurers in the zone")
+    assertEqual(dragon.greaterDooms[1].id, "armored_scales",
+        "Dragon should expose Armored Scales greater doom")
+    assertEqual(dragon.greaterDooms[2].effect.metalArmorDamageType, "critical",
+        "Dragon Breath of Fire should deal Critical damage to metal-armored targets")
+    assertTrue(dragon.greaterDooms[3].effect.choices[1] == "disarmed" and
+        dragon.greaterDooms[3].effect.choices[2] == "tripped",
+        "Dragon Overwhelming Bite should allow GM choice of Disarmed or Tripped")
+    assertTrue(dragon.alchemy.noReagent and dragon.alchemy.reason == "not_appendix_b_source",
+        "Dragon should explicitly yield no alchemical reagent")
+
+    local dragonResolver = action_resolver.createActionResolver({ eventBus = events.createEventBus() })
+    local dragonHunter = base_entity.createEntity({
+        id = "pc_dragon_roughhouse",
+        name = "Dragon Roughhouser",
+        isPC = true,
+        pentacles = 5,
+    })
+    local blockedDragonRoughhouse = dragonResolver:resolve({
+        actor = dragonHunter,
+        card = { name = "Nine of Pentacles", value = 9, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+        target = dragon,
+        targetInitiative = 3,
+    })
+    assertTrue(not blockedDragonRoughhouse.success,
+        "Dragon Huge rule should block ordinary Roughhouse attempts")
+    assertTrue(hasValue(blockedDragonRoughhouse.effects, "roughhouse_requires_giant_size"),
+        "blocked Dragon Roughhouse should report the giant-size requirement")
+
+    local giantSizedDragonRoughhouse = dragonResolver:resolve({
+        actor = dragonHunter,
+        card = { name = "Nine of Pentacles", value = 9, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "trip",
+        target = dragon,
+        targetInitiative = 3,
+        canAffectGiantSize = true,
+    })
+    assertTrue(giantSizedDragonRoughhouse.success,
+        "explicit giant-size leverage should allow Roughhouse against a Dragon")
+    assertTrue(dragon.conditions.prone, "allowed Dragon Roughhouse should resolve the chosen effect")
+
+    assertTrue(entity_factory.hasBlueprint("griffin"), "Griffin denizen blueprint should be registered")
+
+    local griffin = entity_factory.createEntity("griffin")
+    assertTrue(griffin ~= nil, "Griffin blueprint should instantiate through the entity factory")
+    assertEqual(griffin.swords, 4, "Griffin should use canonical Swords")
+    assertEqual(griffin.pentacles, 3, "Griffin should use canonical Pentacles")
+    assertEqual(griffin.cups, 1, "Griffin should use canonical Cups")
+    assertEqual(griffin.wands, 1, "Griffin should use canonical Wands")
+    assertEqual(griffin.npcHealth, 7, "Griffin should use canonical Health")
+    assertEqual(griffin.npcDefense, 0, "Griffin should use canonical Defense")
+    assertTrue(hasValue(griffin.tags, "beast") and hasValue(griffin.tags, "brute") and
+        hasValue(griffin.tags, "griffin"), "Griffin should be tagged as a beast brute griffin")
+    assertTrue(griffin.griffin and griffin.griffin.fleetMoveZones == 2 and griffin.griffin.freeMoveOnTurn,
+        "Griffin should preserve Fleet movement")
+    assertTrue(griffin.griffin.flight.avoidsMeleeEngagement and
+        griffin.griffin.flight.flyByAttackDoesNotCauseEngagement,
+        "Griffin should preserve Flight and fly-by engagement semantics")
+    assertEqual(griffin.griffin.talons.doubleTargetInitiativeDealsWounds, 2,
+        "Griffin should preserve Talons double-Initiative damage")
+    assertTrue(griffin.griffin.grab.targetRooted and
+        griffin.griffin.grab.missedAttacksHitGrabbedVictim,
+        "Griffin should preserve Grab consequences")
+    assertEqual(griffin.social.likes[1], "compliments", "Griffin should like compliments")
+    assertEqual(griffin.social.hates[1], "fire", "Griffin should hate fire")
+    assertEqual(griffin.social.languages.understands[1], "chivalric",
+        "Griffin should understand Chivalric")
+    assertTrue(griffin.social.languages.cannotSpeak, "Griffin should be unable to speak")
+    assertEqual(griffin.lesserDooms[1].id, "flight", "Griffin should expose Flight lesser doom")
+    assertEqual(griffin.lesserDooms[2].id, "talons", "Griffin should expose Talons lesser doom")
+    assertEqual(griffin.greaterDooms[1].id, "grab", "Griffin should expose Grab greater doom")
+    assertEqual(griffin.alchemy.reagentTemplateId, "griffin_reagent",
+        "Griffin should harvest into a Griffin reagent")
 
     assertTrue(entity_factory.hasBlueprint("slime"), "Slime denizen blueprint should be registered")
 
@@ -2764,6 +3311,768 @@ local function checkAppendixCDenizenBlueprintData()
         "Winter Wolf Breath of Ice should destroy liquid belt items")
     assertEqual(winterWolf.alchemy.reagentTemplateId, "winter_wolf_reagent",
         "Winter Wolf should harvest into a Winter Wolf reagent")
+
+    assertTrue(entity_factory.hasBlueprint("devil"), "Devil denizen blueprint should be registered")
+
+    local devil = entity_factory.createEntity("devil")
+    assertTrue(devil ~= nil, "Devil blueprint should instantiate through the entity factory")
+    assertEqual(devil.swords, 1, "Devil should use canonical Swords")
+    assertEqual(devil.pentacles, 5, "Devil should use canonical Pentacles")
+    assertEqual(devil.cups, 2, "Devil should use canonical Cups")
+    assertEqual(devil.wands, 3, "Devil should use canonical Wands")
+    assertEqual(devil.npcHealth, 3, "Devil should use canonical Health")
+    assertEqual(devil.npcDefense, 0, "Devil should use canonical Defense")
+    assertTrue(hasValue(devil.tags, "spirit") and hasValue(devil.tags, "strategist") and
+        hasValue(devil.tags, "devil"), "Devil should be tagged as a spirit strategist devil")
+    assertTrue(devil.devil and devil.devil.contract.offersDesiredFoodForLife and
+        devil.devil.contract.claimsBodyAfterDeath,
+        "Devil should preserve the gluttony bargain")
+    assertTrue(devil.devil.contract.onlyLoremastersReadProperly and
+        devil.devil.contract.loopholes.devouredCannotReturnFromDeathsDoor,
+        "Devil should preserve contract reading and devouring loopholes")
+    assertTrue(devil.devil.endlessGullet.poisonImmune and devil.devil.endlessGullet.poisonBloodImmune,
+        "Devil should preserve Endless Gullet poison immunities")
+    assertTrue(devil.devil.untouchedByHotIron.immuneToCraftedWeapons and
+        devil.devil.untouchedByHotIron.immuneToForgedWeapons,
+        "Devil should preserve Untouched by Hot Iron")
+    assertEqual(devil.devil.bite.maxBittenTargets, 4,
+        "Devil Bite should hold up to four targets")
+    assertTrue(devil.devil.bite.targetRooted and devil.devil.bite.missedAttacksHitBittenTarget,
+        "Devil Bite should preserve Rooted and missed-attack redirection")
+    assertEqual(devil.devil.stinkingCloud.spellId, "stinking_cloud",
+        "Devil should preserve Stinking Cloud spell-like effect")
+    assertEqual(devil.devil.swallow.testFate.successesToEscape, 3,
+        "Devil Swallow should require three Swords Test Fate successes to escape")
+    assertEqual(devil.devil.swallow.testFate.failuresToAnnihilation, 3,
+        "Devil Swallow should annihilate after three failed Swords tests")
+    assertEqual(devil.social.likes[1], "making_contracts", "Devil should like making contracts")
+    assertEqual(devil.social.hates[2], "clean_water", "Devil should hate clean water")
+    assertTrue(devil.social.languages.loremasterReadableContract,
+        "Devil contract should be readable by Loremasters")
+    assertEqual(devil.lesserDooms[1].id, "bite", "Devil should expose Bite lesser doom")
+    assertEqual(devil.greaterDooms[1].id, "fiendish_retreat",
+        "Devil should expose Fiendish Retreat greater doom")
+    assertEqual(devil.greaterDooms[2].id, "stinking_cloud",
+        "Devil should expose Stinking Cloud greater doom")
+    assertEqual(devil.greaterDooms[3].id, "swallow", "Devil should expose Swallow greater doom")
+    assertEqual(devil.alchemy.reagentTemplateId, "devil_reagent",
+        "Devil should harvest into a Devil reagent")
+
+    assertTrue(entity_factory.hasBlueprint("jinn"), "Jinn denizen blueprint should be registered")
+
+    local jinn = entity_factory.createEntity("jinn")
+    assertTrue(jinn ~= nil, "Jinn blueprint should instantiate through the entity factory")
+    assertEqual(jinn.swords, 4, "Jinn should use canonical Swords")
+    assertEqual(jinn.pentacles, 4, "Jinn should use canonical Pentacles")
+    assertEqual(jinn.cups, 4, "Jinn should use canonical Cups")
+    assertEqual(jinn.wands, 4, "Jinn should use canonical Wands")
+    assertEqual(jinn.npcHealth, 7, "Jinn should use canonical Health")
+    assertEqual(jinn.npcDefense, 0, "Jinn should use canonical Defense")
+    assertTrue(hasValue(jinn.tags, "spirit") and hasValue(jinn.tags, "elite") and hasValue(jinn.tags, "jinn"),
+        "Jinn should be tagged as a spirit elite jinn")
+    assertTrue(jinn.jinn and jinn.jinn.secondSight.seesShrouded and
+        jinn.jinn.secondSight.identifiesMagicalEffects,
+        "Jinn should preserve Second Sight")
+    assertTrue(jinn.jinn.bodyOfSmokelessFire.canBecomeTangibleOrIntangible and
+        jinn.jinn.bodyOfSmokelessFire.countsTowardTurnCard == false,
+        "Jinn should preserve Body of Smokeless Fire")
+    assertTrue(jinn.jinn.invisible.becomesShrouded and jinn.jinn.invisible.physicalInteractionEndsEffect,
+        "Jinn should preserve Invisible Shrouded rules")
+    assertEqual(jinn.social.likes[1], "flattery", "Jinn should like flattery")
+    assertEqual(jinn.social.hates[1], "iron", "Jinn should hate iron first")
+    assertEqual(jinn.lesserDooms[1].id, "body_of_smokeless_fire",
+        "Jinn should expose Body of Smokeless Fire lesser doom")
+    assertEqual(jinn.lesserDooms[2].id, "invisible", "Jinn should expose Invisible lesser doom")
+    assertEqual(jinn.greaterDooms[1].id, "possess", "Jinn should expose Possess greater doom")
+    assertEqual(jinn.greaterDooms[1].effect.controlledActionValue, "attack_lesser_doom_value",
+        "Jinn Possess should use the Attack card value for the commanded action")
+    assertEqual(jinn.alchemy.reagentTemplateId, "jinn_reagent",
+        "Jinn should harvest into a Jinn reagent")
+
+    assertTrue(entity_factory.hasBlueprint("imp"), "Imp denizen blueprint should be registered")
+
+    local imp = entity_factory.createEntity("imp")
+    assertTrue(imp ~= nil, "Imp blueprint should instantiate through the entity factory")
+    assertEqual(imp.swords, 0, "Imp should use canonical Swords")
+    assertEqual(imp.pentacles, 0, "Imp should use canonical Pentacles")
+    assertEqual(imp.cups, 0, "Imp should use canonical Cups")
+    assertEqual(imp.wands, 0, "Imp should use canonical Wands")
+    assertEqual(imp.npcHealth, 2, "Imp should use canonical Health")
+    assertEqual(imp.npcDefense, 0, "Imp should use canonical Defense")
+    assertTrue(hasValue(imp.tags, "spirit") and hasValue(imp.tags, "imp"),
+        "Imp should be tagged as a spirit imp")
+    assertTrue(imp.imp and imp.imp.wimps.alwaysLowestInitiative,
+        "Imp should preserve its lowest-Initiative rule")
+    assertEqual(imp.imp.wantsByMinorSuit.wands, "sorcerer_blood",
+        "Imp should preserve the minor-discard desire table")
+    assertEqual(imp.social.likes[1], "weird_stinks", "Imp should like weird stinks")
+    assertEqual(imp.social.hates[1], "iron", "Imp should hate iron first")
+    assertEqual(imp.lesserDooms[1].id, "vomit", "Imp should expose Vomit lesser doom")
+    assertEqual(imp.lesserDooms[2].id, "piss_and_shit",
+        "Imp should expose Piss and Shit lesser doom")
+    assertEqual(imp.greaterDooms[1].id, "bad_luck_machine",
+        "Imp should expose Bad Luck Machine greater doom")
+    assertTrue(imp.greaterDooms[1].effect.newTargetSameZone and imp.greaterDooms[1].effect.appliesDisfavor,
+        "Imp Bad Luck Machine should preserve retarget and disfavor details")
+    assertEqual(imp.alchemy.reagentTemplateId, "imp_reagent",
+        "Imp should harvest into an Imp reagent")
+end
+
+function checkCockatriceGazeRuntime()
+    local gazeResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local cockatrice = entity_factory.createEntity("cockatrice")
+    local rootedTarget = base_entity.createEntity({
+        id = "pc_cockatrice_rooted",
+        name = "Cockatrice Rooted Target",
+        isPC = true,
+        wands = 4,
+    })
+
+    local rootResult = gazeResolver:resolve({
+        actor = cockatrice,
+        target = rootedTarget,
+        type = action_resolver.ACTION_TYPES.COCKATRICE_GAZE,
+        round = 1,
+    })
+    assertTrue(rootResult.success, "Cockatrice gaze should resolve without spending a card")
+    assertTrue(rootResult.automatic and rootResult.cardValue == 0,
+        "Cockatrice gaze should be marked as automatic/cardless")
+    assertTrue(rootedTarget.conditions.rooted and rootedTarget.cockatriceGazeRooted,
+        "Cockatrice gaze phase 1 should Root the target")
+    assertTrue(hasValue(rootResult.effects, "cockatrice_gaze_rooted"),
+        "Cockatrice gaze phase 1 should report Rooted")
+
+    local repeatedRound = gazeResolver:resolve({
+        actor = cockatrice,
+        target = rootedTarget,
+        type = action_resolver.ACTION_TYPES.COCKATRICE_GAZE,
+        round = 1,
+    })
+    assertTrue(not repeatedRound.success, "Cockatrice gaze should be limited to once per round")
+    assertTrue(hasValue(repeatedRound.effects, "cockatrice_gaze_round_spent"),
+        "spent Cockatrice gaze should report the round limit")
+
+    local recoverRooted = gazeResolver:resolve({
+        actor = rootedTarget,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "rooted",
+    })
+    assertTrue(recoverRooted.success, "Recover should clear Cockatrice gaze phase-1 Rooted")
+    assertTrue(not rootedTarget.conditions.rooted and not rootedTarget.cockatriceGazeRooted,
+        "Recover should clear Cockatrice gaze Rooted metadata")
+
+    local stoneTarget = base_entity.createEntity({
+        id = "pc_cockatrice_stone",
+        name = "Cockatrice Stone Target",
+        isPC = true,
+        wands = 4,
+    })
+    local firstGaze = gazeResolver:resolve({
+        actor = cockatrice,
+        target = stoneTarget,
+        type = action_resolver.ACTION_TYPES.COCKATRICE_GAZE,
+        round = 2,
+    })
+    assertTrue(firstGaze.success and stoneTarget.conditions.rooted,
+        "first Cockatrice gaze in a later round should Root a fresh target")
+
+    local secondGaze = gazeResolver:resolve({
+        actor = cockatrice,
+        target = stoneTarget,
+        type = action_resolver.ACTION_TYPES.COCKATRICE_GAZE,
+        round = 3,
+        mirrorReflection = true,
+    })
+    assertTrue(secondGaze.success, "Cockatrice gaze should petrify an already Rooted target")
+    assertTrue(hasValue(secondGaze.effects, "cockatrice_gaze_not_reflected_by_mirror"),
+        "Cockatrice gaze should explicitly ignore mirror reflection")
+    assertTrue(hasValue(secondGaze.effects, "petrification_curse"),
+        "Cockatrice gaze phase 2 should report a petrification Curse")
+    assertTrue(stoneTarget.conditions.petrified and stoneTarget.conditions.petrification,
+        "Cockatrice gaze phase 2 should mark petrification conditions")
+    assertEqual(stoneTarget.material, "stone", "Cockatrice petrification should turn the target to stone")
+    assertTrue(not stoneTarget.conditions.rooted, "Cockatrice gaze phase 2 should replace gaze Rooted")
+    assertEqual(stoneTarget.malediction.curseId, "petrification",
+        "Cockatrice petrification should be represented as a Curse")
+    assertTrue(stoneTarget.nonRecoverableConditions.petrified == "cockatrice_gaze",
+        "Cockatrice petrification should not be recoverable as a normal condition")
+
+    local recoverPetrified = gazeResolver:resolve({
+        actor = stoneTarget,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "petrified",
+    })
+    assertTrue(not recoverPetrified.success, "Recover should not clear Cockatrice petrification")
+    assertTrue(stoneTarget.conditions.petrified and stoneTarget.petrificationCurse,
+        "failed Recover should leave Cockatrice petrification intact")
+end
+
+function checkGriffinGrabRuntime()
+    local grabResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local griffin = entity_factory.createEntity("griffin")
+    griffin.id = "npc_griffin_grab"
+    griffin.name = "Runtime Griffin"
+    griffin.zone = "nest"
+    griffin.flying = true
+
+    local victim = base_entity.createEntity({
+        id = "pc_griffin_grab_victim",
+        name = "Griffin Grab Victim",
+        isPC = true,
+        wands = 4,
+    })
+    victim.zone = "nest"
+
+    local blockedGrab = grabResolver:resolve({
+        actor = griffin,
+        target = victim,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "grab",
+        targetInitiative = 8,
+    })
+    assertTrue(not blockedGrab.success, "Griffin Grab should require a greater doom discard")
+    assertTrue(hasValue(blockedGrab.effects, "griffin_grab_requires_greater_doom"),
+        "blocked Griffin Grab should report missing greater doom")
+
+    local grab = grabResolver:resolve({
+        actor = griffin,
+        target = victim,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "grab",
+        greaterDoom = griffin.greaterDooms[1],
+        targetInitiative = 8,
+        heightFeet = 20,
+        flying = true,
+    })
+    assertTrue(grab.success, "Griffin greater-doom Roughhouse should Grab on success")
+    assertTrue(victim.conditions.rooted and victim.rootedBy == "griffin_grab",
+        "Griffin Grab should Root the victim")
+    assertTrue(victim.griffinGrabbedBy == griffin and griffin.grabbedVictim == victim,
+        "Griffin Grab should link victim and griffin")
+    assertTrue(hasValue(grab.effects, "target_moves_with_griffin"),
+        "Griffin Grab should report forced movement with the griffin")
+
+    local move = grabResolver:resolve({
+        actor = griffin,
+        card = { name = "Six of Pentacles", value = 6, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.MOVE,
+        destinationZone = "rafters",
+    })
+    assertTrue(move.success, "Griffin should still be able to Move while carrying a grabbed victim")
+    assertEqual(victim.zone, "rafters", "grabbed victim should move with the griffin")
+    assertTrue(hasValue(move.effects, "griffin_grab_victim_moved"),
+        "movement should report the grabbed victim movement")
+
+    local attacker = base_entity.createEntity({
+        id = "pc_misses_griffin",
+        name = "Griffin Miss Attacker",
+        isPC = true,
+        swords = 0,
+    })
+    attacker.zone = "rafters"
+
+    local missedAttack = grabResolver:resolve({
+        actor = attacker,
+        target = griffin,
+        card = { name = "Two of Swords", value = 2, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        targetInitiative = 20,
+    })
+    assertTrue(not missedAttack.success, "low-value Attack should miss the griffin")
+    assertTrue(hasValue(missedAttack.effects, "miss_redirected_to_grabbed_victim"),
+        "missed Attack against a grabbing griffin should hit the victim")
+    assertTrue(victim.conditions.staggered,
+        "redirected miss should apply a Wound to the grabbed victim")
+
+    local recoverGrab = grabResolver:resolve({
+        actor = victim,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "rooted",
+        heightFeet = 20,
+    })
+    assertTrue(recoverGrab.success, "Recover should clear Griffin Grab Rooted")
+    assertTrue(not victim.conditions.rooted and not victim.griffinGrabbedBy and not griffin.grabbedVictim,
+        "Recover should release the Griffin Grab link")
+    assertTrue(recoverGrab.griffinGrabFall and recoverGrab.griffinGrabFall.wounds == 2,
+        "Recovering from a flying Griffin Grab should cause falling damage")
+
+    local dropVictim = base_entity.createEntity({
+        id = "pc_griffin_drop_victim",
+        name = "Griffin Drop Victim",
+        isPC = true,
+    })
+    dropVictim.zone = "rafters"
+    griffin.zone = "rafters"
+
+    local dropGrab = grabResolver:resolve({
+        actor = griffin,
+        target = dropVictim,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "grab",
+        greaterDoom = griffin.greaterDooms[1],
+        targetInitiative = 8,
+        heightFeet = 10,
+        flying = true,
+    })
+    assertTrue(dropGrab.success, "Griffin should be able to establish a second Grab")
+
+    local drop = grabResolver:resolve({
+        actor = griffin,
+        type = action_resolver.ACTION_TYPES.GRIFFIN_DROP,
+        heightFeet = 10,
+        fallSuccess = true,
+    })
+    assertTrue(drop.success, "Griffin should drop a grabbed victim as a cardless free action")
+    assertTrue(hasValue(drop.effects, "griffin_drop") and hasValue(drop.effects, "griffin_grab_released"),
+        "Griffin drop should report drop and release")
+    assertTrue(not dropVictim.conditions.rooted and not griffin.grabbedVictim,
+        "Griffin drop should release the victim")
+    assertTrue(drop.griffinGrabFall and drop.griffinGrabFall.wounds == 0,
+        "drop fall should run through falling damage resolution")
+end
+
+function checkHarpyShriekRuntime()
+    local shriekResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local harpy = entity_factory.createEntity("harpy")
+    harpy.id = "npc_harpy_shriek"
+    harpy.name = "Runtime Harpy"
+    harpy.zone = "roost"
+
+    local nearbyPC = base_entity.createEntity({
+        id = "pc_harpy_shriek_target",
+        name = "Harpy Shriek Target",
+        isPC = true,
+    })
+    nearbyPC.zone = "roost"
+    nearbyPC.challengeHand = {
+        { name = "Five of Swords", value = 5, suit = constants.SUITS.SWORDS },
+        { name = "Six of Cups", value = 6, suit = constants.SUITS.CUPS },
+    }
+
+    local nearbyNPC = base_entity.createEntity({
+        id = "npc_harpy_shriek_target",
+        name = "Other Shriek Target",
+    })
+    nearbyNPC.zone = "roost"
+
+    local otherHarpy = entity_factory.createEntity("harpy")
+    otherHarpy.id = "npc_harpy_shriek_immune"
+    otherHarpy.zone = "roost"
+
+    local farTarget = base_entity.createEntity({
+        id = "pc_harpy_shriek_elsewhere",
+        name = "Elsewhere Shriek Target",
+        isPC = true,
+    })
+    farTarget.zone = "hall"
+
+    local blockedShriek = shriekResolver:resolve({
+        actor = harpy,
+        type = action_resolver.ACTION_TYPES.HARPY_SHRIEK,
+        allEntities = { harpy, nearbyPC, nearbyNPC, otherHarpy, farTarget },
+    })
+    assertTrue(not blockedShriek.success, "Harpy Shriek should require a greater doom")
+    assertTrue(hasValue(blockedShriek.effects, "harpy_shriek_requires_greater_doom"),
+        "blocked Harpy Shriek should report missing greater doom")
+
+    local room = { id = "harpy_roost" }
+    local shriek = shriekResolver:resolve({
+        actor = harpy,
+        type = action_resolver.ACTION_TYPES.HARPY_SHRIEK,
+        greaterDoom = harpy.greaterDooms[1],
+        allEntities = { harpy, nearbyPC, nearbyNPC, otherHarpy, farTarget },
+        room = room,
+    })
+    assertTrue(shriek.success, "Harpy Shriek should resolve as a cardless greater-doom effect")
+    assertEqual(#shriek.affected, 2, "Harpy Shriek should affect same-zone non-harpies")
+    assertTrue(nearbyPC.conditions.stunned and nearbyPC.conditions.stunnedInstant,
+        "Harpy Shriek should Stun same-zone adventurers")
+    assertEqual(#nearbyPC.challengeHand, 1, "Stunned target should discard one challenge card")
+    assertTrue(nearbyNPC.conditions.stunned, "Harpy Shriek should Stun same-zone non-harpy NPCs")
+    assertTrue(not otherHarpy.conditions.stunned, "Harpy Shriek should not Stun other harpies")
+    assertTrue(not farTarget.conditions.stunned, "Harpy Shriek should not Stun creatures in other zones")
+    assertTrue(shriek.drawsNearbyCreatures and room.loudNoise and room.loudNoise.drawsNearbyCreatures,
+        "Harpy Shriek should record its nearby-creature noise consequence")
+    assertTrue(hasValue(shriek.effects, "draws_nearby_creatures"),
+        "Harpy Shriek should report nearby creatures being drawn to the sound")
+end
+
+function checkFaceRatGreaterDoomRuntime()
+    local faceResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+    local faceRat = entity_factory.createEntity("face_rat")
+    faceRat.id = "npc_face_rat_runtime"
+    faceRat.name = "Runtime Face Rat"
+
+    local diseaseTarget = base_entity.createEntity({
+        id = "pc_face_rat_disease",
+        name = "Face Rat Disease Target",
+        isPC = true,
+        wands = 4,
+    })
+    local diseaseAttack = faceResolver:resolve({
+        actor = faceRat,
+        target = diseaseTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        greaterDoom = faceRat.greaterDooms[1],
+        targetInitiative = 5,
+    })
+    assertTrue(diseaseAttack.success, "Face Rat Infectious Disease should ride on a successful Attack")
+    assertTrue(hasValue(diseaseAttack.effects, "face_rat_disease"),
+        "Face Rat Infectious Disease should report the affliction")
+    assertTrue(diseaseTarget.afflictions and diseaseTarget.afflictions.face_rat_disease,
+        "Face Rat Infectious Disease should add the affliction record")
+    assertEqual(diseaseTarget.afflictions.face_rat_disease.stageCosts[3], 2,
+        "Face Rat Disease stage 3 should require two cure charges")
+    assertTrue(diseaseTarget.conditions.staggered,
+        "Face Rat Infectious Disease should still deal the Attack Wound")
+
+    local socialTarget = base_entity.createEntity({
+        id = "npc_face_rat_social_target",
+        name = "Face Rat Social Target",
+    })
+    local diseasedInfluence = faceResolver:resolve({
+        actor = diseaseTarget,
+        target = socialTarget,
+        card = { name = "Ten of Wands", value = 10, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.BANTER,
+    })
+    assertTrue(hasValue(diseasedInfluence.effects, "face_rat_disease_wands_disfavor"),
+        "Face Rat Disease stage 1 should give disfavor on Wands influence tests")
+
+    local stealTarget = base_entity.createEntity({
+        id = "pc_face_rat_steal_face",
+        name = "Face Rat Steal Face Target",
+        isPC = true,
+        wands = 4,
+    })
+    local stealFace = faceResolver:resolve({
+        actor = faceRat,
+        target = stealTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        greaterDoom = faceRat.greaterDooms[2],
+        targetInitiative = 5,
+    })
+    assertTrue(stealFace.success, "Face Rat Steal Face should ride on a successful Attack")
+    assertEqual(stealFace.damageDealt, 0, "Face Rat Steal Face should replace the Wound")
+    assertTrue(not stealTarget.conditions.staggered,
+        "Face Rat Steal Face should not apply normal wound-track damage")
+    assertTrue(stealTarget.conditions.blind and stealTarget.conditions.blinded and stealTarget.conditions.silenced,
+        "Face Rat Steal Face should Blind and Silence the victim")
+    assertTrue(faceRat.stolenFaces and faceRat.stolenFaces[1].victim == stealTarget,
+        "Face Rat Steal Face should permanently copy the victim's face")
+
+    local recoverBlind = faceResolver:resolve({
+        actor = stealTarget,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "blind",
+    })
+    assertTrue(recoverBlind.success, "Recover should clear the stolen-face Blind effect")
+    assertTrue(not stealTarget.conditions.blind and stealTarget.conditions.silenced,
+        "Recovering Blind should leave stolen-face Silence in place")
+
+    local recoverSilence = faceResolver:resolve({
+        actor = stealTarget,
+        card = { name = "Nine of Wands", value = 9, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "silence",
+    })
+    assertTrue(recoverSilence.success, "Recover should separately clear the stolen-face Silence effect")
+    assertTrue(not stealTarget.conditions.silenced,
+        "Recovering Silence should finish clearing the stolen-face conditions")
+end
+
+function checkFaceRatBadLittleHandsRuntime()
+    local badHandsResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local faceRat = entity_factory.createEntity("face_rat")
+    faceRat.id = "npc_face_rat_bad_hands"
+    faceRat.name = "Bad Hands Face Rat"
+
+    local target = base_entity.createEntity({
+        id = "pc_bad_hands_target",
+        name = "Bad Hands Target",
+        isPC = true,
+    })
+    target.inventory = inventory.createInventory()
+    local torch = inventory.createItemFromTemplate("torch")
+    target.inventory:addItem(torch, inventory.LOCATIONS.BELT)
+
+    local steal = badHandsResolver:resolve({
+        actor = faceRat,
+        target = target,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "bad_little_hands",
+        lesserDoom = faceRat.lesserDooms[1],
+        targetInitiative = 5,
+    })
+    assertTrue(steal.success, "Face Rat Bad Little Hands should steal a belt item on a successful Roughhouse")
+    assertTrue(hasValue(steal.effects, "bad_little_hands") and hasValue(steal.effects, "belt_item_stolen"),
+        "Bad Little Hands should report belt item theft")
+    local remainingTorch = target.inventory:findItem(torch.id)
+    assertTrue(remainingTorch == nil, "stolen belt item should leave the target inventory")
+    assertTrue(faceRat.badLittleHands and faceRat.badLittleHands[1] == torch,
+        "Face Rat should hold the stolen item in Bad Little Hands")
+    assertTrue(faceRat.stolenItems and faceRat.stolenItems[1].from == target,
+        "Bad Little Hands should remember the original owner for recovery")
+    assertTrue(torch.heldInBadLittleHands and torch.stolenBy == faceRat.id,
+        "stolen item should be marked as held by the Face Rat")
+    local ratInventoryItem = faceRat.inventory and faceRat.inventory.findItem and faceRat.inventory:findItem(torch.id)
+    assertTrue(ratInventoryItem == nil, "Face Rat should not gain usable inventory access to the stolen item")
+
+    local disarmer = base_entity.createEntity({
+        id = "pc_bad_hands_disarmer",
+        name = "Bad Hands Disarmer",
+        isPC = true,
+        pentacles = 4,
+    })
+    disarmer.inventory = inventory.createInventory()
+    local recovered = badHandsResolver:resolve({
+        actor = disarmer,
+        target = faceRat,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.DISARM,
+        targetInitiative = 2,
+    })
+    assertTrue(recovered.success, "Disarm should recover an item held in Bad Little Hands")
+    assertTrue(hasValue(recovered.effects, "bad_little_hands_item_recovered"),
+        "Disarm recovery should report Bad Little Hands recovery")
+    local recoveredTorch, recoveredLocation = target.inventory:findItem(torch.id)
+    assertTrue(recoveredTorch == torch and recoveredLocation == inventory.LOCATIONS.BELT,
+        "Disarm should return the stolen item to its original belt slot")
+    assertTrue(#(faceRat.badLittleHands or {}) == 0 and #(faceRat.stolenItems or {}) == 0,
+        "Disarm recovery should clear the Face Rat's stolen item state")
+    assertTrue(not torch.heldInBadLittleHands and torch.stolenBy == nil,
+        "Disarm recovery should clear stolen-item metadata")
+
+    local emptyTarget = base_entity.createEntity({
+        id = "pc_bad_hands_empty_belt",
+        name = "Empty Belt Target",
+        isPC = true,
+    })
+    emptyTarget.inventory = inventory.createInventory()
+    local noBeltItem = badHandsResolver:resolve({
+        actor = entity_factory.createEntity("face_rat"),
+        target = emptyTarget,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "bad_little_hands",
+        targetInitiative = 5,
+    })
+    assertTrue(not noBeltItem.success, "Bad Little Hands should fail cleanly when the target has no belt item")
+    assertTrue(hasValue(noBeltItem.effects, "bad_little_hands_no_belt_item"),
+        "empty belt failure should be reported explicitly")
+
+    local missedRat = entity_factory.createEntity("face_rat")
+    local missedTarget = base_entity.createEntity({
+        id = "pc_bad_hands_missed_target",
+        name = "Missed Bad Hands Target",
+        isPC = true,
+    })
+    missedTarget.inventory = inventory.createInventory()
+    local missedRope = inventory.createItemFromTemplate("rope")
+    missedTarget.inventory:addItem(missedRope, inventory.LOCATIONS.BELT)
+    local missed = badHandsResolver:resolve({
+        actor = missedRat,
+        target = missedTarget,
+        card = { name = "Two of Pentacles", value = 2, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "bad_little_hands",
+        targetInitiative = 9,
+    })
+    assertTrue(not missed.success, "failed Bad Little Hands contest should not steal an item")
+    local unStolenRope, unStolenLocation = missedTarget.inventory:findItem(missedRope.id)
+    assertTrue(unStolenRope == missedRope and unStolenLocation == inventory.LOCATIONS.BELT,
+        "failed Bad Little Hands contest should leave the belt item in place")
+
+    local killedRat = entity_factory.createEntity("face_rat")
+    local killTarget = base_entity.createEntity({
+        id = "pc_bad_hands_kill_target",
+        name = "Bad Hands Kill Target",
+        isPC = true,
+    })
+    killTarget.inventory = inventory.createInventory()
+    local oil = inventory.createItemFromTemplate("oil")
+    killTarget.inventory:addItem(oil, inventory.LOCATIONS.BELT)
+    local killSteal = badHandsResolver:resolve({
+        actor = killedRat,
+        target = killTarget,
+        card = { name = "Ten of Pentacles", value = 10, suit = constants.SUITS.PENTACLES },
+        type = action_resolver.ACTION_TYPES.ROUGHHOUSE,
+        roughhouseEffect = "steal_belt_item",
+        targetInitiative = 5,
+    })
+    assertTrue(killSteal.success, "Bad Little Hands should also normalize steal_belt_item effect text")
+
+    local killEffects = {}
+    badHandsResolver:applyDamage(killedRat, 1, killEffects)
+    badHandsResolver:applyDamage(killedRat, 1, killEffects)
+    assertTrue(killedRat.badLittleHands and #killedRat.badLittleHands == 1,
+        "Face Rat should keep the stolen item until it is actually killed")
+    badHandsResolver:applyDamage(killedRat, 1, killEffects)
+    assertTrue(hasValue(killEffects, "bad_little_hands_items_released_on_defeat"),
+        "killing the Face Rat should release Bad Little Hands items")
+    local recoveredOil, recoveredOilLocation = killTarget.inventory:findItem(oil.id)
+    assertTrue(recoveredOil == oil and recoveredOilLocation == inventory.LOCATIONS.BELT,
+        "killing the Face Rat should return the stolen item to its original owner")
+end
+
+function checkLionAttackRuntime()
+    local lionResolver = action_resolver.createActionResolver({
+        eventBus = events.createEventBus(),
+    })
+
+    local lion = entity_factory.createEntity("lion")
+    lion.id = "npc_lion_runtime"
+
+    local disarmTarget = base_entity.createEntity({
+        id = "pc_lion_bite_disarm",
+        name = "Lion Bite Disarm Target",
+        isPC = true,
+    })
+    disarmTarget.inventory = inventory.createInventory()
+    local dagger = inventory.createItemFromTemplate("dagger")
+    disarmTarget.inventory:addItem(dagger, inventory.LOCATIONS.HANDS)
+
+    local biteDisarm = lionResolver:resolve({
+        actor = lion,
+        target = disarmTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        lesserDoom = lion.lesserDooms[1],
+        lesserDoomChoice = "disarmed",
+        targetInitiative = 8,
+    })
+    assertTrue(biteDisarm.success, "Lion Bite should ride on a successful Attack")
+    assertTrue(hasValue(biteDisarm.effects, "lion_bite") and hasValue(biteDisarm.effects, "disarmed"),
+        "Lion Bite should report the chosen Disarm rider")
+    assertTrue(disarmTarget.conditions.disarmed and biteDisarm.droppedItem == dagger,
+        "Lion Bite Disarm should drop the target's held item without a second contest")
+    local heldDagger = disarmTarget.inventory:findItem(dagger.id)
+    assertTrue(heldDagger == nil, "Lion Bite Disarm should remove the item from the target's hands")
+
+    local tripTarget = base_entity.createEntity({
+        id = "pc_lion_bite_trip",
+        name = "Lion Bite Trip Target",
+        isPC = true,
+    })
+    tripTarget.inventory = inventory.createInventory()
+    local biteTrip = lionResolver:resolve({
+        actor = lion,
+        target = tripTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        lesserDoom = lion.lesserDooms[1],
+        lesserDoomChoice = "tripped",
+        targetInitiative = 8,
+    })
+    assertTrue(biteTrip.success, "Lion Bite Trip should ride on a successful Attack")
+    assertTrue(tripTarget.conditions.prone and hasValue(biteTrip.effects, "lion_bite_trip"),
+        "Lion Bite Trip should make the target prone without a second contest")
+
+    local clawTarget = base_entity.createEntity({
+        id = "pc_lion_claw_double",
+        name = "Lion Claw Double Target",
+        isPC = true,
+    })
+    clawTarget.inventory = inventory.createInventory()
+    local claw = lionResolver:resolve({
+        actor = lion,
+        target = clawTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        lesserDoom = lion.lesserDooms[2],
+        targetInitiative = 8,
+    })
+    assertTrue(claw.success, "Lion Claw should hit normally before checking the double-Initiative rider")
+    assertEqual(claw.damageDealt, 2, "Lion Claw should deal 2 Wounds when attack value doubles Initiative")
+    assertTrue(hasValue(claw.effects, "lion_claw_double_initiative"),
+        "Lion Claw should report its double-Initiative rider")
+    assertTrue(clawTarget.conditions.staggered and clawTarget.conditions.injured,
+        "Lion Claw double-Initiative damage should apply two Wounds")
+
+    local ordinaryClawTarget = base_entity.createEntity({
+        id = "pc_lion_claw_ordinary",
+        name = "Lion Claw Ordinary Target",
+        isPC = true,
+    })
+    ordinaryClawTarget.inventory = inventory.createInventory()
+    local ordinaryClaw = lionResolver:resolve({
+        actor = lion,
+        target = ordinaryClawTarget,
+        card = { name = "Ten of Swords", value = 10, suit = constants.SUITS.SWORDS },
+        type = action_resolver.ACTION_TYPES.MELEE,
+        lesserDoom = lion.lesserDooms[2],
+        targetInitiative = 10,
+    })
+    assertTrue(ordinaryClaw.success, "Lion Claw should still hit when it beats but does not double Initiative")
+    assertEqual(ordinaryClaw.damageDealt, 1,
+        "Lion Claw should not increase damage when attack value does not double Initiative")
+    assertTrue(not hasValue(ordinaryClaw.effects, "lion_claw_double_initiative"),
+        "ordinary Lion Claw hit should not report the double-Initiative rider")
+
+    local retreatBus = events.createEventBus()
+    local zones = zone_system.createZoneRegistry({ eventBus = retreatBus })
+    local retreatResolver = action_resolver.createActionResolver({
+        eventBus = retreatBus,
+        zoneSystem = zones,
+    })
+    local retreatLion = entity_factory.createEntity("lion")
+    retreatLion.id = "npc_lion_cautious_retreat"
+    local firstAdventurer = base_entity.createEntity({
+        id = "pc_lion_retreat_first",
+        name = "First Lion Retreat Target",
+        isPC = true,
+    })
+    local secondAdventurer = base_entity.createEntity({
+        id = "pc_lion_retreat_second",
+        name = "Second Lion Retreat Target",
+        isPC = true,
+    })
+    retreatResolver:formEngagement(retreatLion, firstAdventurer)
+    retreatResolver:formEngagement(retreatLion, secondAdventurer)
+
+    local blockedRetreat = retreatResolver:resolve({
+        actor = retreatLion,
+        target = firstAdventurer,
+        type = action_resolver.ACTION_TYPES.LION_CAUTIOUS_RETREAT,
+    })
+    assertTrue(not blockedRetreat.success, "Lion Cautious Retreat should require a greater doom")
+    assertTrue(hasValue(blockedRetreat.effects, "lion_cautious_retreat_requires_greater_doom"),
+        "blocked Lion Cautious Retreat should report the missing greater doom")
+
+    local retreat = retreatResolver:resolve({
+        actor = retreatLion,
+        target = firstAdventurer,
+        type = action_resolver.ACTION_TYPES.LION_CAUTIOUS_RETREAT,
+        greaterDoom = retreatLion.greaterDooms[1],
+    })
+    assertTrue(retreat.success, "Lion Cautious Retreat should resolve as a cardless greater-doom action")
+    assertTrue(retreat.countsTowardTurnCard == false and retreat.cardless,
+        "Lion Cautious Retreat should not count toward the lion's one-card turn limit")
+    assertTrue(not zones:areEngaged(retreatLion.id, firstAdventurer.id),
+        "Lion Cautious Retreat should disengage from the selected adventurer")
+    assertTrue(zones:areEngaged(retreatLion.id, secondAdventurer.id),
+        "Lion Cautious Retreat should leave other engagements intact")
 end
 
 local function checkLightSourceVisibility()
@@ -3290,6 +4599,90 @@ local function checkCrawlScreenListenerLifecycle()
     initScreen:destroy()
     assertEqual(countEventListeners(initBus), 0,
         "crawl screen destroy after repeated init should unsubscribe all listeners")
+
+    local oldGameState = _G.gameState
+    local ok, err = pcall(function()
+        local guild = {
+            base_entity.createEntity({
+                id = "pc_lifecycle",
+                name = "Lifecycle PC",
+                isPC = true,
+            }),
+        }
+        local fakeGameState = {
+            activePCIndex = 1,
+            guild = guild,
+        }
+        local roomManagerStub = {
+            getFeature = function()
+                return nil
+            end,
+        }
+        _G.gameState = fakeGameState
+
+        local transitionBus = events.createEventBus()
+        local function makeCrawlScreen()
+            local nextScreen = crawl_screen.createCrawlScreen({
+                eventBus = transitionBus,
+                roomManager = roomManagerStub,
+                watchManager = {},
+                gameState = fakeGameState,
+            })
+            fakeGameState.currentScreen = nextScreen
+            return nextScreen
+        end
+
+        local firstScreen = makeCrawlScreen()
+        firstScreen:init()
+        firstScreen:setGuild(guild)
+        local transitionCount = countEventListeners(transitionBus)
+        assertTrue(transitionCount > firstInitCount,
+            "crawl screen with guild plates should register component listeners")
+
+        local secondScreen = makeCrawlScreen()
+        firstScreen:destroy()
+        secondScreen:init()
+        secondScreen:setGuild(guild)
+        assertEqual(countEventListeners(transitionBus), transitionCount,
+            "crawl screen transition should not accumulate old listeners")
+
+        secondScreen:destroy()
+        assertEqual(countEventListeners(transitionBus), 0,
+            "crawl screen transition cleanup should leave no listeners behind")
+
+        local campScreenModule = require('ui.screens.camp_screen')
+        local campBus = events.createEventBus()
+        local campScreen = campScreenModule.createCampScreen({
+            eventBus = campBus,
+            campController = {},
+            guild = guild,
+        })
+        campScreen:init()
+        local campCount = countEventListeners(campBus)
+        assertTrue(campCount > 0, "camp screen should register UI listeners during init")
+
+        campScreen:subscribeEvents()
+        assertEqual(countEventListeners(campBus), campCount,
+            "camp screen resubscribe should replace, not duplicate, screen listeners")
+
+        local campScreenNext = campScreenModule.createCampScreen({
+            eventBus = campBus,
+            campController = {},
+            guild = guild,
+        })
+        campScreen:destroy()
+        campScreenNext:init()
+        assertEqual(countEventListeners(campBus), campCount,
+            "camp screen transition should not accumulate old listeners")
+
+        campScreenNext:destroy()
+        assertEqual(countEventListeners(campBus), 0,
+            "destroyed camp screen should unsubscribe screen and plate listeners")
+    end)
+    _G.gameState = oldGameState
+    if not ok then
+        error(err)
+    end
 end
 
 local function checkStunDiscardsChallengeCard()
@@ -4704,6 +6097,58 @@ local function checkRoughhouseFacade()
     assertTrue(target.inventory:findItem(targetSword.id) == targetSword,
         "Recover should return the dropped item to the actor's hands")
     assertTrue(not target.conditions.disarmed, "Recover should clear the disarmed condition")
+
+    target.conditions.rooted = true
+    target.conditions.prone = true
+    local recoverProne = resolver:resolve({
+        actor = target,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "prone",
+    })
+    assertTrue(recoverProne.success, "Recover should allow the GM/player to choose a recoverable effect")
+    assertTrue(not target.conditions.prone, "chosen Recover should clear the requested Prone effect")
+    assertTrue(target.conditions.rooted, "chosen Recover should not clear a different recoverable effect")
+
+    target.conditions.prone = true
+    target.conditions.bindingRooted = true
+    local recoverBinding = resolver:resolve({
+        actor = target,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "rooted",
+    })
+    assertTrue(not recoverBinding.success, "Recover should not fall through when the requested effect is nonrecoverable")
+    assertTrue(target.conditions.rooted and target.conditions.prone,
+        "failed chosen Recover should leave other effects untouched")
+    assertTrue(hasValue(recoverBinding.effects, "binding_rooted"),
+        "nonrecoverable Binding-rooted Recover should report the block")
+    target.conditions.bindingRooted = nil
+    target.conditions.rooted = false
+    target.conditions.prone = false
+
+    local tangledTarget = base_entity.createEntity({
+        id = "npc_chosen_disarm_recover",
+        name = "Chosen Disarm Target",
+        isPC = false,
+        health = 2,
+        defense = 0,
+    })
+    tangledTarget.inventory = inventory.createInventory()
+    tangledTarget.conditions.rooted = true
+    tangledTarget.conditions.disarmed = true
+    local chosenSword = inventory.createItemFromTemplate("longsword")
+    tangledTarget.droppedItems = { chosenSword }
+    local recoverDisarmed = resolver:resolve({
+        actor = tangledTarget,
+        card = { name = "Eight of Wands", value = 8, suit = constants.SUITS.WANDS },
+        type = action_resolver.ACTION_TYPES.RECOVER,
+        recoverEffect = "disarmed",
+    })
+    assertTrue(recoverDisarmed.success, "chosen Recover should retrieve a dropped item even if another effect is present")
+    assertEqual(recoverDisarmed.recoveredItem, chosenSword, "chosen disarm Recover should report the recovered item")
+    assertTrue(not tangledTarget.conditions.disarmed, "chosen disarm Recover should clear Disarmed")
+    assertTrue(tangledTarget.conditions.rooted, "chosen disarm Recover should leave Rooted in place")
 
     local shieldedTarget = base_entity.createEntity({
         id = "npc_shielded_disarm_rule",
@@ -6186,22 +7631,9 @@ local function checkGreaterDoomAttackPairing()
         },
     })
 
-    local npc = {
-        id = "brain_spider_1",
-        name = "Brain Spider",
-        zone = "near",
-        rank = "soldier",
-        swords = 3,
-        conditions = {},
-        greaterDooms = {
-            {
-                id = "web",
-                name = "Web",
-                activation = "attack_rider",
-                effect = { type = "web", limbs = 4, suppressDamage = true },
-            },
-        },
-    }
+    local npc = entity_factory.createEntity("brain_spider")
+    npc.id = "brain_spider_1"
+    npc.zone = "near"
     local pc = {
         id = "pc_1",
         name = "Target",
@@ -6311,14 +7743,16 @@ local function checkWebGreaterDoomResolution()
         zoneSystem = zones,
     })
 
-    local npc = {
-        id = "brain_spider_1",
-        name = "Brain Spider",
-        isPC = false,
-        zone = "near",
-        swords = 3,
-        conditions = {},
-    }
+    local npc = entity_factory.createEntity("brain_spider")
+    npc.id = "brain_spider_1"
+    npc.zone = "near"
+    local webDoom = nil
+    for _, doom in ipairs(npc.greaterDooms or {}) do
+        if doom.id == "web" then
+            webDoom = doom
+        end
+    end
+    assertTrue(webDoom ~= nil, "Brain Spider blueprint should provide the Web greater doom")
     local pc = {
         id = "pc_1",
         name = "Target",
@@ -6338,11 +7772,7 @@ local function checkWebGreaterDoomResolution()
         type = action_resolver.ACTION_TYPES.MELEE,
         targetInitiative = 10,
         allEntities = { npc, pc },
-        greaterDoom = {
-            id = "web",
-            name = "Web",
-            effect = { type = "web", limbs = 2, suppressDamage = true },
-        },
+        greaterDoom = webDoom,
         greaterDoomCard = major(17),
     }
 
@@ -6357,7 +7787,7 @@ local function checkWebGreaterDoomResolution()
         "Rooted effects should immediately disengage everyone engaged with the target")
     assertTrue(not resolver:hasAnyEngagement(npc) and not resolver:hasAnyEngagement(pc),
         "Rooted disengagement should clear the zone engagement registry")
-    assertEqual(pc.webbedLimbs, 2, "web should track limbs to recover")
+    assertEqual(pc.webbedLimbs, 4, "web should track limbs to recover from the Brain Spider blueprint")
     assertEqual(result.damageDealt, 0, "web should suppress normal Attack damage")
 
     local recover = resolver:resolve({
@@ -6366,18 +7796,29 @@ local function checkWebGreaterDoomResolution()
         type = action_resolver.ACTION_TYPES.RECOVER,
     })
     assertTrue(recover.success, "first Recover should free one limb")
-    assertEqual(pc.webbedLimbs, 1, "first Recover should decrement webbed limbs")
+    assertEqual(pc.webbedLimbs, 3, "first Recover should decrement webbed limbs")
     assertTrue(pc.conditions.rooted, "target remains rooted until all limbs are free")
+
+    for expectedRemaining = 2, 1, -1 do
+        recover = resolver:resolve({
+            actor = pc,
+            card = { name = "Any", value = 1, suit = constants.SUITS.WANDS },
+            type = action_resolver.ACTION_TYPES.RECOVER,
+        })
+        assertTrue(recover.success, "Recover should continue freeing webbed limbs")
+        assertEqual(pc.webbedLimbs, expectedRemaining, "Recover should decrement webbed limbs one at a time")
+        assertTrue(pc.conditions.rooted, "target remains rooted while any webbed limb remains")
+    end
 
     recover = resolver:resolve({
         actor = pc,
         card = { name = "Any", value = 1, suit = constants.SUITS.WANDS },
         type = action_resolver.ACTION_TYPES.RECOVER,
     })
-    assertTrue(recover.success, "second Recover should clear web")
-    assertEqual(pc.webbedLimbs, 0, "second Recover should clear webbed limb count")
-    assertTrue(not pc.conditions.webbed, "second Recover should clear webbed")
-    assertTrue(not pc.conditions.rooted, "second Recover should clear rooted")
+    assertTrue(recover.success, "final Recover should clear web")
+    assertEqual(pc.webbedLimbs, 0, "final Recover should clear webbed limb count")
+    assertTrue(not pc.conditions.webbed, "final Recover should clear webbed")
+    assertTrue(not pc.conditions.rooted, "final Recover should clear rooted")
 end
 
 local function checkRecoverClearsBurningDuration()
@@ -19811,6 +21252,204 @@ local function checkFlareSpellParity(resolver)
     assertTrue(not farTarget.conditions.blind, "campfire Flare should only affect the target zone")
 end
 
+function checkAppendixASpellRegistryCoverage()
+    local spell_registry = require('data.spell_registry')
+    local B = spell_registry.BRANCHES
+    local expected = {
+        brainfever = { name = "Brainfever", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        control_undead = { name = "Control Undead", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        darklight = { name = "Darklight", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        fear = { name = "Fear", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        fleshcraft = { name = "Fleshcraft", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        malediction = { name = "Malediction", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        necromancy = { name = "Necromancy", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        raise_zombie = { name = "Raise Zombie", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        stinking_cloud = { name = "Stinking Cloud", branch = B.WASTES, talent = "magic_of_the_wastes" },
+        withering = { name = "Withering", branch = B.WASTES, talent = "magic_of_the_wastes" },
+
+        control_animal = { name = "Control Animal", branch = B.WEALD, talent = "magic_of_the_weald" },
+        defy_depths = { name = "Defy Depths", branch = B.WEALD, talent = "magic_of_the_weald" },
+        flare = { name = "Flare", branch = B.WEALD, talent = "magic_of_the_weald" },
+        gust_of_wind = { name = "Gust of Wind", branch = B.WEALD, talent = "magic_of_the_weald" },
+        protection_from_elements = { name = "Protection from the Elements", branch = B.WEALD, talent = "magic_of_the_weald" },
+        speak_to_animal = { name = "Speak to Animal", branch = B.WEALD, talent = "magic_of_the_weald" },
+        thunderclap = { name = "Thunderclap", branch = B.WEALD, talent = "magic_of_the_weald" },
+        totem = { name = "Totem", branch = B.WEALD, talent = "magic_of_the_weald" },
+        wall_of_elements = { name = "Wall of Elements", branch = B.WEALD, talent = "magic_of_the_weald" },
+        woodweave = { name = "Woodweave", branch = B.WEALD, talent = "magic_of_the_weald" },
+
+        animate_object = { name = "Animate Object", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        change_size = { name = "Change Size", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        enrage = { name = "Enrage", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        give_form_to_nothingness = { name = "Give Form to Nothingness", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        illusion = { name = "Illusion", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        mirror_meld = { name = "Mirror Meld", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        portable_hole = { name = "Portable Hole", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        scry = { name = "Scry", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        shroud = { name = "Shroud", branch = B.WEIRD, talent = "magic_of_the_weird" },
+        sleep = { name = "Sleep", branch = B.WEIRD, talent = "magic_of_the_weird" },
+
+        augury = { name = "Augury", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        binding = { name = "Binding", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        charm = { name = "Charm", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        circle_of_protection = { name = "Circle of Protection", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        feather = { name = "Feather", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        guardian_angel = { name = "Guardian Angel", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        heavenfire = { name = "Heavenfire", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        life = { name = "Life", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        seal_pact = { name = "Seal Pact", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+        veritas = { name = "Veritas", branch = B.WELKIN, talent = "magic_of_the_welkin" },
+    }
+
+    local count = 0
+    for id, spell in pairs(spell_registry.spells) do
+        count = count + 1
+        local want = expected[id]
+        assertTrue(want ~= nil, "spell registry has non-Appendix A spell: " .. tostring(id))
+        assertEqual(spell.id, id, "spell id should match registry key for " .. id)
+        assertEqual(spell.name, want.name, "Appendix A spell name mismatch for " .. id)
+        assertEqual(spell.branch, want.branch, "Appendix A branch mismatch for " .. id)
+        assertEqual(spell.talent, want.talent, "Appendix A talent mismatch for " .. id)
+        assertTrue(type(spell.componentId) == "string" and spell.componentId ~= "",
+            "Appendix A spell should declare a component: " .. id)
+        assertTrue(item_templates.hasTemplate(spell.componentId),
+            "Appendix A component template missing for " .. id .. ": " .. tostring(spell.componentId))
+    end
+
+    assertEqual(count, 40, "Appendix A spell registry should cover exactly 40 spells")
+    for id, _ in pairs(expected) do
+        assertTrue(spell_registry.spells[id] ~= nil, "Appendix A spell missing from registry: " .. id)
+    end
+end
+
+function checkAppendixBAlchemyCatalogCoverage()
+    local expected = {
+        brain_spider = {
+            potion = "brain_spider_potion",
+            bomb = "brain_spider_bomb",
+            oil = "brain_spider_oil",
+        },
+        devil = {
+            potion = "devil_potion",
+            bomb = "devil_bomb",
+            oil = "devil_oil",
+        },
+        cockatrice = {
+            bomb = "cockatrice_bomb",
+            oil = "cockatrice_oil",
+        },
+        face_rat = {
+            potion = "face_rat_potion",
+            bomb = "face_rat_bomb",
+        },
+        fungoid = {
+            potion = "fungoid_potion",
+            bomb = "fungoid_bomb",
+            oil = "fungoid_oil",
+        },
+        harpy = {
+            potion = "harpy_potion",
+            bomb = "harpy_bomb",
+        },
+        imp = {
+            potion = "imp_potion",
+            bomb = "imp_bomb",
+            oil = "imp_oil",
+        },
+        griffin = {
+            potion = "griffin_potion",
+            oil = "griffin_oil",
+        },
+        jinn = {
+            potion = "jinn_potion",
+            bomb = "jinn_bomb",
+            oil = "jinn_oil",
+        },
+        mimic = {
+            potion = "mimic_potion",
+            oil = "mimic_oil",
+        },
+        kelpie = {
+            potion = "kelpie_potion",
+            oil = "kelpie_oil",
+        },
+        nymph = {
+            potion = "nymph_potion",
+            bomb = "nymph_bomb",
+        },
+        ogre = {
+            potion = "ogre_potion",
+            bomb = "ogre_bomb",
+            oil = "ogre_oil",
+        },
+        questing_beast = {
+            potion = "questing_beast_potion",
+            oil = "questing_beast_oil",
+        },
+        slime = {
+            potion = "slime_potion",
+            bomb = "slime_bomb",
+            oil = "slime_oil",
+        },
+        titan = {
+            potion = "titan_potion",
+            oil = "titan_oil",
+        },
+        ungoat = {
+            potion = "ungoat_potion",
+            bomb = "ungoat_bomb",
+            oil = "ungoat_oil",
+        },
+        vampire = {
+            potion = "vampire_potion",
+            bomb = "vampire_bomb",
+        },
+        winter_wolf = {
+            potion = "winter_wolf_potion",
+            oil = "winter_wolf_oil",
+        },
+    }
+    local forms = { "potion", "bomb", "oil" }
+    local count = 0
+
+    for source, outputs in pairs(expected) do
+        count = count + 1
+        local reagentId = source .. "_reagent"
+        local reagent = item_templates.getTemplate(reagentId)
+        assertTrue(reagent ~= nil, "Appendix B reagent template missing for " .. source)
+        local props = reagent.properties or {}
+        assertTrue(props.reagent and props.alchemicalReagent and props.hermeticBottle,
+            "Appendix B reagent should be bottled alchemical reagent: " .. source)
+        assertEqual(props.source, source, "Appendix B reagent source mismatch for " .. source)
+        assertTrue(type(props.brewOutputs) == "table", "Appendix B reagent should declare brew outputs: " .. source)
+
+        for _, form in ipairs(forms) do
+            local expectedTemplate = outputs[form]
+            local actualTemplate = props.brewOutputs[form]
+            if expectedTemplate then
+                assertEqual(actualTemplate, expectedTemplate,
+                    "Appendix B " .. source .. " " .. form .. " output mismatch")
+                local output = item_templates.getTemplate(expectedTemplate)
+                assertTrue(output ~= nil, "Appendix B output template missing: " .. expectedTemplate)
+                local outputProps = output.properties or {}
+                assertTrue(outputProps.alchemical and outputProps.consumable,
+                    "Appendix B output should be consumable alchemy: " .. expectedTemplate)
+                assertTrue(outputProps[form] == true,
+                    "Appendix B output should be marked as " .. form .. ": " .. expectedTemplate)
+                assertEqual(outputProps.source, source,
+                    "Appendix B output source mismatch for " .. expectedTemplate)
+                assertTrue(type(outputProps.useEffect) == "table",
+                    "Appendix B output should carry a usable effect: " .. expectedTemplate)
+            else
+                assertTrue(actualTemplate == nil,
+                    "Appendix B should not invent a " .. form .. " output for " .. source)
+            end
+        end
+    end
+
+    assertEqual(count, 19, "Appendix B sampled alchemy catalog should cover 19 sources")
+end
+
 local function checkSpeakIncantationRegistry()
     local bus = events.createEventBus()
     local resolver = action_resolver.createActionResolver({
@@ -24915,6 +26554,12 @@ checkDeathsDoorWatchExpiry()
 checkWatchDurationConditionExpiry()
 checkStartingGuildData()
 checkAppendixCDenizenBlueprintData()
+checkCockatriceGazeRuntime()
+checkGriffinGrabRuntime()
+checkHarpyShriekRuntime()
+checkFaceRatGreaterDoomRuntime()
+checkFaceRatBadLittleHandsRuntime()
+checkLionAttackRuntime()
 checkLightSourceVisibility()
 checkDroppedLightSourceRules()
 checkOutOfLightDoom()
@@ -24970,6 +26615,7 @@ checkCampFellowshipAction()
 checkCampTrainAction()
 checkCampUseTalentAction()
 checkLaborUnendingCampActionAllowance()
+checkAppendixBAlchemyCatalogCoverage()
 checkCampBrewAlchemyAction()
 checkAlchemyHarvestReagents()
 checkHarvestableCorpseFeatures()
@@ -25028,6 +26674,7 @@ checkCommandBoardCompanionCommandSelection()
 checkVigilanceTriggerTemplates()
 checkRoughhouseCommandBoardEffectSelection()
 checkVigilanceCommandBoardTriggerSelection()
+checkAppendixASpellRegistryCoverage()
 checkSpeakIncantationRegistry()
 checkControlAnimalSpell()
 checkControlUndeadSpell()
