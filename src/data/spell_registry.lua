@@ -24,6 +24,11 @@ M.spells = {
         concentration = true,
         effect = {
             type = "brainfever",
+            componentAction = "blow_leaf_powder_toward_target",
+            targetEntersRage = true,
+            grantsAttackFavor = true,
+            mustPlayLowestInitiative = true,
+            emotionlessNoEffect = true,
         },
     },
 
@@ -38,6 +43,13 @@ M.spells = {
         effect = {
             type = "control",
             targetTrait = "undead",
+            componentAction = "command_with_graveyard_poppet",
+            oneOrder = true,
+            wordsPerResolveUsesWands = true,
+            extraResolveAddsWandsWords = true,
+            lastsUntilOrderFulfilled = true,
+            committedResolveUntilFulfilled = true,
+            suicidalOrdersAllowed = true,
         },
     },
 
@@ -52,6 +64,19 @@ M.spells = {
         concentration = true,
         effect = {
             type = "necromancy",
+            componentAction = "place_pickled_tongue_inside_dead_person_skull",
+            targetSpeaksAsIfAlive = true,
+            deadNoCompulsion = true,
+            deadNotGuaranteedHelpful = true,
+            deadNotGuaranteedTruthful = true,
+            canBargainNormally = true,
+            likelyConcerns = {
+                "unfinished_business",
+                "revenge",
+                "farewell",
+                "loved_ones",
+                "sundry_tasks",
+            },
         },
     },
 
@@ -65,6 +90,12 @@ M.spells = {
         ongoing = true,
         effect = {
             type = "malediction",
+            componentAction = "curse_with_pickled_miser_eye",
+            drawsRandomCurse = true,
+            permanentUntilDismissedOrCounterspelled = true,
+            casterMayDismissAnyTime = true,
+            cannotRecoverCurse = true,
+            committedResolveNeverRefreshes = true,
         },
     },
 
@@ -79,6 +110,32 @@ M.spells = {
         concentration = true,
         effect = {
             type = "fleshcraft",
+            componentAction = "cut_off_body_part_with_silver_athame",
+            detachedPartMovesIndependently = true,
+            detachedPartMovesClumsily = true,
+            detachedPartDamagePiercingWoundsTarget = 1,
+            detachedPartDamageEndsSpell = true,
+            rejoinsIfPlacedInOriginalPosition = true,
+            partDetails = {
+                hand = {
+                    crawlsLikeSpider = true,
+                    hardToNotice = true,
+                    canChokeSleepingMan = true,
+                    canPoisonCup = true,
+                },
+                eye = {
+                    rollsOnGround = true,
+                    targetCanSeeThroughIt = true,
+                },
+                ear = {
+                    flopsLikeFish = true,
+                    targetCanHearThroughIt = true,
+                },
+                mouth = {
+                    speaksNormally = true,
+                },
+            },
+            committedResolveNeverRefreshes = true,
         },
     },
 
@@ -92,6 +149,20 @@ M.spells = {
         ongoing = true,
         effect = {
             type = "raise_zombie",
+            componentAction = "trace_mithril_ink_symbols_around_body_for_watch",
+            requiresWatchRitual = true,
+            summonsWasteDevilIntoCorpse = true,
+            bindsDevilToService = true,
+            createsZombie = true,
+            zombieHasNoAttributes = true,
+            zombieIsRottingFlesh = true,
+            retainsPhysicalCapabilitiesFromLife = true,
+            commandActionDuringChallenges = true,
+            obeysMostCommandsInGoodFaith = true,
+            obeysSuicidalCommands = true,
+            servicesPerResolveUsesWands = true,
+            serviceEndDevilClaimsBody = true,
+            committedResolveNeverRefreshes = true,
         },
     },
 
@@ -106,6 +177,14 @@ M.spells = {
         effect = {
             type = "control",
             targetTrait = "animal",
+            componentAction = "command_with_lion_bone_scepter",
+            oneOrder = true,
+            targetScope = "animals_of_field_forest_or_fountains",
+            wordsPerResolveUsesWands = true,
+            extraResolveAddsWandsWords = true,
+            animalsRefuseObviouslySuicidalOrders = true,
+            lastsUntilOrderFulfilled = true,
+            committedResolveUntilFulfilled = true,
         },
     },
 
@@ -118,6 +197,15 @@ M.spells = {
         targetMode = "environment_or_creature",
         effect = {
             type = "flare",
+            componentAction = "cause_light_source_to_flare_and_fizzle",
+            candlesMayBeRelit = true,
+            lanternsMayBeRelit = true,
+            torchesCannotBeRelit = true,
+            torchAndLanternWoundBearer = true,
+            torchAndLanternIgniteBearer = true,
+            campfireBombExplosion = true,
+            campfireComparesSpeakIncantationToInitiative = true,
+            campfireBlindDuration = "end_next_turn",
         },
     },
 
@@ -134,6 +222,13 @@ M.spells = {
         extraTargetResolve = 1,
         effect = {
             type = "defy_depths",
+            humanSizedCreatureWalksOnWater = true,
+            chestSizedObjectFloatsOnWater = true,
+            floatsEvenIfSubmergedOrSunken = true,
+            smallShipExtraResolve = 1,
+            largeShipExtraResolve = 3,
+            baseTargets = 1,
+            extraTargetResolve = 1,
         },
     },
 
@@ -146,6 +241,13 @@ M.spells = {
         targetMode = "unwilling_creature",
         effect = {
             type = "gust_of_wind",
+            displacesHumanSizedTarget = true,
+            adjacentZoneOnly = true,
+            gentleLanding = true,
+            movementDoesNotHarmTarget = true,
+            hazardousDestinationStillApplies = true,
+            selfTargetAllowed = true,
+            canCrossGaps = true,
         },
     },
 
@@ -164,6 +266,22 @@ M.spells = {
         extraTargetResolve = 1,
         effect = {
             type = "protection_from_elements",
+            protectsTargetAndGear = true,
+            elementDetails = {
+                fire = {
+                    noHeatOrFlameDamage = true,
+                    upTo = "forge_fire",
+                },
+                water = {
+                    noColdOrIcyBlastDamage = true,
+                },
+                air = {
+                    noNeedToBreathe = true,
+                },
+                earth = {
+                    noFallingDamage = true,
+                },
+            },
         },
     },
 
@@ -178,6 +296,19 @@ M.spells = {
         concentration = true,
         effect = {
             type = "speak_to_animal",
+            componentPlacedUnderTongue = true,
+            componentEggSize = "chicken_egg",
+            garblesSpeechForNonAnimals = true,
+            animalsSpeakAsIfNormal = true,
+            animalNoCompulsion = true,
+            animalsGenerallyHelpfulTruthful = true,
+            normalAnimalsSimple = true,
+            normalAnimalLimits = {
+                "food",
+                "mating",
+                "safety",
+            },
+            ignoresOutsideSphere = true,
         },
     },
 
@@ -190,6 +321,20 @@ M.spells = {
         targetMode = "environment",
         effect = {
             type = "thunderclap",
+            componentAction = "last_syllable_resounds_like_thunderclap",
+            affectsVisibleZone = true,
+            shattersFragileObjects = true,
+            fragileExamples = {
+                "untempered_glass",
+                "porcelain",
+            },
+            excludesSorcerer = true,
+            creaturesChooseDropHeldItemsOrSuffer = true,
+            dropHeldItemsCoversEars = true,
+            alternativeConditions = {
+                "stunned",
+                "deafened",
+            },
         },
     },
 
@@ -203,6 +348,24 @@ M.spells = {
         ongoing = true,
         effect = {
             type = "totem",
+            componentPlacement = "mouth",
+            componentCanBePlacedInTargetMouth = true,
+            uniqueAnimalShape = true,
+            representsSoulTotem = true,
+            attributesAllZero = true,
+            testOfFateBonus = 5,
+            testBonusScope = "totem_known_actions",
+            transformationSpeed = "near_instantaneous",
+            wornItemsTransform = false,
+            carriedObjectsTransform = false,
+            droppedGearFallsAroundTarget = true,
+            endsOnMouthUse = true,
+            mouthUseEndActions = {
+                "talk",
+                "eat",
+                "drink",
+                "pick_up_with_mouth",
+            },
         },
     },
 
@@ -217,6 +380,37 @@ M.spells = {
         concentration = true,
         effect = {
             type = "wall_of_elements",
+            oneSectionPerResolve = true,
+            maintainedByConcentration = true,
+            sectionSizeFeet = {
+                width = 10,
+                height = 10,
+                depth = 2,
+            },
+            elementBehaviors = {
+                earth = {
+                    opaque = true,
+                    toughAsStone = true,
+                    blocksPassage = true,
+                },
+                wind = {
+                    opaque = false,
+                    blocksMissileWeapons = true,
+                    blocksFlyingCreatures = true,
+                },
+                fire = {
+                    opaque = true,
+                    permeable = true,
+                    woundsOnPassage = true,
+                },
+                water = {
+                    opaque = true,
+                    impermeable = true,
+                    requiresBodyOfWater = true,
+                    blocksShips = true,
+                    blocksWatercraft = true,
+                },
+            },
         },
     },
 
@@ -229,6 +423,35 @@ M.spells = {
         targetMode = "environment_or_creature",
         effect = {
             type = "woodweave",
+            controlsPlantGrowth = true,
+            controlsWoodShape = true,
+            modes = {
+                grow = {
+                    target = "living_plant",
+                    growsQuickly = true,
+                    appliesGrowEffect = true,
+                },
+                shrink = {
+                    target = "living_plant",
+                    withersBackToSeed = true,
+                    appliesShrinkingEffect = true,
+                },
+                warp = {
+                    target = "wooden_object",
+                    notchesObject = true,
+                    warpsAndReshapesWood = true,
+                },
+                root = {
+                    requiresPlaceOfVegetation = true,
+                    conjuresEntanglingVines = true,
+                    rootsAllCreaturesInSingleZone = true,
+                },
+                shape = {
+                    requiresEquivalentRawMaterials = true,
+                    instantShape = true,
+                    output = "wooden_object",
+                },
+            },
         },
     },
 
@@ -243,6 +466,13 @@ M.spells = {
         concentration = true,
         effect = {
             type = "darklight",
+            componentAction = "hold_candle_in_pickled_hand",
+            heldCandleDoesNotGoOut = true,
+            lightOnlyForHolder = true,
+            cannotBeSeenByOthers = true,
+            enablesStealthWithPerfectVisibility = true,
+            ignoresTorchesGutter = true,
+            extraViewerResolve = 1,
         },
     },
 
@@ -258,6 +488,17 @@ M.spells = {
         effect = {
             type = "emotional_illusion",
             disposition = "fear",
+            componentAction = "weave_target_only_grotesquery_illusion",
+            visibleOnlyToTarget = true,
+            requiresSecondWillingTarget = true,
+            cloakedTargetAppearance = "terrifying_grotesquery",
+            inspiresDisposition = "fear",
+            fearFleeFocus = true,
+            avoidCombatUnlessNecessaryToEscape = true,
+            prioritizeHighInitiative = true,
+            notAffectedByEmotionless = true,
+            notAffectedByIllusionImmune = true,
+            endsOnDispositionChange = true,
         },
     },
 
@@ -270,6 +511,18 @@ M.spells = {
         targetMode = "environment",
         effect = {
             type = "augury",
+            componentAction = "consult_random_codex_sophia_page",
+            gmDrawsFateCard = true,
+            cardHiddenFromPlayers = true,
+            gmDescribesCardAsParable = true,
+            noOutsideHelpForInterpretation = true,
+            guildMayAttemptOrDecline = true,
+            revealCardOnAttempt = true,
+            canSpendResolveForFavorOnAttempt = true,
+            canPushFateOnAttempt = true,
+            boundByFateOnDecline = true,
+            declineDiscardsCard = true,
+            boundOutcomePersistsUntilSituationChanges = true,
         },
     },
 
@@ -284,6 +537,14 @@ M.spells = {
         concentration = true,
         effect = {
             type = "binding",
+            componentAction = "hold_finger_bone_as_ward_and_name_creature",
+            affectsVisibleNamedCreatures = true,
+            specificNameMatchesExact = true,
+            genericNameMatchesType = true,
+            vagueCastingsMayCreateMaleficence = true,
+            appliesRooted = true,
+            rootedCannotRecover = true,
+            counterOrConcentrationEndOnly = true,
         },
     },
 
@@ -298,6 +559,16 @@ M.spells = {
         concentration = true,
         effect = {
             type = "charm",
+            componentAction = "burn_myrrh_in_ivory_censer",
+            requiresSecondWillingTarget = true,
+            visibleOnlyToTarget = true,
+            cloakedTargetAppearance = "undefined_trusted_friend",
+            inspiresDisposition = "trust",
+            trustDispositionAvoidsFightInclination = true,
+            nonlethalProwessTestingIfFightRequired = true,
+            notAffectedByEmotionless = true,
+            notAffectedByIllusionImmune = true,
+            endsOnDispositionChange = true,
         },
     },
 
@@ -316,6 +587,16 @@ M.spells = {
         requiresPreparedCircle = true,
         effect = {
             type = "circle_of_protection",
+            preparationAction = "watch_sketch_rune_circle_with_ashes",
+            componentAction = "hold_saint_ashes_in_silver_monstrance",
+            empowerAction = "incant_and_select_far_realm",
+            radiusFeet = 10,
+            protectsAgainstFarRealmNatives = true,
+            blocksNativesCrossingBoundary = true,
+            blocksNativesHarmingAcrossBoundary = true,
+            canTrapSpiritIfPreparedUnempowered = true,
+            baseRealms = 1,
+            extraRealmResolve = 1,
         },
     },
 
@@ -330,6 +611,14 @@ M.spells = {
         concentration = true,
         effect = {
             type = "feather",
+            componentAction = "hold_lamassu_feather",
+            weightReducedTo = "feather",
+            floatsGentlyToGround = true,
+            quickCastFallingRequiresHeldComponent = true,
+            preventsFallingDamage = true,
+            preventsHazardSceneryDamage = true,
+            preventsPressurePlateTrigger = true,
+            heavyObjectsEasyToMove = true,
         },
     },
 
@@ -342,6 +631,15 @@ M.spells = {
         targetMode = "ally",
         effect = {
             type = "guardian_angel",
+            componentAction = "summon_invisible_minor_welkin_spirit",
+            bindsSpiritToTarget = true,
+            speakIncantationCardBecomesDefense = true,
+            canDodge = true,
+            canRiposte = true,
+            stacksWithSameDefenseType = true,
+            doesNotCountDefenseSlot = true,
+            noMultipleInstances = true,
+            lastsUntilUsed = true,
         },
     },
 
@@ -354,6 +652,17 @@ M.spells = {
         targetMode = "creature_or_object",
         effect = {
             type = "heavenfire",
+            componentAction = "summon_gout_of_heavenfire",
+            brightFlameLightNoHeat = true,
+            doesNotConsumeBurningObject = true,
+            livingSightedBlind = true,
+            challengeBlindDuration = "end_next_turn",
+            undeadOrWastesSpiritPiercingDamage = true,
+            objectBrightLight = true,
+            canLightWandOrHat = true,
+            objectExtinguishesOnTorchesGutter = true,
+            actsLikeNormalFlame = true,
+            extinguishableByWaterOrSuffocation = true,
         },
     },
 
@@ -367,6 +676,14 @@ M.spells = {
         ongoing = true,
         effect = {
             type = "animate_object",
+            intendedPurposeOnly = true,
+            invisibleHand = true,
+            oneTaskPerCasting = true,
+            unattendedWeaponOneStrike = true,
+            actionValueFromSpeakIncantation = true,
+            lastsUntilTaskFulfilled = true,
+            committedResolveUntilFulfilled = true,
+            wordsPerResolveUsesWands = true,
         },
     },
 
@@ -381,6 +698,13 @@ M.spells = {
         concentration = true,
         effect = {
             type = "change_size",
+            growHeightMultiplier = 2,
+            shrinkHeightMultiplier = 0.5,
+            halfOrDoubleOriginalHeight = true,
+            grantsFavorWhenAdvantageous = true,
+            grantsDisfavorWhenDisadvantageous = true,
+            attackValuesUnaffected = true,
+            mayInfluenceRoughhouse = true,
         },
     },
 
@@ -396,6 +720,14 @@ M.spells = {
         effect = {
             type = "emotional_illusion",
             disposition = "anger",
+            visibleOnlyToTarget = true,
+            requiresSecondWillingTarget = true,
+            cloakedTargetAppearance = "nebulous_hated_foe",
+            inspiresDisposition = "anger",
+            recklessAttackFocus = true,
+            notAffectedByEmotionless = true,
+            notAffectedByIllusionImmune = true,
+            endsOnDispositionChange = true,
         },
     },
 
@@ -411,6 +743,16 @@ M.spells = {
         extraRoomResolve = 1,
         effect = {
             type = "give_form_to_nothingness",
+            componentAction = "play_rune_painted_drum",
+            duration = "while_drum_played",
+            requiresContinuousDrum = true,
+            affectsSubjectsInRooms = true,
+            affectedSubjectStates = { "intangible", "invisible" },
+            makesTangible = true,
+            makesVisible = true,
+            restoresPreviousStateOnEnd = true,
+            baseRooms = 1,
+            extraRoomResolve = 1,
         },
     },
 
@@ -425,6 +767,17 @@ M.spells = {
         concentration = true,
         effect = {
             type = "portable_hole",
+            componentAction = "place_calfskin_circle_on_inanimate_material",
+            calfskinCircleMaxDiameterInches = 9,
+            opensThroughInanimateMaterial = true,
+            windowToImmediateOtherSide = true,
+            passageAllowsThingsToPass = true,
+            livingTissueNoFunction = true,
+            liminalLivingUnlivingGmDiscretion = true,
+            noStructuralDamage = true,
+            blindPocketDepthFeet = 1,
+            blindPocketSwallowsItemsUndamaged = true,
+            closesBackIntoComponentCircleOnEnd = true,
         },
     },
 
@@ -439,6 +792,19 @@ M.spells = {
         concentration = true,
         effect = {
             type = "visual_illusion",
+            componentAction = "create_image_through_seven_faceted_prism",
+            createsObjectOrCreatureImage = true,
+            visualOnly = true,
+            hologram = true,
+            hasWeight = false,
+            hasSubstance = false,
+            hasSound = false,
+            hasSmell = false,
+            additiveOnly = true,
+            cannotMakeExistingThingsUnseen = true,
+            mentalCommands = true,
+            challengeCommandRequiresMiscAction = true,
+            detailResolveCost = 1,
         },
     },
 
@@ -452,6 +818,22 @@ M.spells = {
         ongoing = true,
         effect = {
             type = "mirror_meld",
+            componentAction = "sprinkle_tears_on_mirror_surface",
+            createsMirrorPortal = true,
+            allowsCreatures = true,
+            allowsItems = true,
+            allowsMultipleCreatures = true,
+            entrantsBecomeReflection = true,
+            visibleOnlyInsideMirror = true,
+            canSeeHearNearMirror = true,
+            cannotInteractWithWorld = true,
+            requiresMirrorLargeEnough = true,
+            exitsAtWill = true,
+            itemsVisibleButIntangibleFromOutside = true,
+            carriedItemsKeepPackWeight = true,
+            brokenMirrorCreatureWounds = 2,
+            brokenMirrorDestroysItems = true,
+            persistsUntilCreaturesLeaveOrMirrorBroken = true,
         },
     },
 
@@ -464,6 +846,13 @@ M.spells = {
         targetMode = "unwilling_creature",
         effect = {
             type = "sleep",
+            componentAction = "blow_powder_toward_target",
+            peacefulEffect = "knockout",
+            peacefulWakeMethod = "sharp_slap",
+            dangerousEffect = "stunned_drowsy",
+            longSleepResolve = 4,
+            longSleepNoAging = true,
+            longSleepNoFoodRequired = true,
         },
     },
 
@@ -478,6 +867,14 @@ M.spells = {
         concentration = true,
         effect = {
             type = "shroud",
+            componentAction = "spread_funeral_winding_sheet_over_target",
+            coversTargetAndCarriedGear = true,
+            impossibleToSeeWithoutMagicOrSpecialSenses = true,
+            stillAndQuietCannotBeDeliberatelyTargeted = true,
+            movementCreatesVaguePresence = true,
+            targetingVaguePresenceDisfavor = true,
+            harmfulActionsGainFavorAgainstUnseeing = true,
+            visibleObjectInteractionRequiresResolve = true,
         },
     },
 
@@ -492,6 +889,11 @@ M.spells = {
         concentration = true,
         effect = {
             type = "scry",
+            componentAction = "peer_into_crystal_ball",
+            visitedLocationOnly = true,
+            defaultSameMetaphysicalAreaOnly = true,
+            outsideAreaExtraResolve = 1,
+            canSeeLocation = true,
         },
     },
 
@@ -506,6 +908,10 @@ M.spells = {
         concentration = true,
         effect = {
             type = "stinking_cloud",
+            miasma = "thousand_opened_coffins",
+            expelledFrom = "sorcerer_mouth",
+            zonesPerResolve = 1,
+            breathingImmunity = true,
         },
     },
 
@@ -518,6 +924,28 @@ M.spells = {
         targetMode = "unwilling_creature_or_object",
         effect = {
             type = "withering",
+            componentAction = "invoke_decay_from_rune_etched_fingernails",
+            livingCreatureWounds = 1,
+            livingAgingSigns = {
+                "grey_hair",
+                "wrinkled_skin",
+                "jaundiced_eyes",
+                "liver_spots",
+            },
+            agingLastsUntilWoundHealed = true,
+            undeadNotHarmed = true,
+            undeadBecomesMoreTerrible = true,
+            zombieTransformsTo = "skeleton",
+            skeletonTransformsTo = "wraith",
+            objectShowsDecay = true,
+            objectDecayByMaterial = {
+                food = "rotten",
+                chains = "rusted",
+                wood = "moldy",
+                stone = "unaffected",
+            },
+            objectTakesNotch = true,
+            destroyedAtResolve = 2,
         },
     },
 
@@ -531,6 +959,15 @@ M.spells = {
         multiTarget = true,
         effect = {
             type = "life",
+            componentAction = "touch_with_phoenix_feather",
+            noEffectOnHealthyLiving = true,
+            clearsDeathsDoor = true,
+            deathsDoorTargetBecomesStressed = true,
+            reducesAfflictionStage = true,
+            removesFirstStageAffliction = true,
+            undeadTakesWound = true,
+            plantGrowsQuickly = true,
+            extraTargetResolve = 1,
         },
     },
 
@@ -545,6 +982,10 @@ M.spells = {
         concentration = true,
         effect = {
             type = "veritas",
+            componentAction = "administer_sacramental_wine",
+            personOnly = true,
+            casterKnowsKnowinglySpokenLies = true,
+            targetUnderstandsMagicalPolygraph = true,
         },
     },
 
@@ -559,6 +1000,15 @@ M.spells = {
         extraPartyResolve = 1,
         effect = {
             type = "seal_pact",
+            componentAction = "seal_contract_with_goblin_teeth_and_finger_joints",
+            willingPartiesOnly = true,
+            baseParties = 2,
+            extraPartyResolve = 1,
+            permanentUnlessDispelled = true,
+            violationAlertsOtherParties = true,
+            violatorDoomedForFutureGreatFailure = true,
+            dispelTriggersAwarenessButNotDoom = true,
+            violatedConsequencesIrremovable = true,
         },
     },
 }
@@ -692,6 +1142,13 @@ M.MALEDICTION_CURSES = {
             gmCharactersUsuallyHostile = true,
             undeadUsuallyIgnore = true,
             intimacyUsuallyRejected = true,
+            nobodyWantsToSleepWithYou = true,
+        },
+        metadata = {
+            appearance = "desiccated_corpse",
+            usualGmCharacterReaction = "hostile",
+            usualUndeadReaction = "ignore",
+            usualIntimacyReaction = "rejected",
         },
     },
     [6] = {
@@ -710,6 +1167,12 @@ M.MALEDICTION_CURSES = {
             weaponRustMalediction = true,
             maledictionWeaponNotchThreshold = 10,
         },
+        metadata = {
+            cardThreshold = 10,
+            woodNotchCapacity = 1,
+            ironNotchCapacity = 2,
+            steelNotchCapacity = 3,
+        },
     },
     [8] = {
         rank = "VIII",
@@ -725,9 +1188,14 @@ M.MALEDICTION_CURSES = {
         name = "Beloved by Vermin",
         flags = {
             verminFollow = true,
+            verminWantToSleepInMouth = true,
+            verminKnowUnwantedPackItems = true,
+            verminReplaceWithNiceGarbage = true,
         },
         metadata = {
             nightlyPackSwapChance = 0.5,
+            stolenItemSelection = "known_unwanted_pack_item",
+            replacement = "nice_garbage",
         },
     },
     [10] = {
@@ -759,6 +1227,13 @@ M.MALEDICTION_CURSES = {
         flags = {
             sightRangeFeet = 30,
             cannotDash = true,
+            oldForCurse = true,
+            uglyAndUnattractive = true,
+            cataracts = true,
+        },
+        metadata = {
+            apparentAge = "withered_crone",
+            sightCause = "cataracts",
         },
     },
     [13] = {

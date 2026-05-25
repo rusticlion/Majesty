@@ -171,6 +171,83 @@ function M.resolveGroupTest(testResults)
 end
 
 --------------------------------------------------------------------------------
+-- AIDED TESTS
+--------------------------------------------------------------------------------
+local function actorId(actor)
+    if type(actor) == "table" then
+        return actor.id or actor.name
+    end
+    return actor
+end
+
+local function addAffectedActor(actors, seen, actor)
+    local id = actorId(actor)
+    if id and not seen[id] then
+        actors[#actors + 1] = {
+            actor = actor,
+            actorId = id,
+        }
+        seen[id] = true
+    end
+end
+
+function M.prepareAidedTest(opts)
+    opts = opts or {}
+    local lead = opts.lead or opts.actor or opts.adventurer
+    local helpers = opts.helpers or opts.aiders or opts.assistants
+    if opts.helper or opts.aider or opts.assistant then
+        helpers = { opts.helper or opts.aider or opts.assistant }
+    end
+
+    if not lead then
+        return nil, "Lead adventurer required"
+    end
+    if type(helpers) ~= "table" or #helpers == 0 then
+        return nil, "Helper adventurer required"
+    end
+
+    local affected = {}
+    local seen = {}
+    addAffectedActor(affected, seen, lead)
+    for _, helper in ipairs(helpers) do
+        addAffectedActor(affected, seen, helper)
+    end
+
+    return {
+        lead = lead,
+        leadId = actorId(lead),
+        helpers = helpers,
+        affectedActors = affected,
+        favor = opts.favor ~= false,
+        consequencesShared = true,
+        leadChoosesPush = true,
+        pushOwner = lead,
+        pushOwnerId = actorId(lead),
+        reason = opts.reason or "aiding_test_of_fate",
+    }
+end
+
+function M.sharedAidedConsequences(aidedTest, testResult)
+    local consequences = {}
+    if type(aidedTest) ~= "table" then
+        return consequences
+    end
+
+    local resultType = type(testResult) == "table" and testResult.result or testResult
+    for _, affected in ipairs(aidedTest.affectedActors or {}) do
+        consequences[#consequences + 1] = {
+            actor = affected.actor,
+            actorId = affected.actorId,
+            result = resultType,
+            success = type(testResult) == "table" and testResult.success or nil,
+            isGreat = type(testResult) == "table" and testResult.isGreat or nil,
+            shared = true,
+        }
+    end
+    return consequences
+end
+
+--------------------------------------------------------------------------------
 -- UTILITY: Calculate minimum card value needed for success
 -- Useful for UI hints
 --------------------------------------------------------------------------------

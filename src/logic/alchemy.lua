@@ -8,6 +8,18 @@ local currency = require('logic.currency')
 
 local M = {}
 
+local function cloneValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneValue(entry)
+    end
+    return copy
+end
+
 M.MENAGERIE_REAGENT_COST = 25
 M.MENAGERIE_REAGENTS = {
     brain_spider = "brain_spider_reagent",
@@ -116,7 +128,7 @@ end
 
 local function resolveReagentTemplateId(request)
     request = request or {}
-    local templateId = request.reagentTemplateId or request.templateId or request.itemTemplateId
+    local templateId = request.reagentTemplateId or request.templateId or request.itemTemplateId or request.template
     if templateId then
         return templateId
     end
@@ -127,6 +139,121 @@ local function resolveReagentTemplateId(request)
     end
 
     return nil
+end
+
+local function stockEntryRecord(entry, key)
+    if type(entry) == "table" then
+        return entry, entry
+    elseif type(entry) == "string" then
+        return {
+            id = key,
+            reagentTemplateId = entry,
+        }, nil
+    end
+    return nil, nil
+end
+
+local function stockEntryMatches(entry, key, lookup, lookupKey)
+    local candidates = { key }
+    if type(entry) == "table" then
+        candidates[#candidates + 1] = entry.id
+        candidates[#candidates + 1] = entry.stockId
+        candidates[#candidates + 1] = entry.catalogId
+        candidates[#candidates + 1] = entry.source
+        candidates[#candidates + 1] = entry.creature
+        candidates[#candidates + 1] = entry.monster
+        candidates[#candidates + 1] = entry.reagent
+        candidates[#candidates + 1] = entry.reagentTemplateId
+        candidates[#candidates + 1] = entry.templateId
+        candidates[#candidates + 1] = entry.name
+        candidates[#candidates + 1] = entry.title
+    else
+        candidates[#candidates + 1] = entry
+    end
+
+    for _, candidate in ipairs(candidates) do
+        if candidate ~= nil then
+            local text = tostring(candidate)
+            if text == lookup or normalizeKey(text) == lookupKey then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function findMenagerieStockEntry(stock, request)
+    if type(request.stockEntry) == "table" then
+        return request.stockEntry, request.stockEntry, request.stockEntry.id or request.stockEntry.stockId
+    end
+    if type(request.stockItem) == "table" then
+        return request.stockItem, request.stockItem, request.stockItem.id or request.stockItem.stockId
+    end
+    if type(stock) ~= "table" then
+        return nil, nil, nil
+    end
+
+    local lookup = request.stockId or request.reagentStockId or request.catalogId or request.source or
+        request.creature or request.monster or request.reagent or request.reagentTemplateId or request.templateId
+    local lookupText = tostring(lookup or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if lookupText == "" then
+        return nil, nil, nil
+    end
+
+    local lookupKey = normalizeKey(lookupText)
+    local direct = stock[lookupText] or stock[lookupKey]
+    if direct ~= nil then
+        local record, state = stockEntryRecord(direct, lookupKey)
+        return record, state, lookupKey
+    end
+
+    for key, entry in pairs(stock) do
+        if stockEntryMatches(entry, key, lookupText, lookupKey) then
+            local record, state = stockEntryRecord(entry, key)
+            return record, state, key
+        end
+    end
+    return nil, nil, nil
+end
+
+local function stockQuantityAvailable(stockRecord)
+    if type(stockRecord) ~= "table" then
+        return nil
+    end
+    local value = stockRecord.quantityAvailable
+    if value == nil then
+        value = stockRecord.available
+    end
+    if value == nil then
+        value = stockRecord.stock
+    end
+    if value == nil then
+        value = stockRecord.countAvailable
+    end
+    return value ~= nil and math.max(0, math.floor(tonumber(value) or 0)) or nil
+end
+
+local function decrementStockQuantity(stockState, quantity)
+    if type(stockState) ~= "table" then
+        return nil
+    end
+
+    local field = nil
+    if stockState.quantityAvailable ~= nil then
+        field = "quantityAvailable"
+    elseif stockState.available ~= nil then
+        field = "available"
+    elseif stockState.stock ~= nil then
+        field = "stock"
+    elseif stockState.countAvailable ~= nil then
+        field = "countAvailable"
+    end
+
+    if not field then
+        return nil
+    end
+    stockState[field] = math.max(0, math.floor(tonumber(stockState[field]) or 0) - quantity)
+    return stockState[field]
 end
 
 local function inventoryHasRoom(actor, location, items)
@@ -154,6 +281,63 @@ local function sourceHasNoGuts(source, data)
         source.construct == true or
         source.automaton == true
     )
+end
+
+local HUMANOID_REAGENT_EXCLUSIONS = {
+    human = true,
+    humans = true,
+    orc = true,
+    orcs = true,
+    elf = true,
+    elves = true,
+    high_elf = true,
+    high_elves = true,
+    wood_elf = true,
+    wood_elves = true,
+    dark_elf = true,
+    dark_elves = true,
+    underfolk = true,
+    dwarf = true,
+    dwarves = true,
+    halfling = true,
+    halflings = true,
+    troll = true,
+    trolls = true,
+    gnome = true,
+    gnomes = true,
+}
+
+local function sourceIsSentientHumanoid(source)
+    if not source then
+        return false
+    end
+    if source.isPC == true or source.sentientHumanoid == true then
+        return true
+    end
+
+    local function excluded(value)
+        return HUMANOID_REAGENT_EXCLUSIONS[normalizeKey(value)] == true
+    end
+
+    if excluded(source.kin) or excluded(source.kith) or excluded(source.species) or
+       excluded(source.race) or excluded(source.ancestry) then
+        return true
+    end
+
+    local sourceType = normalizeKey(source.type or source.creatureType or source.kind)
+    if sourceType == "humanoid" or sourceType == "person" or sourceType == "adventurer" then
+        return true
+    end
+
+    if type(source.tags) == "table" then
+        for _, tag in ipairs(source.tags) do
+            if tag == "sentient_humanoid" or tag == "humanoid" or excluded(tag) then
+                return true
+            end
+        end
+    end
+
+    return false
 end
 
 local function getHarvestData(source)
@@ -222,6 +406,36 @@ local function sourceTotalHD(source)
     end
     return (tonumber(source.npcMaxHealth or source.health or source.npcHealth) or 0) +
         (tonumber(source.npcMaxDefense or source.defense or source.npcDefense) or 0)
+end
+
+local function markHarvestedSource(source, data, watchNumber)
+    if not source or not data or data.depleted ~= true then
+        return nil
+    end
+
+    local isCorpse = source.type == "corpse" or source.isCorpse == true or source.dead == true or
+        (source.conditions and source.conditions.dead == true)
+    if not isCorpse then
+        return nil
+    end
+
+    source.reagentsHarvested = true
+    source.reagentsDepleted = true
+    source.freshCorpse = false
+    source.harvestedAtWatch = watchNumber
+    if source.state == nil or source.state == "fresh" then
+        source.state = "harvested"
+    end
+    if source.type == "corpse" then
+        source.description = "The harvested remains of " .. (source.name or "a monster") .. " lie here."
+    end
+
+    return {
+        sourceId = source.id,
+        state = source.state,
+        harvestedAtWatch = watchNumber,
+        depleted = true,
+    }
 end
 
 local function findCarriedReagent(actor, request)
@@ -309,6 +523,212 @@ local function spendHarvestWatch(opts)
     return nil
 end
 
+function M.getHarvestReagentOptions(actor, sources, opts)
+    opts = opts or {}
+
+    if sources == nil then
+        sources = opts.sources or opts.corpses or opts.features or opts.roomFeatures or opts.source
+    end
+    if sources ~= nil and (sources.id ~= nil or sources.alchemy ~= nil or sources.alchemyReagent ~= nil or
+       sources.type == "corpse" or sources.isCorpse == true or sources.dead == true) then
+        sources = { sources }
+    end
+    sources = sources or {}
+
+    local unavailableReasons = {}
+    local function addReason(reason)
+        if not reason then
+            return
+        end
+        for _, existing in ipairs(unavailableReasons) do
+            if existing == reason then
+                return
+            end
+        end
+        unavailableReasons[#unavailableReasons + 1] = reason
+    end
+
+    local hasTalent = M.hasAlchemyTalent(actor)
+    local bottle, bottleLocation = M.findEmptyHermeticBottle(actor)
+    local hasBottle = bottle ~= nil
+    local currentWatch = currentWatchNumber(opts)
+
+    if not actor then
+        addReason("no_actor")
+    end
+    if not hasTalent then
+        addReason("Requires Alchemy talent")
+    end
+    if not hasBottle then
+        addReason("Requires empty hermetic bottle")
+    end
+    if #sources == 0 then
+        addReason("Requires fresh monstrous corpse")
+    end
+
+    local function bottlePreview()
+        if not bottle then
+            return nil
+        end
+        return {
+            id = bottle.id,
+            name = bottle.name,
+            templateId = bottle.templateId,
+            location = bottleLocation,
+            size = bottle.size,
+        }
+    end
+
+    local function sourceMatchesSelection(source)
+        local selected = opts.source or opts.selectedSource or opts.corpse
+        local selectedId = opts.sourceId or opts.selectedSourceId or opts.corpseId
+        if type(selected) == "table" then
+            return selected == source or (selected.id ~= nil and selected.id == source.id)
+        end
+        if selectedId ~= nil then
+            return source and source.id == selectedId
+        end
+        if selected ~= nil then
+            return source and source.id == selected
+        end
+        return false
+    end
+
+    local sourceOptions = {}
+    local selectedSource = nil
+    local selectionRequested = opts.sourceId ~= nil or opts.selectedSourceId ~= nil or opts.corpseId ~= nil or
+        opts.selectedSource ~= nil or opts.corpse ~= nil
+    local harvestableCount = 0
+    for _, source in ipairs(sources) do
+        local data = getHarvestData(source)
+        local templateId = data and data.reagentTemplateId
+        local template = templateId and item_templates.getTemplate(templateId)
+        local fresh, freshReason = hasFreshCorpse(source, currentWatch)
+        local harvestedCount = data and data.harvestedCount or 0
+        local yield = data and data.yield or 0
+        local remaining = math.max(0, (yield or 0) - (harvestedCount or 0))
+        local sourceReasons = {}
+        local function addSourceReason(reason)
+            if reason then
+                sourceReasons[#sourceReasons + 1] = reason
+            end
+        end
+
+        if not data or sourceHasNoGuts(source, data) then
+            addSourceReason("No viable alchemical reagents")
+        elseif sourceIsSentientHumanoid(source) then
+            addSourceReason("Sentient humanoids yield no reagents")
+        elseif harvestedCount >= yield then
+            addSourceReason("No viable alchemical reagents remain")
+        elseif not fresh then
+            addSourceReason(freshReason)
+        elseif not item_templates.hasTemplate(templateId) then
+            addSourceReason("Unknown alchemical reagent")
+        end
+
+        if not hasTalent then
+            addSourceReason("Requires Alchemy talent")
+        end
+        if not hasBottle then
+            addSourceReason("Requires empty hermetic bottle")
+        end
+
+        local reagentProps = template and template.properties or {}
+        local previewSourceIsCorpse = source and (source.type == "corpse" or source.isCorpse == true or
+            source.dead == true or (source.conditions and source.conditions.dead == true))
+        local option = {
+            id = source and source.id or nil,
+            name = source and source.name or nil,
+            type = source and source.type or nil,
+            sourceBlueprintId = source and source.blueprintId or nil,
+            defeatedAtWatch = source and (source.defeatedAtWatch or source.killedAtWatch or source.corpseWatch),
+            currentWatch = currentWatch,
+            freshCorpse = fresh,
+            harvestedCount = harvestedCount,
+            yield = yield,
+            remainingYield = remaining,
+            depleted = data and data.depleted == true or remaining <= 0,
+            reagentTemplateId = templateId,
+            reagentName = template and template.name or nil,
+            reagentSource = reagentProps.source,
+            sourceTotalHD = sourceTotalHD(source),
+            disabled = #sourceReasons > 0,
+            unavailableReasons = sourceReasons,
+            selected = sourceMatchesSelection(source),
+            actionDataPreview = {
+                action = "harvest_reagent",
+                sourceId = source and source.id or nil,
+                corpseId = source and source.id or nil,
+            },
+        }
+
+        if template then
+            option.reagentPreview = {
+                templateId = templateId,
+                name = template.name,
+                type = template.type,
+                source = reagentProps.source,
+                hermeticBottle = true,
+                saleValue = option.sourceTotalHD and option.sourceTotalHD * 5 or reagentProps.saleValue,
+            }
+        end
+
+        if not option.disabled then
+            harvestableCount = harvestableCount + 1
+            option.resultPreview = {
+                result = "reagent_harvested",
+                reagentTemplateId = templateId,
+                reagentName = template and template.name or nil,
+                bottleId = bottle and bottle.id or nil,
+                bottleLocation = bottleLocation,
+                watchSpent = true,
+                remainingYieldAfterHarvest = math.max(0, remaining - 1),
+                sourceState = remaining <= 1 and {
+                    sourceId = source and source.id or nil,
+                    state = previewSourceIsCorpse and "harvested" or source and source.state,
+                    depleted = true,
+                    freshCorpse = false,
+                } or nil,
+            }
+        end
+
+        if option.selected then
+            selectedSource = option
+        end
+        sourceOptions[#sourceOptions + 1] = option
+    end
+
+    if selectionRequested and selectedSource == nil then
+        addReason("selected_source_unavailable")
+    elseif selectedSource and selectedSource.disabled then
+        addReason(selectedSource.unavailableReasons[1] or "selected_source_unavailable")
+    end
+
+    return {
+        result = "harvest_reagent_options_ready",
+        actorId = actor and actor.id or nil,
+        actorName = actor and actor.name or nil,
+        disabled = #unavailableReasons > 0 or harvestableCount == 0 or
+            (selectedSource ~= nil and selectedSource.disabled == true),
+        unavailableReasons = unavailableReasons,
+        hasAlchemyTalent = hasTalent,
+        hasEmptyHermeticBottle = hasBottle,
+        bottle = bottlePreview(),
+        currentWatch = currentWatch,
+        sourceOptions = sourceOptions,
+        selectedSource = selectedSource,
+        harvestableCount = harvestableCount,
+        rules = {
+            requiresAlchemyTalent = true,
+            requiresEmptyHermeticBottle = true,
+            requiresFreshMonstrousCorpse = true,
+            spendsWatch = true,
+            spoilsAfterOneWatch = true,
+            excludesUndeadConstructsAndSentientHumanoids = true,
+        },
+    }
+end
+
 function M.canHarvestReagent(actor, source, opts)
     opts = opts or {}
 
@@ -323,6 +743,10 @@ function M.canHarvestReagent(actor, source, opts)
     local data = getHarvestData(source)
     if not data or sourceHasNoGuts(source, data) then
         return false, "No viable alchemical reagents"
+    end
+
+    if sourceIsSentientHumanoid(source) then
+        return false, "Sentient humanoids yield no reagents"
     end
 
     if data.harvestedCount >= data.yield then
@@ -380,6 +804,7 @@ function M.resolveHarvestReagent(actor, source, opts)
     if source.alchemy.harvestedCount >= (source.alchemy.yield or data.yield or 1) then
         source.alchemy.depleted = true
     end
+    local sourceState = markHarvestedSource(source, source.alchemy, watchResult.watchNumber or opts.currentWatch)
 
     local result = {
         actor = actor,
@@ -387,6 +812,7 @@ function M.resolveHarvestReagent(actor, source, opts)
         reagent = reagent,
         bottle = bottle,
         watchResult = watchResult,
+        sourceState = sourceState,
         result = "reagent_harvested",
     }
 
@@ -400,17 +826,29 @@ function M.resolveMenagerieReagentPurchase(buyer, request, opts)
     opts = opts or {}
     local eventBus = opts.eventBus or events.globalBus
     local quantity = math.max(1, tonumber(request.quantity or request.count) or 1)
-    local templateId = resolveReagentTemplateId(request)
+    local stockRecord, stockState, stockKey = findMenagerieStockEntry(
+        request.stock or request.catalog or opts.stock or opts.menagerieStock or opts.catalog,
+        request
+    )
+    local templateId = stockRecord and resolveReagentTemplateId(stockRecord) or resolveReagentTemplateId(request)
 
     if not templateId or not isReagentTemplate(templateId) then
         return false, "Unknown alchemical reagent"
+    end
+
+    local available = stockQuantityAvailable(stockRecord)
+    if available ~= nil and quantity > available then
+        return false, "Reagent stock unavailable"
     end
 
     if not buyer or not buyer.inventory or not buyer.inventory.addItem then
         return false, "No inventory for reagent"
     end
 
-    local cost = quantity * (tonumber(opts.costPerReagent or request.costPerReagent) or M.MENAGERIE_REAGENT_COST)
+    local costPerReagent = tonumber(opts.costPerReagent or request.costPerReagent or request.pricePerReagent or
+        (stockRecord and (stockRecord.costPerReagent or stockRecord.pricePerReagent or stockRecord.price or
+            stockRecord.cost))) or M.MENAGERIE_REAGENT_COST
+    local cost = quantity * costPerReagent
     if currency.getGold(buyer) < cost then
         return false, "Not enough gold"
     end
@@ -433,21 +871,39 @@ function M.resolveMenagerieReagentPurchase(buyer, request, opts)
         return false, "Not enough gold"
     end
 
+    local stockId = stockRecord and (stockRecord.id or stockRecord.stockId or stockKey) or nil
+    local stockName = stockRecord and (stockRecord.name or stockRecord.title) or nil
+    local stockProperties = stockRecord and stockRecord.properties or nil
+    local purchasedAt = opts.locationName or request.locationName or
+        (stockRecord and (stockRecord.locationName or stockRecord.location)) or "Master Underhill's Menagerie"
     for _, reagent in ipairs(reagents) do
         reagent.properties = reagent.properties or {}
+        if type(stockProperties) == "table" then
+            for key, value in pairs(stockProperties) do
+                reagent.properties[key] = cloneValue(value)
+            end
+        end
         reagent.properties.hermeticBottle = true
         reagent.properties.cityPurchased = true
-        reagent.properties.purchasedAt = opts.locationName or request.locationName or "Master Underhill's Menagerie"
-        reagent.properties.purchaseCost = tonumber(opts.costPerReagent or request.costPerReagent) or M.MENAGERIE_REAGENT_COST
+        reagent.properties.purchasedAt = purchasedAt
+        reagent.properties.purchaseCost = costPerReagent
+        reagent.properties.menagerieStockId = stockId
+        reagent.properties.menagerieStockName = stockName
         buyer.inventory:addItem(reagent, location)
     end
+    local stockRemaining = decrementStockQuantity(stockState, quantity)
 
     local result = {
         buyer = buyer,
         reagents = reagents,
         templateId = templateId,
         quantity = quantity,
+        costPerReagent = costPerReagent,
         cost = cost,
+        stock = stockRecord,
+        stockId = stockId,
+        stockName = stockName,
+        stockRemaining = stockRemaining,
         result = "reagent_purchased",
     }
 

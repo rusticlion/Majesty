@@ -23,6 +23,11 @@ local M = {}
 M.FULL_HAND_SIZE = 4      -- Cards drawn at start of round
 M.COMBAT_HAND_SIZE = 3    -- Cards remaining after initiative
 
+M.DRAW_SOURCES = {
+    DECK = "minor_deck_top",
+    DISCARD = "minor_discard_top",
+}
+
 --------------------------------------------------------------------------------
 -- ACTION MAPPING BY SUIT
 --------------------------------------------------------------------------------
@@ -105,6 +110,124 @@ function M.createPlayerHand(config)
     -- HAND MANAGEMENT
     ----------------------------------------------------------------------------
 
+    local function normalizeDrawSources(value)
+        local sources = {}
+        if type(value) == "string" then
+            sources[#sources + 1] = value
+        elseif type(value) == "table" then
+            for _, source in ipairs(value) do
+                if source then
+                    sources[#sources + 1] = tostring(source)
+                end
+            end
+        end
+        return sources
+    end
+
+    local function drawFromDiscardPile(deck)
+        if not deck then
+            return nil
+        end
+        if deck.drawDiscard then
+            return deck:drawDiscard()
+        end
+        if type(deck.discard_pile) == "table" then
+            return table.remove(deck.discard_pile)
+        end
+        return nil
+    end
+
+    local function drawBySource(deck, source)
+        if source == M.DRAW_SOURCES.DISCARD or source == "discard" or source == "discard_top" then
+            return drawFromDiscardPile(deck), M.DRAW_SOURCES.DISCARD
+        end
+        if deck and deck.draw then
+            return deck:draw(), M.DRAW_SOURCES.DECK
+        end
+        return nil, M.DRAW_SOURCES.DECK
+    end
+
+    local function selectedCommunionSources(pc, opts)
+        opts = opts or {}
+        local communion = pc and pc.nextExpeditionChallengeDrawChoice
+        local sources = opts.drawSources or opts.selectedSources or
+            (communion and (communion.drawSources or communion.selectedSources))
+        return normalizeDrawSources(sources), communion
+    end
+
+    local function hasBlackHoneyDrawOption(pc)
+        if not pc then
+            return false
+        end
+        if pc.blackHoneyDrawFiveCards == true or pc.useBlackHoneyDrawFiveCards == true then
+            return true
+        end
+        local recent = pc.recentDrugEffects
+        if type(recent) == "table" and
+           (recent.black_honey == "draw_five_challenge_cards" or
+            recent.blackHoney == "draw_five_challenge_cards") then
+            return true
+        end
+        local afflictions = pc.afflictions
+        local honey = type(afflictions) == "table" and (afflictions.black_honey or afflictions.blackHoney)
+        return type(honey) == "table" and (honey.recentlyTakenEffect == "draw_five_challenge_cards" or
+            honey.recentlyTaken == true)
+    end
+
+    local function shouldUseBlackHoneyDraw(pc, opts)
+        opts = opts or {}
+        if opts.useBlackHoneyDrawFiveCards ~= nil then
+            return opts.useBlackHoneyDrawFiveCards == true
+        end
+        if opts.blackHoneyDrawFiveCards ~= nil then
+            return opts.blackHoneyDrawFiveCards == true
+        end
+        return pc and (pc.useBlackHoneyDrawFiveCards == true or pc.blackHoneyDrawFiveCards == true)
+    end
+
+    local function clampBlackHoneyTeethLost(value)
+        value = math.floor(tonumber(value) or 0)
+        if value < 1 then
+            return 1
+        end
+        if value > 4 then
+            return 4
+        end
+        return value
+    end
+
+    local function determineBlackHoneyTeethLost(pc, opts)
+        opts = opts or {}
+        local explicit = opts.blackHoneyTeethLost or opts.teethLost or
+            opts.blackHoneyTeethSpatOut or pc.blackHoneyTeethLostRoll or
+            pc.blackHoneyTeethSpatOut
+        if explicit ~= nil then
+            return clampBlackHoneyTeethLost(explicit)
+        end
+        local random = opts.random or opts.rng or math.random
+        return clampBlackHoneyTeethLost(random(1, 4))
+    end
+
+    local function recordBlackHoneyTeethLoss(pc, teethLost)
+        pc.blackHoneyLostTeeth = (tonumber(pc.blackHoneyLostTeeth) or 0) + teethLost
+        pc.missingTeeth = (tonumber(pc.missingTeeth) or 0) + teethLost
+        pc.conditions = pc.conditions or {}
+        pc.conditions.missing_teeth = true
+        pc.conditions.black_honey_missing_teeth = true
+
+        local change = {
+            id = "black_honey_missing_teeth",
+            name = "Black Honey Missing Teeth",
+            source = "black_honey",
+            permanent = true,
+            teethLost = teethLost,
+            totalTeethLost = pc.blackHoneyLostTeeth,
+        }
+        pc.bodyChanges = pc.bodyChanges or {}
+        pc.bodyChanges[#pc.bodyChanges + 1] = change
+        return change
+    end
+
     --- Draw full hands for all PCs at start of round
     function hand:drawAllHands()
         for _, pc in ipairs(self.guild) do
@@ -114,9 +237,10 @@ function M.createPlayerHand(config)
     end
 
     --- Draw a full hand for a specific PC
-    function hand:drawHand(pc)
+    function hand:drawHand(pc, opts)
         if not pc or not pc.id then return end
         if not self.playerDeck then return end
+        opts = opts or {}
 
         self.hands[pc.id] = {
             cards = {},
@@ -124,14 +248,54 @@ function M.createPlayerHand(config)
         }
 
         local drawPenalty = math.max(0, pc.stinkingCloudDrawPenalty or pc.challengeDrawPenalty or 0)
-        local drawCount = math.max(0, M.FULL_HAND_SIZE - drawPenalty)
+        local useBlackHoneyDraw = hasBlackHoneyDrawOption(pc) and shouldUseBlackHoneyDraw(pc, opts)
+        local baseDrawCount = useBlackHoneyDraw and 5 or M.FULL_HAND_SIZE
+        local drawCount = math.max(0, baseDrawCount - drawPenalty)
+        local drawSources, communion = selectedCommunionSources(pc, opts)
+        local useCommunion = communion ~= nil and #drawSources > 0
+        local actualSources = {}
 
-        -- Draw FULL_HAND_SIZE cards, reduced by active start-of-round effects.
-        for _ = 1, drawCount do
-            local card = self.playerDeck:draw()
+        -- Draw the round hand, adjusted by active start-of-round effects.
+        for index = 1, drawCount do
+            local source = drawSources[index] or M.DRAW_SOURCES.DECK
+            local card, actualSource = drawBySource(self.playerDeck, source)
             if card then
                 self.hands[pc.id].cards[#self.hands[pc.id].cards + 1] = card
+                actualSources[#actualSources + 1] = actualSource
+            elseif source ~= M.DRAW_SOURCES.DECK then
+                card, actualSource = drawBySource(self.playerDeck, M.DRAW_SOURCES.DECK)
+                if card then
+                    self.hands[pc.id].cards[#self.hands[pc.id].cards + 1] = card
+                    actualSources[#actualSources + 1] = actualSource
+                end
             end
+        end
+
+        if useCommunion then
+            local uses = math.max(0, tonumber(communion.uses) or 1)
+            communion.uses = math.max(0, uses - 1)
+            self.hands[pc.id].strangeCommunionDraw = {
+                communion = communion,
+                requestedSources = drawSources,
+                actualSources = actualSources,
+            }
+            if communion.uses <= 0 then
+                pc.nextExpeditionChallengeDrawChoice = nil
+            end
+        end
+
+        if useBlackHoneyDraw then
+            local teethLost = determineBlackHoneyTeethLost(pc, opts)
+            local teethChange = recordBlackHoneyTeethLoss(pc, teethLost)
+            pc.blackHoneyDrawsUsed = (pc.blackHoneyDrawsUsed or 0) + 1
+            pc.blackHoneyLastDrawRound = opts.round
+            self.hands[pc.id].blackHoneyDraw = {
+                baseDrawCount = baseDrawCount,
+                drawPenalty = drawPenalty,
+                drawCount = drawCount,
+                teethLost = teethLost,
+                teethChange = teethChange,
+            }
         end
 
         print("[PlayerHand] " .. pc.name .. " drew " .. #self.hands[pc.id].cards .. " cards")
@@ -170,11 +334,13 @@ function M.createPlayerHand(config)
         return #self:getHand(pc)
     end
 
-    --- Discard one Challenge card from a PC's current hand.
+    --- Remove one Challenge card from a PC's current hand without discarding it.
+    -- Use this when a played card stays in front of the player as pending
+    -- facedown state, such as Aid, Aim, Dodge, Riposte, or Vigilance.
     -- @param pc table: The PC whose hand is affected
     -- @param opts table|nil: { card = cardRef, index = number }
-    -- @return table|nil, number|nil, string|nil: discarded card, index, error
-    function hand:discardCard(pc, opts)
+    -- @return table|nil, number|nil, string|nil: removed card, index, error
+    function hand:takeCard(pc, opts)
         if not pc or not pc.id then
             return nil, nil, "invalid_pc"
         end
@@ -209,16 +375,29 @@ function M.createPlayerHand(config)
         end
 
         local card = table.remove(cards, index)
-        if self.playerDeck and self.playerDeck.discard then
-            self.playerDeck:discard(card)
-        end
-
         if self.selectedPC and self.selectedPC.id == pc.id then
             if self.selectedCard == card or self.selectedCardIndex == index then
                 self:clearSelection()
             elseif self.selectedCardIndex and self.selectedCardIndex > index then
                 self.selectedCardIndex = self.selectedCardIndex - 1
             end
+        end
+
+        return card, index, nil
+    end
+
+    --- Discard one Challenge card from a PC's current hand.
+    -- @param pc table: The PC whose hand is affected
+    -- @param opts table|nil: { card = cardRef, index = number }
+    -- @return table|nil, number|nil, string|nil: discarded card, index, error
+    function hand:discardCard(pc, opts)
+        opts = opts or {}
+        local card, index, err = self:takeCard(pc, opts)
+        if not card then
+            return nil, nil, err
+        end
+        if self.playerDeck and self.playerDeck.discard then
+            self.playerDeck:discard(card)
         end
 
         self.eventBus:emit(events.EVENTS.CHALLENGE_CARD_DISCARDED, {
@@ -305,21 +484,15 @@ function M.createPlayerHand(config)
             return nil
         end
 
-        local handData = self.hands[self.selectedPC.id]
-        if not handData then return nil end
+        local card = self:discardCard(self.selectedPC, {
+            index = self.selectedCardIndex,
+            card = self.selectedCard,
+            reason = "action",
+        })
+        if not card then return nil end
 
-        local card = table.remove(handData.cards, self.selectedCardIndex)
-
-        -- Discard the used card
-        if self.playerDeck then
-            self.playerDeck:discard(card)
-        end
-
-        local usedCard = self.selectedCard
-        self:clearSelection()
-
-        print("[PlayerHand] Used card: " .. usedCard.name)
-        return usedCard
+        print("[PlayerHand] Used card: " .. card.name)
+        return card
     end
 
     --- Get the currently selected card

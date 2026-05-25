@@ -966,7 +966,10 @@ function M.createCrawlScreen(config)
                 nil,
                 resolver,
                 pending.item,
-                { testResult = data and data.result or nil }
+                {
+                    testResult = data and data.result or nil,
+                    dungeon = self.watchManager and self.watchManager.dungeon or nil,
+                }
             )
 
             self:applyInvestigationOutcome(pending.feature, result)
@@ -985,15 +988,45 @@ function M.createCrawlScreen(config)
             local interactionType = pending.interactionType
             local roomId = pending.roomId or self.currentRoomId
 
-            if testResult.success then
-                if interactionType == item_interaction.INTERACTION_TYPES.UNLOCK then
-                    self.roomManager:setFeatureState(roomId, pending.feature.id, "unlocked")
-                    result.description = "You pick the lock successfully."
-                else
-                    result.description = (pending.testConfig and pending.testConfig.success_desc) or "Your efforts succeed."
-                end
+            local resolved = nil
+            if self.itemInteractionSystem then
+                resolved = self.itemInteractionSystem:useItemOnPOI(pending.item, pending.feature, interactionType, {
+                    roomId = roomId,
+                    adventurer = pending.actor,
+                    testResult = testResult,
+                })
+            end
+
+            if resolved and not resolved.requiresTest then
+                result = resolved
             else
-                result.description = (pending.testConfig and pending.testConfig.failure_desc) or "Your attempt fails."
+                if testResult.success then
+                    if interactionType == item_interaction.INTERACTION_TYPES.UNLOCK then
+                        self.roomManager:setFeatureState(roomId, pending.feature.id, "unlocked")
+                        pending.feature.locked = false
+                        if pending.feature.lock then
+                            pending.feature.lock.locked = false
+                            pending.feature.lock.picked = true
+                        end
+                        result.description = "You pick the lock successfully."
+                    elseif interactionType == item_interaction.INTERACTION_TYPES.BREAK then
+                        local newState = (pending.testConfig and pending.testConfig.poiStateChange) or "destroyed"
+                        self.roomManager:setFeatureState(roomId, pending.feature.id, newState)
+                        pending.feature.broken = true
+                        pending.feature.forcedOpen = true
+                        pending.feature.priedOpen = pending.testConfig and pending.testConfig.breaksTarget == true
+                        pending.feature.locked = false
+                        if pending.feature.lock then
+                            pending.feature.lock.broken = true
+                            pending.feature.lock.disabled = true
+                        end
+                        result.description = (pending.testConfig and pending.testConfig.success_desc) or "Your efforts succeed."
+                    else
+                        result.description = (pending.testConfig and pending.testConfig.success_desc) or "Your efforts succeed."
+                    end
+                else
+                    result.description = (pending.testConfig and pending.testConfig.failure_desc) or "Your attempt fails."
+                end
             end
 
             -- Record Bound by Fate (result stands unless circumstances change)
@@ -1038,7 +1071,9 @@ function M.createCrawlScreen(config)
             end
 
             -- Reveal any secret connections linked to this POI
-            if feature.reveal_connection or feature.reveal_connections then
+            if result and result.revealedConnections then
+                self:refreshRoomDescription()
+            elseif feature.reveal_connection or feature.reveal_connections then
                 self:revealFeatureConnections(feature)
             end
         end
@@ -1113,7 +1148,8 @@ function M.createCrawlScreen(config)
                     feature.id,
                     nil,
                     resolver,
-                    item
+                    item,
+                    { dungeon = self.watchManager and self.watchManager.dungeon or nil }
                 )
                 self:applyInvestigationOutcome(feature, result)
                 return result
@@ -1218,6 +1254,29 @@ function M.createCrawlScreen(config)
             return item_interaction.INTERACTION_TYPES.LIGHT
         end
 
+        local featureProps = feature.properties or {}
+        local featureName = string.lower(tostring(feature.name or feature.id or ""))
+        if (feature.type == "fire" or feature.type == "campfire" or feature.type == "brazier" or
+            featureProps.firewood or featureProps.fire or featureProps.campfire or featureProps.flammable or
+            featureName:find("fire", 1, true) or featureName:find("brazier", 1, true)) and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.LIGHT) then
+            return item_interaction.INTERACTION_TYPES.LIGHT
+        end
+
+        if (feature.type == "door" or feature.type == "gate" or featureProps.door or featureProps.gate or
+            featureName:find("door", 1, true) or featureName:find("gate", 1, true)) and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.WEDGE) then
+            return item_interaction.INTERACTION_TYPES.WEDGE
+        end
+
+        if (feature.climbable or feature.requiresClimb or feature.sheer or feature.vertical or
+            featureProps.climbable or featureProps.requiresClimb or featureProps.sheer or featureProps.vertical or
+            feature.type == "climb" or feature.type == "wall" or featureName:find("cliff", 1, true) or
+            featureName:find("wall", 1, true) or featureName:find("shaft", 1, true)) and
+           self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.PITON) then
+            return item_interaction.INTERACTION_TYPES.PITON
+        end
+
         if (feature.fragile or feature.breakable) and
            self.itemInteractionSystem:canPerform(item, item_interaction.INTERACTION_TYPES.BREAK) then
             return item_interaction.INTERACTION_TYPES.BREAK
@@ -1240,11 +1299,22 @@ function M.createCrawlScreen(config)
             return
         end
 
-        if data.action == "make_offering" or data.action == "study_lore" then
+        if data.action == "make_offering" or data.action == "study_lore" or data.action == "give_gift" or
+           data.action == "return_death_masks" or data.action == "clear_webbing" or
+           data.action == "solve_puzzle" or data.action == "take_crown" or
+           data.action == "preserve_fragile_scrolls" or data.action == "open_chronicle_scroll" or
+           data.action == "claim_loot" then
             local result = self.roomManager and
-                self.roomManager:resolveSocialFeatureProcedure(self.currentRoomId, feature.id, data.action, actor)
+                self.roomManager:resolveSocialFeatureProcedure(self.currentRoomId, feature.id, data.action, actor, {
+                    item = data.item or data.sourceItem or data.source,
+                    itemId = data.itemId,
+                    solution = data.solution or data.symbols or data.alignments,
+                    careful = data.action == "preserve_fragile_scrolls" or data.careful,
+                    rightEnvironment = data.action == "preserve_fragile_scrolls" or data.rightEnvironment,
+                })
             if result and result.description then
-                self:appendNarrativeBlock("SOCIAL", result.description)
+                local label = data.action == "claim_loot" and "LOOT" or "SOCIAL"
+                self:appendNarrativeBlock(label, result.description)
             end
             return
         end
@@ -1350,7 +1420,20 @@ function M.createCrawlScreen(config)
             print("[handleExitClick] Move failed: " .. (result.error or "unknown"))
 
             -- Handle locked door - require dragging a key to unlock
-            if result.error == "connection_locked" then
+            if result.error == "connection_blocked" then
+                local connection = self.watchManager.dungeon:getConnection(self.currentRoomId, targetRoomId)
+                local msg = (connection and connection.description) or
+                    (result.description or "The way is blocked.")
+                if result.alternateRoute then
+                    msg = msg .. "\n\nAnother route may bypass it."
+                end
+
+                if self.narrativeView then
+                    local currentText = self.narrativeView.rawText or ""
+                    local newText = currentText .. "\n\n--- BLOCKED ---\n" .. msg
+                    self.narrativeView:setText(newText, true)
+                end
+            elseif result.error == "connection_locked" then
                 local connection = self.watchManager.dungeon:getConnection(self.currentRoomId, targetRoomId)
 
                 local msg = "The passage is locked."
@@ -1642,6 +1725,21 @@ function M.createCrawlScreen(config)
         elseif data.action == "use_item" and data.target then
             -- Dragged item onto POI
             print("Using item on " .. (data.target.id or "unknown"))
+
+            local actor = self:getActivePC()
+            if (data.target.giftRumor or data.target.bookGiftRumor) and self.roomManager and self.currentRoomId then
+                local result = self.roomManager:resolveSocialFeatureProcedure(
+                    self.currentRoomId,
+                    data.target.id,
+                    "give_gift",
+                    actor,
+                    { item = data.source }
+                )
+                if result and result.description then
+                    self:appendNarrativeBlock("SOCIAL", result.description)
+                end
+                return
+            end
 
             -- S11.3: Check if using a key on a locked exit
             local targetId = data.target.id

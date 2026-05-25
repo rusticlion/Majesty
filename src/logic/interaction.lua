@@ -46,6 +46,14 @@ M.ACTIONS = {
     HARVEST_REAGENT = "harvest_reagent", -- Alchemy: spend a watch on fresh monster remains
     MAKE_OFFERING = "make_offering",
     STUDY_LORE = "study_lore",
+    GIVE_GIFT = "give_gift",
+    RETURN_DEATH_MASKS = "return_death_masks",
+    CLEAR_WEBBING = "clear_webbing",
+    SOLVE_PUZZLE = "solve_puzzle",
+    TAKE_CROWN = "take_crown",
+    PRESERVE_FRAGILE_SCROLLS = "preserve_fragile_scrolls",
+    OPEN_CHRONICLE_SCROLL = "open_chronicle_scroll",
+    CLAIM_LOOT = "claim_loot",
 }
 
 --------------------------------------------------------------------------------
@@ -278,6 +286,178 @@ defaultHandlers[M.ACTIONS.UNLOCK] = function(target, level, context)
     return createResult(result)
 end
 
+--- Default GIVE_GIFT handler delegates to authored room social procedures when
+-- the caller provides room context.
+defaultHandlers[M.ACTIONS.GIVE_GIFT] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id and context.actor then
+        return context.roomManager:resolveSocialFeatureProcedure(
+            context.roomId,
+            target.id,
+            M.ACTIONS.GIVE_GIFT,
+            context.actor,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.GIVE_GIFT,
+        target = target,
+        description = "Choose what to give.",
+    })
+end
+
+--- Default RETURN_DEATH_MASKS handler delegates to authored haunting procedures.
+defaultHandlers[M.ACTIONS.RETURN_DEATH_MASKS] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id and context.actor then
+        return context.roomManager:resolveSocialFeatureProcedure(
+            context.roomId,
+            target.id,
+            M.ACTIONS.RETURN_DEATH_MASKS,
+            context.actor,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.RETURN_DEATH_MASKS,
+        target = target,
+        description = "The demanded relics must be carried here.",
+    })
+end
+
+--- Default CLEAR_WEBBING handler delegates to authored room feature procedures.
+defaultHandlers[M.ACTIONS.CLEAR_WEBBING] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id then
+        return context.roomManager:resolveBrainSpiderWebDestruction(
+            context.roomId,
+            target.id,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.CLEAR_WEBBING,
+        target = target,
+        description = "There is no webbing to clear here.",
+    })
+end
+
+--- Default SOLVE_PUZZLE handler delegates to authored room puzzle procedures.
+defaultHandlers[M.ACTIONS.SOLVE_PUZZLE] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id then
+        return context.roomManager:resolveTripartitePedestalPuzzle(
+            context.roomId,
+            target.id,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.SOLVE_PUZZLE,
+        target = target,
+        description = "This puzzle needs a specific solution.",
+    })
+end
+
+--- Default TAKE_CROWN handler delegates to authored room treasure procedures.
+defaultHandlers[M.ACTIONS.TAKE_CROWN] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id then
+        return context.roomManager:resolveTripartiteCrownRemoval(
+            context.roomId,
+            target.id,
+            context.actor,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.TAKE_CROWN,
+        target = target,
+        description = "There is no crown to take here.",
+    })
+end
+
+--- Default PRESERVE_FRAGILE_SCROLLS handler delegates to authored room procedures.
+defaultHandlers[M.ACTIONS.PRESERVE_FRAGILE_SCROLLS] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id then
+        context.careful = true
+        context.rightEnvironment = true
+        return context.roomManager:resolveFragileScrollHandling(
+            context.roomId,
+            target.id,
+            context.actor,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.PRESERVE_FRAGILE_SCROLLS,
+        target = target,
+        description = "These scrolls need careful handling.",
+    })
+end
+
+--- Default OPEN_CHRONICLE_SCROLL handler delegates to authored room procedures.
+defaultHandlers[M.ACTIONS.OPEN_CHRONICLE_SCROLL] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id then
+        return context.roomManager:resolveSealedChronicleOpening(
+            context.roomId,
+            target.id,
+            context.actor,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.OPEN_CHRONICLE_SCROLL,
+        target = target,
+        description = "There is no sealed chronicle to open here.",
+    })
+end
+
+--- Default CLAIM_LOOT handler delegates to authored room feature loot procedures.
+defaultHandlers[M.ACTIONS.CLAIM_LOOT] = function(target, level, context)
+    context = context or {}
+    if context.roomManager and context.roomId and target and target.id and context.actor then
+        return context.roomManager:resolveSocialFeatureProcedure(
+            context.roomId,
+            target.id,
+            M.ACTIONS.CLAIM_LOOT,
+            context.actor,
+            context
+        )
+    end
+
+    return createResult({
+        success = false,
+        level = level,
+        action = M.ACTIONS.CLAIM_LOOT,
+        target = target,
+        description = "There is nothing to claim here.",
+    })
+end
+
 --------------------------------------------------------------------------------
 -- INTERACTION SYSTEM FACTORY
 --------------------------------------------------------------------------------
@@ -370,6 +550,63 @@ function M.createInteractionSystem(config)
                 }
             end
 
+            if target.giftRumor or target.bookGiftRumor then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.GIVE_GIFT,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.haunting and target.haunting.demands then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.RETURN_DEATH_MASKS,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.brainSpiderWebs and target.brainSpiderWebs.destroyFreesGhosts then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.CLEAR_WEBBING,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.puzzle then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.SOLVE_PUZZLE,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.crown and target.crown.loot then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.TAKE_CROWN,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.fragileScrolls then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.PRESERVE_FRAGILE_SCROLLS,
+                    level_required = M.LEVELS.SCRUTINIZE,
+                }
+            end
+
+            if target.chronicle then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.OPEN_CHRONICLE_SCROLL,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
+            if target.loot and not target.fragileScrolls and not target.chronicle and
+               target.locked ~= true and target.lock == nil and target.state ~= "locked" then
+                actions[#actions + 1] = {
+                    action = M.ACTIONS.CLAIM_LOOT,
+                    level_required = M.LEVELS.GLANCE,
+                }
+            end
+
             if target.trap then
                 actions[#actions + 1] = { action = M.ACTIONS.TRAP_CHECK, level_required = M.LEVELS.INVESTIGATE }
             end
@@ -421,6 +658,14 @@ function M.createInteractionSystem(config)
             [M.ACTIONS.HARVEST_REAGENT] = "Harvest alchemical reagent",
             [M.ACTIONS.MAKE_OFFERING] = "Make an offering",
             [M.ACTIONS.STUDY_LORE] = "Study lore",
+            [M.ACTIONS.GIVE_GIFT] = "Give a gift",
+            [M.ACTIONS.RETURN_DEATH_MASKS] = "Return death masks",
+            [M.ACTIONS.CLEAR_WEBBING] = "Clear webbing",
+            [M.ACTIONS.SOLVE_PUZZLE] = "Solve puzzle",
+            [M.ACTIONS.TAKE_CROWN] = "Take crown",
+            [M.ACTIONS.PRESERVE_FRAGILE_SCROLLS] = "Preserve scrolls",
+            [M.ACTIONS.OPEN_CHRONICLE_SCROLL] = "Open chronicle",
+            [M.ACTIONS.CLAIM_LOOT] = "Claim loot",
         }
         return descriptions[action] or action
     end

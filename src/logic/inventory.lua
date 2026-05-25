@@ -78,6 +78,7 @@ function M.createItem(config)
         isWeapon   = config.isWeapon or config.weaponType ~= nil,
         isRanged   = config.isRanged or config.weaponType == "bow" or config.weaponType == "crossbow",
         uses_ammo  = config.uses_ammo or config.weaponType == "bow" or config.weaponType == "crossbow",
+        ammoType   = config.ammoType,
         isLoaded   = config.isLoaded,
 
         -- Armor flag (worn armor uses belt slots)
@@ -198,12 +199,23 @@ end
 function M.createInventory(config)
     config = config or {}
 
+    local function slotLimit(primaryKey, fallbackKey, defaultValue)
+        local value = config[primaryKey]
+        if value == nil and fallbackKey then
+            value = config[fallbackKey]
+        end
+        if value == nil then
+            return defaultValue
+        end
+        return math.max(0, tonumber(value) or defaultValue)
+    end
+
     local inventory = {
         -- Slot limits (can be customized for special cases)
         limits = {
-            hands = M.SLOTS.HANDS,
-            belt  = config.beltSlots or M.SLOTS.BELT,
-            pack  = config.packSlots or M.SLOTS.PACK,
+            hands = slotLimit("handsSlots", "handSlots", M.SLOTS.HANDS),
+            belt  = slotLimit("beltSlots", nil, M.SLOTS.BELT),
+            pack  = slotLimit("packSlots", nil, M.SLOTS.PACK),
         },
 
         -- Item storage by location

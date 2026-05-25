@@ -16,6 +16,7 @@ local constants = require('constants')
 local fate_resolver = require('logic.resolver')
 local action_registry = require('data.action_registry')
 local inventory = require('logic.inventory')
+local game_clock = require('logic.game_clock')
 
 local M = {}
 
@@ -25,6 +26,7 @@ local M = {}
 M.STATES = {
     IDLE            = "idle",             -- No challenge active
     STARTING        = "starting",         -- Challenge is initializing
+    AMBUSH_RESISTANCE = "ambush_resistance", -- Waiting for Ambusher hue-and-cry election
     PRE_ROUND       = "pre_round",        -- Initiative submission phase (S4.6)
     COUNT_UP        = "count_up",         -- Counting 1-14 for turn order (S4.7)
     AWAITING_ACTION = "awaiting_action",  -- Waiting for active entity to act
@@ -49,6 +51,186 @@ M.OUTCOMES = {
 -- CONSTANTS
 --------------------------------------------------------------------------------
 local MAX_TURNS = 14
+
+M.PROCEDURE_STEPS = {
+    {
+        index = 0,
+        key = "set_scene",
+        label = "Set the scene",
+        summary = "Frame the Challenge before the round loop begins.",
+        timing = "challenge_start",
+        responsibilities = {
+            "Describe the zones the encounter occupies.",
+            "Name the combatants and place them in zones.",
+            "Clarify whether either side is surprised or has an ambush advantage.",
+            "Announce scenery, position, traps, hazards, or scene special rules before cards are played.",
+        },
+        runtimeHooks = {
+            "startChallenge",
+            "resolveSurpriseActions",
+            "prepareSceneSpecialRules",
+        },
+        presentationKeys = {
+            "zones",
+            "combatants",
+            "position",
+            "surprise",
+            "sceneSpecialRules",
+            "sceneHazards",
+        },
+    },
+    {
+        index = 1,
+        key = "draw_challenge_cards",
+        label = "Draw Challenge cards",
+        summary = "Each round begins with fresh player Challenge cards and a GM major-arcana hand.",
+        timing = "round_start",
+        playerCards = {
+            deck = "minor_arcana",
+            count = 4,
+            facedownCardsDoNotReduceDraw = true,
+            foolStaysInHand = true,
+        },
+        gmCards = {
+            deck = "major_arcana",
+            drawCountSource = "npc_ai.calculateRoundDrawCount",
+            basedOn = {
+                "enemy type",
+                "enemy number",
+                "enemy size",
+                "elite or lord rank",
+                "active round penalties",
+            },
+        },
+        cardsAreSpentOn = {
+            "initiative",
+            "turn actions",
+            "minor actions",
+        },
+    },
+    {
+        index = 2,
+        key = "play_initiative",
+        label = "Play Initiative",
+        summary = "Every significant combatant or enemy group commits a facedown Initiative card.",
+        timing = "pre_round",
+        initiative = {
+            facedown = true,
+            lowerValuesActSooner = true,
+            lowerValuesAreEasierToHit = true,
+            revealWhenTargeted = true,
+            shieldWinsTies = true,
+            resolveCannotModifyInitiative = true,
+            sameTypeEnemiesShareCard = true,
+            significantEnemiesMayUseIndividualCards = true,
+        },
+        runtimeHooks = {
+            "submitInitiative",
+            "triggerNPCInitiative",
+            "revealInitiative",
+        },
+    },
+    {
+        index = 3,
+        key = "take_turns",
+        label = "Take turns",
+        summary = "Count from Ace through King and resolve each active combatant's turn at their Initiative.",
+        timing = "count_up",
+        countRange = {
+            min = 1,
+            max = MAX_TURNS,
+            lowLabel = "Ace",
+            highLabel = "King",
+        },
+        turnRules = {
+            oneCardPerInitiativeTurn = true,
+            oneTurnPerRoundUnlessFool = true,
+            interruptActionsDoNotSpendTurn = true,
+            skippedTurnsDoNotOpenMinorWindow = true,
+            noCardsSkipsTurn = true,
+            freeActionsNeedNoCard = {
+                "talk in character",
+                "move around within a zone unless restrained",
+            },
+        },
+        runtimeHooks = {
+            "beginCountUp",
+            "advanceCount",
+            "startEntityTurn",
+            "submitAction",
+            "skipTurn",
+        },
+    },
+    {
+        index = 4,
+        key = "minor_actions",
+        label = "Minor actions",
+        summary = "After a resolved turn, eligible combatants can declare suited minor actions.",
+        timing = "after_turn_action",
+        minorRules = {
+            playerCardMustMatchSuit = true,
+            gmMajorArcanaIgnoreSuit = true,
+            greaterDoomsCannotTakeOrdinarySuitedActions = true,
+            miscellaneousActionsCannotBeMinor = true,
+            actingCombatantCannotMinorAfterTheirTurn = true,
+            onlyOneDeclarationPerWindow = true,
+            valueUsesCardOnly = true,
+            attributesAreNotAdded = true,
+        },
+        projectVariant = {
+            id = "declaration_order_resolution",
+            description = "The code resolves minor actions in declaration order by intent instead of modeling full simultaneity.",
+        },
+        runtimeHooks = {
+            "startMinorActionWindow",
+            "declareMinorAction",
+            "resumeFromMinorWindow",
+            "processNextMinorAction",
+        },
+    },
+    {
+        index = 5,
+        key = "end_round",
+        label = "End the round",
+        summary = "Discard spent round resources, preserve unresolved facedown actions, and begin the next round if the Challenge continues.",
+        timing = "after_count_king",
+        cleanup = {
+            discardUnusedPlayerChallengeCards = true,
+            discardUnusedGMChallengeCards = true,
+            discardCurrentInitiativeCards = true,
+            facedownActionsRemainInPlay = true,
+            foolDrawsShuffleBothDecksBeforeNextDeal = true,
+            outOfCardsReshuffleDiscardsAndContinue = true,
+        },
+        runtimeHooks = {
+            "advanceCount",
+            "gameClock.endRound",
+            "npc_ai.discardRoundInitiativeCards",
+            "startNewRound",
+        },
+    },
+}
+
+M.CHALLENGE_PROCEDURE = {
+    source = "Core Rules Chapter 7: Challenge Phase",
+    sourcePages = "107-115",
+    phase = "Challenge",
+    loopSteps = { 1, 2, 3, 4, 5 },
+    roundValueRange = {
+        min = 1,
+        max = MAX_TURNS,
+        lowLabel = "Ace",
+        highLabel = "King",
+    },
+    steps = M.PROCEDURE_STEPS,
+    projectVariants = {
+        {
+            id = "minor_actions_declaration_order",
+            step = "minor_actions",
+            description = "Minor actions are resolved in declaration order by intent, per the parity plan's intentional variant.",
+        },
+    },
+}
 
 local function normalizeTalentKey(value)
     return tostring(value or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
@@ -82,6 +264,23 @@ local function entityHasUsableTalent(entity, talentId)
         return entry.wounded ~= true
     end
     return entry == true
+end
+
+local function isMajorArcanaChallengeCard(card)
+    local value = tonumber(card and card.value)
+    if not value or value < 1 or value > 21 then
+        return false
+    end
+    return card.is_major == true or card.suit == constants.SUITS.MAJOR
+end
+
+local function isGreaterDoomCard(card)
+    local value = tonumber(card and card.value) or 0
+    return isMajorArcanaChallengeCard(card) and value >= 15 and value <= 21
+end
+
+local function canGMIgnoreMinorSuit(entity, card)
+    return entity and entity.isPC == false and isMajorArcanaChallengeCard(card)
 end
 
 local function armorTypeAllowsQuick(armorType)
@@ -122,6 +321,95 @@ local function entityWearsLightOrNoArmor(entity)
     return true
 end
 
+local function getWornIronOrSteelArmor(entity)
+    if not entity then
+        return nil
+    end
+
+    local function isIronOrSteelArmor(item)
+        if not item then
+            return false
+        end
+        local props = item.properties or {}
+        if not (item.isArmor or props.armor) or item.destroyed then
+            return false
+        end
+        local armorType = normalizeTalentKey(item.armorType or props.armorType or item.material or props.material)
+        return armorType == "iron" or armorType == "steel"
+    end
+
+    local actorArmor = entity.armor
+    if isIronOrSteelArmor(actorArmor) then
+        return actorArmor
+    end
+
+    local inv = entity.inventory
+    local belt = inv and inv.getItems and inv:getItems(inventory.LOCATIONS.BELT) or inv and inv.belt or {}
+    for _, item in ipairs(belt or {}) do
+        if isIronOrSteelArmor(item) then
+            return item
+        end
+    end
+
+    return nil
+end
+
+local function itemIsIntactShield(item)
+    if not item or item.destroyed then
+        return false
+    end
+
+    local props = item.properties or {}
+    if item.shield == true or props.shield == true or item.isShield == true or props.isShield == true then
+        return true
+    end
+
+    local tags = props.tags or item.tags
+    if type(tags) == "table" then
+        if tags.shield == true then
+            return true
+        end
+        for _, tag in ipairs(tags) do
+            if normalizeTalentKey(tag) == "shield" then
+                return true
+            end
+        end
+    end
+
+    return normalizeTalentKey(item.type or props.type or item.itemType or props.itemType) == "shield"
+end
+
+local function getCarriedIntactShield(entity)
+    if not entity then
+        return nil
+    end
+
+    if itemIsIntactShield(entity.shield) then
+        return entity.shield, "shield"
+    end
+
+    local inv = entity.inventory
+    if inv and inv.getItems then
+        for _, location in ipairs({ inventory.LOCATIONS.HANDS, inventory.LOCATIONS.BELT, inventory.LOCATIONS.PACK }) do
+            for _, item in ipairs(inv:getItems(location) or {}) do
+                if itemIsIntactShield(item) then
+                    return item, location
+                end
+            end
+        end
+    else
+        for _, location in ipairs({ "hands", "belt", "pack" }) do
+            for _, item in ipairs((inv and inv[location]) or {}) do
+                if itemIsIntactShield(item) then
+                    return item, location
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 local function spendEntityResolve(entity, amount)
     amount = amount or 1
     if not entity then
@@ -149,6 +437,705 @@ local function spendEntityResolve(entity, amount)
         return true, nil
     end
     return false, "resolve_unavailable"
+end
+
+local function getEntityResolveAmount(entity)
+    if not entity then
+        return 0
+    end
+    if type(entity.resolve) == "table" then
+        return entity.resolve.current or entity.resolve.value or 0
+    end
+    if type(entity.resolve) == "number" then
+        return entity.resolve
+    end
+    return tonumber(entity.currentResolve or entity.resolveCurrent or entity.resolve_current) or 0
+end
+
+local function entityCanSpeak(entity)
+    if not entity then
+        return false
+    end
+    local conditions = entity.conditions or {}
+    return entity.silenced ~= true and conditions.silenced ~= true and
+        conditions.silence ~= true and conditions.muted ~= true
+end
+
+local function cloneValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneValue(entry)
+    end
+    return copy
+end
+
+local PROCEDURE_STEP_ALIASES = {
+    ["0"] = "set_scene",
+    scene = "set_scene",
+    set_scene = "set_scene",
+    setup = "set_scene",
+    start = "set_scene",
+    ["1"] = "draw_challenge_cards",
+    draw = "draw_challenge_cards",
+    draw_cards = "draw_challenge_cards",
+    draw_challenge_cards = "draw_challenge_cards",
+    challenge_cards = "draw_challenge_cards",
+    ["2"] = "play_initiative",
+    initiative = "play_initiative",
+    play_initiative = "play_initiative",
+    ["3"] = "take_turns",
+    turn = "take_turns",
+    turns = "take_turns",
+    take_turns = "take_turns",
+    count_up = "take_turns",
+    ["4"] = "minor_actions",
+    minor = "minor_actions",
+    minor_action = "minor_actions",
+    minor_actions = "minor_actions",
+    ["5"] = "end_round",
+    ["end"] = "end_round",
+    cleanup = "end_round",
+    end_round = "end_round",
+    round_end = "end_round",
+}
+
+function M.getChallengeProcedure()
+    return cloneValue(M.CHALLENGE_PROCEDURE)
+end
+
+function M.getChallengeStepDetails(step)
+    if step == nil then
+        return cloneValue(M.PROCEDURE_STEPS)
+    end
+
+    local key = step
+    if type(step) == "table" then
+        key = step.key or step.id or step.label or step.index or step.step
+    end
+    if type(key) == "number" then
+        key = tostring(key)
+    else
+        key = tostring(key or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+    end
+
+    key = PROCEDURE_STEP_ALIASES[key] or key
+    for _, details in ipairs(M.PROCEDURE_STEPS) do
+        if details.key == key or tostring(details.index) == key then
+            return cloneValue(details)
+        end
+    end
+
+    return nil
+end
+
+local function normalizeList(value)
+    if value == nil then
+        return {}
+    end
+    if type(value) ~= "table" then
+        return { value }
+    end
+    if next(value) == nil then
+        return {}
+    end
+    if #value > 0 then
+        return value
+    end
+    return { value }
+end
+
+local function sceneRuleId(rule, prefix, index)
+    local id = type(rule) == "table" and
+        (rule.id or rule.key or rule.name or rule.title or rule.description) or rule
+    local slug = normalizeTalentKey(id)
+    if slug == "" then
+        slug = tostring(prefix or "scene_rule") .. "_" .. tostring(index or 1)
+    end
+    return slug
+end
+
+local function normalizeSceneRule(rawRule, kind, index, defaults)
+    defaults = defaults or {}
+    local rule = type(rawRule) == "table" and cloneValue(rawRule) or {
+        description = tostring(rawRule or ""),
+    }
+    rule.id = rule.id or sceneRuleId(rule, kind, index)
+    rule.kind = rule.kind or kind or "special_rule"
+    rule.type = rule.type or rule.kind
+    rule.zoneId = rule.zoneId or rule.zone or defaults.zoneId
+    rule.zoneName = rule.zoneName or defaults.zoneName
+    rule.description = rule.description or rule.text or rule.summary or rule.name or rule.title
+    rule.source = rule.source or defaults.source or "challenge_scene"
+    return rule
+end
+
+local function actionSetHas(actionSet, actionType)
+    if actionSet == nil then
+        return false
+    end
+    local wanted = normalizeTalentKey(actionType)
+    if wanted == "" then
+        return false
+    end
+    if type(actionSet) == "string" then
+        local normalized = normalizeTalentKey(actionSet)
+        return normalized == "all" or normalized == wanted
+    end
+    if type(actionSet) == "table" then
+        if actionSet.all == true or actionSet[wanted] == true or actionSet[actionType] == true then
+            return true
+        end
+        for _, value in ipairs(actionSet) do
+            local normalized = normalizeTalentKey(value)
+            if normalized == "all" or normalized == wanted then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function sceneRuleZoneMatches(rule, action)
+    local zoneId = rule and (rule.zoneId or rule.zone)
+    if not zoneId then
+        return true
+    end
+    zoneId = tostring(zoneId)
+    local actor = action and action.actor
+    local target = action and action.target
+
+    local function matches(candidate)
+        if candidate ~= nil and tostring(candidate) == zoneId then
+            return true
+        end
+        return false
+    end
+
+    return matches(action and action.zoneId) or
+        matches(action and action.zone) or
+        matches(action and action.targetZoneId) or
+        matches(action and action.targetZone) or
+        matches(action and action.destinationZoneId) or
+        matches(action and action.destinationZone) or
+        matches(actor and actor.zone) or
+        matches(actor and actor.zoneId) or
+        matches(target and target.zone) or
+        matches(target and target.zoneId)
+end
+
+local function entityHasTag(entity, tag)
+    local wanted = normalizeTalentKey(tag)
+    if wanted == "" then
+        return false
+    end
+    local tags = entity and entity.tags
+    if type(tags) == "table" then
+        if tags[wanted] == true or tags[tag] == true then
+            return true
+        end
+        for _, value in ipairs(tags) do
+            if normalizeTalentKey(value) == wanted then
+                return true
+            end
+        end
+    end
+    return normalizeTalentKey(entity and (entity.kind or entity.type or entity.species)) == wanted
+end
+
+local function addSceneTag(tags, value)
+    local normalized = normalizeTalentKey(value)
+    if normalized ~= "" then
+        tags[normalized] = true
+    end
+end
+
+local function addSceneTags(tags, values)
+    if type(values) ~= "table" then
+        addSceneTag(tags, values)
+        return
+    end
+
+    for key, value in pairs(values) do
+        if value == true then
+            addSceneTag(tags, key)
+        else
+            addSceneTag(tags, value)
+        end
+    end
+end
+
+local function getActionWeapon(action)
+    if not action then
+        return nil
+    end
+    if action.weapon then
+        return action.weapon
+    end
+    if action.item and (action.item.weaponType or action.item.isWeapon or action.item.isMelee or action.item.isRanged) then
+        return action.item
+    end
+    local inv = action.actor and action.actor.inventory
+    if inv and inv.getWieldedWeapon then
+        return inv:getWieldedWeapon()
+    end
+    return nil
+end
+
+local function collectItemSceneTags(item)
+    local tags = {}
+    if not item then
+        return tags
+    end
+
+    local props = item.properties or {}
+    addSceneTags(tags, item.tags)
+    addSceneTags(tags, props.tags)
+    addSceneTag(tags, item.type or item.itemType or props.type or props.itemType)
+    addSceneTag(tags, item.templateId or item.templateID)
+    addSceneTag(tags, item.id)
+    addSceneTag(tags, item.name)
+    addSceneTag(tags, item.toolType or props.toolType)
+    addSceneTag(tags, item.material or props.material)
+
+    for key, value in pairs(props) do
+        if value == true then
+            addSceneTag(tags, key)
+        end
+    end
+
+    return tags
+end
+
+local function collectWeaponSceneTags(weapon)
+    local tags = collectItemSceneTags(weapon)
+    if not weapon then
+        return tags
+    end
+
+    local props = weapon.properties or {}
+    addSceneTag(tags, weapon.weaponType or props.weaponType)
+
+    local weaponType = normalizeTalentKey(weapon.weaponType or props.weaponType or weapon.type or props.type)
+    if weapon.isRanged or props.ranged or weaponType == "bow" or weaponType == "crossbow" or weaponType == "thrown" then
+        tags.ranged = true
+        tags.missile = true
+    end
+    if weapon.isMelee or props.melee or (weaponType ~= "" and not tags.ranged) then
+        tags.melee = true
+    end
+    if weaponType == "polearm" or weaponType == "spear" or weaponType == "pike" or weaponType == "halberd" then
+        tags.polearm = true
+        tags.reach = true
+    end
+
+    return tags
+end
+
+local function itemHasAnySceneTag(item, wantedTags)
+    local tags = normalizeList(wantedTags)
+    if #tags == 0 then
+        return true
+    end
+
+    local itemTags = collectItemSceneTags(item)
+    for _, tag in ipairs(tags) do
+        if itemTags[normalizeTalentKey(tag)] then
+            return true
+        end
+    end
+    return false
+end
+
+local function weaponHasAnySceneTag(weapon, wantedTags)
+    local tags = normalizeList(wantedTags)
+    if #tags == 0 then
+        return true
+    end
+
+    local weaponTags = collectWeaponSceneTags(weapon)
+    for _, tag in ipairs(tags) do
+        if weaponTags[normalizeTalentKey(tag)] then
+            return true
+        end
+    end
+    return false
+end
+
+local function sceneRuleWeaponRestrictionApplies(rule, actionType)
+    local weaponActions = rule.weaponRestrictionActions or rule.weaponActions or rule.weaponRestrictedActions
+    if weaponActions ~= nil then
+        return actionSetHas(weaponActions, actionType)
+    end
+
+    local actionFilter = rule.actionTypes or rule.actions or rule.actionType
+    if actionFilter ~= nil then
+        return actionSetHas(actionFilter, actionType)
+    end
+
+    return actionType == "melee" or actionType == "missile"
+end
+
+local function sceneRuleWeaponBlock(rule, action, actionType)
+    local requiredTags = rule.requiredWeaponTags or rule.requiredWeaponTag or
+        rule.allowedWeaponTags or rule.allowedWeaponTypes or rule.allowedWeapons
+    local blockedTags = rule.blockedWeaponTags or rule.blockedWeaponTypes or rule.blockedWeapons
+    if requiredTags == nil and blockedTags == nil then
+        return false, nil
+    end
+    if not sceneRuleWeaponRestrictionApplies(rule, actionType) then
+        return false, nil
+    end
+
+    local weapon = getActionWeapon(action)
+    if requiredTags ~= nil and not weaponHasAnySceneTag(weapon, requiredTags) then
+        return true, rule.weaponBlockReason or rule.blockReason or rule.reason or
+            "Scene special rule blocks this weapon."
+    end
+    if blockedTags ~= nil and weaponHasAnySceneTag(weapon, blockedTags) then
+        return true, rule.weaponBlockReason or rule.blockReason or rule.reason or
+            "Scene special rule blocks this weapon."
+    end
+
+    return false, nil
+end
+
+local function sceneRuleItemRestrictionApplies(rule, actionType)
+    local itemActions = rule.itemRestrictionActions or rule.itemActions or rule.itemRestrictedActions or
+        rule.toolActions or rule.toolRestrictionActions
+    if itemActions ~= nil then
+        return actionSetHas(itemActions, actionType)
+    end
+
+    local actionFilter = rule.actionTypes or rule.actions or rule.actionType
+    if actionFilter ~= nil then
+        return actionSetHas(actionFilter, actionType)
+    end
+
+    local requiredAction = normalizeTalentKey(rule.requiredAction or rule.requiresAction)
+    if requiredAction ~= "" then
+        return requiredAction == actionType
+    end
+
+    return actionType == "move" or actionType == "dash" or actionType == "avoid"
+end
+
+local function sceneRuleGateApplies(rule, actionType, actionFields)
+    for _, field in ipairs(actionFields or {}) do
+        local value = rule[field]
+        if value ~= nil then
+            return actionSetHas(value, actionType)
+        end
+    end
+
+    local actionFilter = rule.actionTypes or rule.actions or rule.actionType
+    if actionFilter ~= nil then
+        return actionSetHas(actionFilter, actionType)
+    end
+
+    local requiredAction = normalizeTalentKey(rule.requiredAction or rule.requiresAction)
+    if requiredAction ~= "" then
+        return requiredAction == actionType
+    end
+
+    return actionType == "move" or actionType == "dash" or actionType == "avoid"
+end
+
+local SCENE_SUIT_ALIASES = {
+    swords = constants.SUITS.SWORDS,
+    sword = constants.SUITS.SWORDS,
+    pentacles = constants.SUITS.PENTACLES,
+    pentacle = constants.SUITS.PENTACLES,
+    disks = constants.SUITS.PENTACLES,
+    disk = constants.SUITS.PENTACLES,
+    discs = constants.SUITS.PENTACLES,
+    disc = constants.SUITS.PENTACLES,
+    coins = constants.SUITS.PENTACLES,
+    coin = constants.SUITS.PENTACLES,
+    cups = constants.SUITS.CUPS,
+    cup = constants.SUITS.CUPS,
+    wands = constants.SUITS.WANDS,
+    wand = constants.SUITS.WANDS,
+    batons = constants.SUITS.WANDS,
+    baton = constants.SUITS.WANDS,
+    staves = constants.SUITS.WANDS,
+    staff = constants.SUITS.WANDS,
+    major = constants.SUITS.MAJOR,
+    majors = constants.SUITS.MAJOR,
+}
+
+local function normalizeSceneCardSuit(value)
+    if type(value) == "table" then
+        value = value.suit or value.cardSuit or value.id or value.name
+    end
+    if type(value) == "number" then
+        return value
+    end
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local key = normalizeTalentKey(value)
+    if SCENE_SUIT_ALIASES[key] then
+        return SCENE_SUIT_ALIASES[key]
+    end
+
+    local constantKey = value:upper():gsub("[^%w]+", "_")
+    return constants.SUITS[constantKey]
+end
+
+local function collectSceneCardSuits(value)
+    local suits = {}
+    local count = 0
+
+    local function addSuit(entry)
+        local suit = normalizeSceneCardSuit(entry)
+        if suit and not suits[suit] then
+            suits[suit] = true
+            count = count + 1
+        end
+    end
+
+    if value == nil then
+        return suits, count
+    end
+    if type(value) == "table" and value.suit == nil and value.cardSuit == nil and value.id == nil and
+       value.name == nil then
+        for key, entry in pairs(value) do
+            if entry == true then
+                addSuit(key)
+            else
+                addSuit(entry)
+            end
+        end
+    else
+        addSuit(value)
+    end
+
+    return suits, count
+end
+
+local function getActionCardSuit(action)
+    local card = action and (action.card or action.selectedCard or action.playedCard or action.fateCard or action.testCard)
+    return normalizeSceneCardSuit((card and card.suit) or (action and (action.cardSuit or action.suit)))
+end
+
+local function sceneRuleCardSuitBlock(rule, action, actionType)
+    local suitSpec = rule.requiredCardSuits or rule.requiredCardSuit or rule.requiredSuits or
+        rule.requiredSuit or rule.allowedCardSuits or rule.allowedCardSuit or rule.allowedSuits or
+        rule.allowedSuit or rule.cardSuits or rule.cardSuit
+    if suitSpec == nil then
+        return false, nil
+    end
+    if not sceneRuleGateApplies(rule, actionType, {
+        "cardSuitActions",
+        "cardSuitRestrictionActions",
+        "suitActions",
+        "suitRestrictionActions",
+    }) then
+        return false, nil
+    end
+
+    local allowedSuits, count = collectSceneCardSuits(suitSpec)
+    if count == 0 then
+        return false, nil
+    end
+
+    local actionSuit = getActionCardSuit(action)
+    if not actionSuit or not allowedSuits[actionSuit] then
+        return true, rule.cardSuitBlockReason or rule.suitBlockReason or rule.blockReason or rule.reason or
+            "Scene special rule requires a specific card suit."
+    end
+
+    return false, nil
+end
+
+local function sceneRuleRequiredFreeHands(rule)
+    if rule.requiresBothHandsFree == true or rule.bothHandsFree == true or rule.requiresEmptyHands == true then
+        return 2
+    end
+
+    local value = rule.requiredFreeHands or rule.minimumFreeHands or rule.minFreeHands
+    if value == nil then
+        value = rule.requiresFreeHands
+    end
+    if value == nil then
+        value = rule.handsFree or rule.freeHands
+    end
+    if value == nil or value == false then
+        return nil
+    end
+    if value == true then
+        return 1
+    end
+    if type(value) == "number" then
+        return math.max(1, math.floor(value))
+    end
+    if type(value) == "string" then
+        local normalized = normalizeTalentKey(value)
+        if normalized == "both" or normalized == "two" or normalized == "both_hands" then
+            return 2
+        end
+        local numeric = tonumber(value)
+        if numeric then
+            return math.max(1, math.floor(numeric))
+        end
+        if normalized == "true" or normalized == "yes" or normalized == "one" or normalized == "free" then
+            return 1
+        end
+    end
+    return nil
+end
+
+local function getActorFreeHands(actor)
+    local inv = actor and actor.inventory
+    if not inv then
+        return 0
+    end
+
+    if inv.handsFree then
+        local free = inv:handsFree()
+        if type(free) == "number" then
+            return free
+        end
+        if free == true then
+            return inventory.SLOTS.HANDS
+        end
+        if free == false then
+            return 0
+        end
+    end
+    if inv.availableSlots then
+        return inv:availableSlots(inventory.LOCATIONS.HANDS)
+    end
+
+    local handLimit = inv.limits and inv.limits.hands or inventory.SLOTS.HANDS
+    local used = 0
+    local hands = inv.getItems and inv:getItems(inventory.LOCATIONS.HANDS) or inv.hands or {}
+    for _, item in ipairs(hands or {}) do
+        used = used + (item.stackable and 1 or tonumber(item.size) or 1)
+    end
+    return math.max(0, handLimit - used)
+end
+
+local function sceneRuleHandsBlock(rule, action, actionType)
+    local requiredHands = sceneRuleRequiredFreeHands(rule)
+    if not requiredHands then
+        return false, nil
+    end
+    if not sceneRuleGateApplies(rule, actionType, {
+        "handRestrictionActions",
+        "handsRestrictionActions",
+        "freeHandActions",
+        "freeHandsActions",
+    }) then
+        return false, nil
+    end
+
+    if getActorFreeHands(action and action.actor) < requiredHands then
+        return true, rule.handsBlockReason or rule.freeHandsBlockReason or rule.blockReason or rule.reason or
+            "Scene special rule requires free hands."
+    end
+
+    return false, nil
+end
+
+local function findSceneItem(action, tags)
+    local function matches(candidate, location)
+        if candidate and itemHasAnySceneTag(candidate, tags) then
+            return candidate, location
+        end
+        return nil, nil
+    end
+
+    local item, location = matches(action and action.item, action and action.itemLocation)
+    if item then return item, location end
+    item, location = matches(action and action.requiredItem, action and action.requiredItemLocation)
+    if item then return item, location end
+    item, location = matches(action and action.tool, action and action.toolLocation)
+    if item then return item, location end
+    item, location = matches(action and action.gear, action and action.gearLocation)
+    if item then return item, location end
+
+    local inv = action and action.actor and action.actor.inventory
+    local itemId = action and (action.itemId or action.requiredItemId or action.toolId or action.gearId)
+    if itemId and inv and inv.findItem then
+        local found, foundLocation = inv:findItem(itemId)
+        item, location = matches(found, foundLocation)
+        if item then return item, location end
+    end
+
+    if inv and inv.findItemByPredicate then
+        return inv:findItemByPredicate(function(candidate)
+            return itemHasAnySceneTag(candidate, tags)
+        end)
+    end
+
+    for _, locationName in ipairs({ "hands", "belt", "pack" }) do
+        local items = inv and inv[locationName] or {}
+        for _, candidate in ipairs(items or {}) do
+            item, location = matches(candidate, locationName)
+            if item then return item, location end
+        end
+    end
+
+    return nil, nil
+end
+
+local function sceneRuleItemBlock(rule, action, actionType)
+    local requiredTags = rule.requiredItemTags or rule.requiredItemTag or rule.requiredToolTags or
+        rule.requiredToolTag or rule.requiredGearTags or rule.requiredGearTag or rule.requiredItem or
+        rule.requiredTool or rule.requiredGear or rule.requiredItemType or rule.requiredToolType or
+        rule.allowedItemTags or rule.allowedToolTags or rule.allowedItem or rule.allowedTool
+    local blockedTags = rule.blockedItemTags or rule.blockedItemTag or rule.blockedToolTags or
+        rule.blockedToolTag or rule.blockedGearTags or rule.blockedGearTag or rule.blockedItem or
+        rule.blockedTool or rule.blockedItemType or rule.blockedToolType
+    if requiredTags == nil and blockedTags == nil then
+        return false, nil, nil, nil
+    end
+    if not sceneRuleItemRestrictionApplies(rule, actionType) then
+        return false, nil, nil, nil
+    end
+
+    local item, location
+    if requiredTags ~= nil then
+        item, location = findSceneItem(action, requiredTags)
+        if not item then
+            return true, rule.itemBlockReason or rule.toolBlockReason or rule.blockReason or rule.reason or
+                "Scene special rule requires specific gear.", nil, nil
+        end
+    end
+
+    if blockedTags ~= nil then
+        local blockedItem, blockedLocation = findSceneItem(action, blockedTags)
+        if blockedItem then
+            return true, rule.itemBlockReason or rule.toolBlockReason or rule.blockReason or rule.reason or
+                "Scene special rule blocks this gear.", blockedItem, blockedLocation
+        end
+    end
+
+    return false, nil, item, location
+end
+
+local function sceneRuleEntityTagsMatch(rule, action)
+    local actorTags = rule.actorTags or rule.actorTag
+    for _, tag in ipairs(normalizeList(actorTags)) do
+        if not entityHasTag(action and action.actor, tag) then
+            return false
+        end
+    end
+
+    local targetTags = rule.targetTags or rule.targetTag
+    for _, tag in ipairs(normalizeList(targetTags)) do
+        if not entityHasTag(action and action.target, tag) then
+            return false
+        end
+    end
+
+    return true
 end
 
 --------------------------------------------------------------------------------
@@ -188,6 +1175,7 @@ function M.createChallengeController(config)
         -- Count-up tracking (S4.7)
         currentCount    = 0,          -- Current initiative count (1-14)
         actedThisRound  = {},         -- entity.id -> true if already acted
+        initiativeTieOrder = {},      -- count -> ordered entity ids/refs for tied Initiative declarations
 
         -- Minor action tracking (S6.4: Declaration Loop)
         -- Intentional design: pending minors resolve in declaration order.
@@ -198,6 +1186,13 @@ function M.createChallengeController(config)
         resolvingMinors     = false,  -- True while resolving pending minor actions
         pendingVigilanceReactions = {}, -- Triggered vigilance reactions awaiting resolution
         resolvingVigilance = false,     -- True while resolving vigilance reaction queue
+        pendingCounterSpellInterrupt = nil, -- Incoming spell currently eligible for Counter-spell
+        pendingCounterSpellRestore = nil,   -- Counter-spell interrupt waiting to resume incoming spell
+        awaitingCounterSpellDecision = false, -- True while the UI selects or skips an interrupt
+        pendingHeavyMetalMachineInterrupt = nil, -- Incoming action eligible for Heavy Metal Machine
+        awaitingHeavyMetalMachineDecision = false, -- True while UI selects or skips armor boost
+        pendingAegisElection = nil, -- Incoming physical effect eligible for Aegis
+        awaitingAegisDecision = false, -- True while UI elects or skips Aegis
 
         -- Visual sync
         awaitingVisualSync  = false,
@@ -207,10 +1202,15 @@ function M.createChallengeController(config)
         roomId          = nil,
         zoneId          = nil,
         zones           = nil,        -- Array of zone definitions { id, name, description }
+        sceneSpecialRules = {},       -- Authored scene rules from Challenge setup
+        sceneHazards    = {},         -- Authored hazard rules from Challenge setup
+        zoneSpecialRules = {},        -- zoneId -> scene rules/hazards in that zone
         challengeType   = nil,        -- "combat", "trap", "hazard", "social"
         surprised       = false,      -- True when GM characters ambush the guild
         surpriseResults = {},         -- Pre-challenge automatic GM actions
         ambushResistance = nil,       -- Ambusher talent resistance result, if elected
+        pendingAmbusherResistance = nil, -- Start-of-Challenge Ambusher election prompt
+        awaitingAmbusherResistanceDecision = false,
         sceneAdvantages = {},         -- Ambush-created scene advantages/special rules
         chickenDoomResults = {},      -- Malediction King stress-test results
 
@@ -468,6 +1468,156 @@ function M.createChallengeController(config)
             (entity and entity.chickenDoom and entity.chickenDoom.active ~= false)
     end
 
+    function controller:registerSceneRule(rule, detail)
+        detail = detail or {}
+        if not rule then
+            return
+        end
+
+        self.sceneSpecialRules[#self.sceneSpecialRules + 1] = rule
+        if rule.kind == "hazard" or rule.hazard == true then
+            self.sceneHazards[#self.sceneHazards + 1] = rule
+        end
+        local zoneId = rule.zoneId or rule.zone
+        if zoneId then
+            zoneId = tostring(zoneId)
+            self.zoneSpecialRules[zoneId] = self.zoneSpecialRules[zoneId] or {}
+            self.zoneSpecialRules[zoneId][#self.zoneSpecialRules[zoneId] + 1] = rule
+        end
+    end
+
+    function controller:prepareSceneSpecialRules(challengeConfig)
+        self.sceneSpecialRules = {}
+        self.sceneHazards = {}
+        self.zoneSpecialRules = {}
+
+        local index = 0
+        local function addRule(rawRule, kind, defaults)
+            index = index + 1
+            self:registerSceneRule(normalizeSceneRule(rawRule, kind, index, defaults))
+        end
+
+        for _, rule in ipairs(normalizeList(challengeConfig.sceneSpecialRules or
+            challengeConfig.specialRules or challengeConfig.sceneRules)) do
+            addRule(rule, "special_rule", { source = "challenge_scene" })
+        end
+        for _, rule in ipairs(normalizeList(challengeConfig.sceneHazards or challengeConfig.hazards)) do
+            addRule(rule, "hazard", { source = "challenge_scene" })
+        end
+
+        for _, zone in ipairs(self.zones or {}) do
+            local defaults = {
+                zoneId = zone.id,
+                zoneName = zone.name,
+                source = "zone",
+            }
+            for _, rule in ipairs(normalizeList(zone.specialRules or zone.sceneRules)) do
+                addRule(rule, "special_rule", defaults)
+            end
+            for _, rule in ipairs(normalizeList(zone.hazards or zone.sceneHazards)) do
+                addRule(rule, "hazard", defaults)
+            end
+        end
+
+        if #self.sceneSpecialRules > 0 then
+            self.eventBus:emit("challenge_scene_rules_resolved", {
+                roomId = self.roomId,
+                zoneId = self.zoneId,
+                zones = self.zones,
+                sceneSpecialRules = self.sceneSpecialRules,
+                sceneHazards = self.sceneHazards,
+                zoneSpecialRules = self.zoneSpecialRules,
+            })
+        end
+    end
+
+    function controller:evaluateSceneRules(action, actionType)
+        local detail = {
+            rules = {},
+            effects = {},
+            favor = nil,
+            blocked = false,
+        }
+        actionType = normalizeTalentKey(actionType or (action and action.type))
+
+        for _, rule in ipairs(self.sceneSpecialRules or {}) do
+            if sceneRuleZoneMatches(rule, action) and sceneRuleEntityTagsMatch(rule, action) then
+                local actionMatches = actionSetHas(rule.actionTypes or rule.actions or rule.actionType, actionType)
+                local blocked = actionSetHas(rule.blockedActions or rule.blockActionTypes, actionType)
+                local requiredAction = normalizeTalentKey(rule.requiredAction or rule.requiresAction)
+                if requiredAction ~= "" and requiredAction ~= actionType then
+                    blocked = true
+                end
+                local weaponBlocked, weaponBlockReason = sceneRuleWeaponBlock(rule, action, actionType)
+                if weaponBlocked then
+                    blocked = true
+                end
+                local cardSuitBlocked, cardSuitBlockReason = sceneRuleCardSuitBlock(rule, action, actionType)
+                if cardSuitBlocked then
+                    blocked = true
+                end
+                local handsBlocked, handsBlockReason = sceneRuleHandsBlock(rule, action, actionType)
+                if handsBlocked then
+                    blocked = true
+                end
+                local itemBlocked, itemBlockReason, sceneItem, sceneItemLocation =
+                    sceneRuleItemBlock(rule, action, actionType)
+                if itemBlocked then
+                    blocked = true
+                end
+                if rule.movementBlocked and (
+                    actionType == "move" or actionType == "dash" or actionType == "avoid"
+                ) then
+                    blocked = true
+                end
+
+                local grantsFavor = actionSetHas(rule.favorActions or rule.favorActionTypes, actionType) or
+                    (rule.favor == true and actionMatches)
+                local grantsDisfavor = actionSetHas(rule.disfavorActions or rule.disfavorActionTypes, actionType) or
+                    (rule.disfavor == true and actionMatches)
+
+                if blocked or grantsFavor or grantsDisfavor or actionMatches or sceneItem then
+                    detail.rules[#detail.rules + 1] = rule
+                    detail.effects[#detail.effects + 1] = rule.kind == "hazard" and "scene_hazard" or
+                        "scene_special_rule"
+                end
+
+                if blocked then
+                    detail.blocked = true
+                    detail.blockedRule = rule
+                    detail.blockReason = weaponBlockReason or cardSuitBlockReason or handsBlockReason or
+                        itemBlockReason or rule.blockReason or rule.reason or
+                        "Scene special rule blocks this action"
+                    detail.effects[#detail.effects + 1] = "scene_special_rule_blocked"
+                    return detail
+                end
+
+                if sceneItem then
+                    detail.sceneItems = detail.sceneItems or {}
+                    detail.sceneItems[#detail.sceneItems + 1] = {
+                        rule = rule,
+                        item = sceneItem,
+                        location = sceneItemLocation,
+                    }
+                end
+
+                if grantsFavor then
+                    detail.favor = true
+                    detail.effects[#detail.effects + 1] = "scene_special_rule_favor"
+                elseif grantsDisfavor then
+                    if detail.favor == true then
+                        detail.favor = nil
+                    else
+                        detail.favor = false
+                    end
+                    detail.effects[#detail.effects + 1] = "scene_special_rule_disfavor"
+                end
+            end
+        end
+
+        return detail
+    end
+
     ----------------------------------------------------------------------------
     -- CHALLENGE LIFECYCLE
     ----------------------------------------------------------------------------
@@ -489,6 +1639,11 @@ function M.createChallengeController(config)
         self.zoneId = challengeConfig.zoneId
         self.zones = challengeConfig.zones  -- Store zone data for arena view
         self.challengeType = challengeConfig.challengeType or "combat"
+        self.initiativeTieOrder = challengeConfig.initiativeTieOrder or challengeConfig.tieOrder or {}
+        self.sceneSpecialRules = {}
+        self.sceneHazards = {}
+        self.zoneSpecialRules = {}
+        self.sceneAdvantages = {}
 
         -- Validate we have combatants
         if #self.pcs == 0 then
@@ -496,6 +1651,12 @@ function M.createChallengeController(config)
         end
         if #self.npcs == 0 and self.challengeType == "combat" then
             return false, "no_npcs"
+        end
+
+        self.previousGameClockPhase = nil
+        if self.gameClock and self.gameClock.getPhase and self.gameClock.setPhase then
+            self.previousGameClockPhase = self.gameClock:getPhase()
+            self.gameClock:setPhase(game_clock.PHASES.CHALLENGE)
         end
 
         -- Build combatant list
@@ -537,13 +1698,16 @@ function M.createChallengeController(config)
             end
         end
 
+        self:prepareSceneSpecialRules(challengeConfig)
+
         -- Initialize state
         self.state = M.STATES.STARTING
         self.currentRound = 0
         self.surprised = challengeConfig.surprised == true
+        self.sleepingVulnerable = challengeConfig.sleepingVulnerable == true or
+            challengeConfig.sleepingSurprise == true or challengeConfig.surpriseEquipmentInactive == true
         self.surpriseResults = {}
         self.ambushResistance = nil
-        self.sceneAdvantages = {}
         self.chickenDoomResults = self:resolveStressChickenDooms(challengeConfig)
 
         -- Emit start event
@@ -553,15 +1717,21 @@ function M.createChallengeController(config)
             roomId = self.roomId,
             zones = self.zones,  -- Pass zones to arena view
             challengeType = self.challengeType,
+            sceneSpecialRules = self.sceneSpecialRules,
+            sceneHazards = self.sceneHazards,
+            zoneSpecialRules = self.zoneSpecialRules,
             surprised = self.surprised,
+            sleepingVulnerable = self.sleepingVulnerable,
             chickenDoomResults = self.chickenDoomResults,
         })
 
-        if self.surprised then
+        if self.surprised and self:wantsAmbusherResistance(challengeConfig) then
             local resistance = self:resolveAmbusherResistance(challengeConfig)
             if resistance and resistance.success then
                 self.surprised = false
             end
+        elseif self.surprised and self:beginAmbusherResistanceWindow(challengeConfig) then
+            return true
         end
 
         if self.surprised then
@@ -589,8 +1759,160 @@ function M.createChallengeController(config)
         -- Emit end event
         self.eventBus:emit(events.EVENTS.CHALLENGE_END, data)
 
+        if self.gameClock and self.gameClock.setPhase then
+            self.gameClock:setPhase(self.previousGameClockPhase or game_clock.PHASES.CRAWL)
+        end
+
         -- Reset state
         self:reset()
+    end
+
+    function controller:discardFacedownCard(entity, card, reason)
+        if not card then
+            return false
+        end
+        local deck = entity and entity.isPC and self.playerDeck or self.gmDeck
+        if deck and deck.discard then
+            deck:discard(card)
+            return true
+        end
+        return false
+    end
+
+    function controller:discardFacedownAction(entity, reason)
+        if self.actionResolver and self.actionResolver.discardCurrentFacedownAction then
+            return self.actionResolver:discardCurrentFacedownAction(entity, {
+                reason = reason or "facedown_voluntarily_discarded",
+                challengeController = self,
+                playerDeck = self.playerDeck,
+                gmDeck = self.gmDeck,
+            })
+        end
+
+        local result = {
+            success = false,
+            effects = {},
+            description = "No facedown action to discard.",
+            discardedFacedownActions = {},
+        }
+
+        if entity and entity.pendingDefense then
+            local defense = entity.pendingDefense
+            entity.pendingDefense = nil
+            result.discardedFacedownActions[#result.discardedFacedownActions + 1] = {
+                entity = entity,
+                type = defense.type or "defense",
+                card = defense.card,
+                discarded = self:discardFacedownCard(entity, defense.card, reason),
+                reason = reason or "facedown_voluntarily_discarded",
+            }
+        end
+        if entity and entity.pendingVigilance then
+            local vigilance = entity.pendingVigilance
+            entity.pendingVigilance = nil
+            result.discardedFacedownActions[#result.discardedFacedownActions + 1] = {
+                entity = entity,
+                type = "vigilance",
+                card = vigilance.card,
+                discarded = self:discardFacedownCard(entity, vigilance.card, reason),
+                reason = reason or "facedown_voluntarily_discarded",
+            }
+        end
+        if entity and entity.pendingAim then
+            local aim = entity.pendingAim
+            entity.pendingAim = nil
+            result.discardedFacedownActions[#result.discardedFacedownActions + 1] = {
+                entity = entity,
+                type = "aim",
+                card = aim.card,
+                discarded = self:discardFacedownCard(entity, aim.card, reason),
+                reason = reason or "facedown_voluntarily_discarded",
+            }
+        end
+
+        result.success = #result.discardedFacedownActions > 0
+        if result.success then
+            result.description = "Discarded facedown action."
+            result.effects[#result.effects + 1] = "facedown_discarded"
+        else
+            result.effects[#result.effects + 1] = "no_facedown_action"
+        end
+        return result
+    end
+
+    function controller:discardPendingFacedownCards(reason)
+        local discarded = {}
+        for _, entity in ipairs(self.allCombatants or {}) do
+            local defense = entity.pendingDefense
+            if defense and defense.card then
+                discarded[#discarded + 1] = {
+                    entity = entity,
+                    type = defense.type or "defense",
+                    card = defense.card,
+                    discarded = self:discardFacedownCard(entity, defense.card, reason),
+                    reason = reason or "challenge_end",
+                }
+            end
+            entity.pendingDefense = nil
+
+            local vigilance = entity.pendingVigilance
+            if vigilance and vigilance.card then
+                discarded[#discarded + 1] = {
+                    entity = entity,
+                    type = "vigilance",
+                    card = vigilance.card,
+                    discarded = self:discardFacedownCard(entity, vigilance.card, reason),
+                    reason = reason or "challenge_end",
+                }
+            end
+            entity.pendingVigilance = nil
+
+            local aim = entity.pendingAim
+            if aim and aim.card then
+                discarded[#discarded + 1] = {
+                    entity = entity,
+                    type = "aim",
+                    card = aim.card,
+                    discarded = self:discardFacedownCard(entity, aim.card, reason),
+                    reason = reason or "challenge_end",
+                }
+            end
+            entity.pendingAim = nil
+        end
+
+        for _, reaction in ipairs(self.pendingVigilanceReactions or {}) do
+            if reaction.isVigilanceReaction and reaction.card and not reaction.vigilanceCardDiscarded then
+                discarded[#discarded + 1] = self:discardResolvedVigilanceReaction(reaction, reason or "challenge_end")
+            end
+        end
+
+        if self.actionResolver and self.actionResolver.discardActiveAidCards then
+            local aidDiscards = self.actionResolver:discardActiveAidCards(reason or "challenge_end")
+            for _, entry in ipairs(aidDiscards or {}) do
+                discarded[#discarded + 1] = entry
+            end
+        end
+
+        return discarded
+    end
+
+    function controller:discardResolvedVigilanceReaction(reaction, reason)
+        if not reaction or not reaction.isVigilanceReaction or not reaction.card or reaction.vigilanceCardDiscarded then
+            return nil
+        end
+
+        local discarded = self:discardFacedownCard(reaction.actor, reaction.card, reason or "vigilance_resolved")
+        reaction.vigilanceCardDiscarded = discarded
+        local entry = {
+            entity = reaction.actor,
+            type = "vigilance",
+            card = reaction.card,
+            discarded = discarded,
+            reason = reason or "vigilance_resolved",
+        }
+
+        self.eventBus:emit("vigilance_card_discarded", entry)
+        return entry
     end
 
     --- Reset controller to idle state
@@ -605,9 +1927,11 @@ function M.createChallengeController(config)
         end
 
         -- Clear is_engaged flag on all combatants
+        self.lastFacedownDiscards = self:discardPendingFacedownCards("challenge_end")
         for _, entity in ipairs(self.allCombatants) do
             entity.is_engaged = false
             entity.pendingVigilance = nil
+            entity.pendingAim = nil
         end
 
         self.pcs = {}
@@ -621,6 +1945,7 @@ function M.createChallengeController(config)
         -- Count-up tracking
         self.currentCount = 0
         self.actedThisRound = {}
+        self.initiativeTieOrder = {}
 
         -- Minor action
         self.minorActionTimer = 0
@@ -637,7 +1962,13 @@ function M.createChallengeController(config)
         self.surprised = false
         self.surpriseResults = {}
         self.ambushResistance = nil
+        self.pendingAmbusherResistance = nil
+        self.awaitingAmbusherResistanceDecision = false
         self.sceneAdvantages = {}
+        self.sceneSpecialRules = {}
+        self.sceneHazards = {}
+        self.zoneSpecialRules = {}
+        self.previousGameClockPhase = nil
     end
 
     ----------------------------------------------------------------------------
@@ -694,6 +2025,129 @@ function M.createChallengeController(config)
         end
 
         return actions[npc and npc.id] or actions[index] or actions.default or {}
+    end
+
+    function controller:getAmbusherResistanceCandidates(options)
+        local candidates = {}
+        options = options or {}
+
+        for _, pc in ipairs(self.pcs or {}) do
+            local usable = entityHasUsableTalent(pc, "ambusher")
+            local hasResolve = getEntityResolveAmount(pc) > 0
+            if usable and hasResolve then
+                candidates[#candidates + 1] = {
+                    actor = pc,
+                    resolve = getEntityResolveAmount(pc),
+                }
+            elseif options.includeBlocked and usable then
+                candidates[#candidates + 1] = {
+                    actor = pc,
+                    blocked = true,
+                    reason = "resolve_missing",
+                    resolve = getEntityResolveAmount(pc),
+                }
+            elseif options.includeBlocked then
+                candidates[#candidates + 1] = {
+                    actor = pc,
+                    blocked = true,
+                    reason = "requires_ambusher",
+                    resolve = getEntityResolveAmount(pc),
+                }
+            end
+        end
+
+        return candidates
+    end
+
+    function controller:beginAmbusherResistanceWindow(options)
+        options = options or {}
+        if not self.surprised or options.ambusherResistancePrompt == false or
+           options.promptAmbusherResistance == false then
+            return false
+        end
+
+        local candidates = self:getAmbusherResistanceCandidates(options)
+        if #candidates == 0 then
+            return false
+        end
+
+        self.pendingAmbusherResistance = {
+            candidates = candidates,
+            challengeConfig = options,
+        }
+        self.awaitingAmbusherResistanceDecision = true
+        self.state = M.STATES.AMBUSH_RESISTANCE
+
+        self.eventBus:emit("ambusher_resistance_available", self.pendingAmbusherResistance)
+        return true
+    end
+
+    function controller:finishAmbusherResistanceWindow(options)
+        options = options or {}
+        local pending = self.pendingAmbusherResistance
+        local challengeConfig = options.challengeConfig or (pending and pending.challengeConfig) or {}
+
+        self.pendingAmbusherResistance = nil
+        self.awaitingAmbusherResistanceDecision = false
+
+        if self.surprised then
+            self:resolveSurpriseActions(challengeConfig)
+        end
+
+        self:startNewRound()
+        return true
+    end
+
+    function controller:electAmbusherResistance(actor)
+        local pending = self.pendingAmbusherResistance
+        if not pending then
+            return false, "no_pending_ambusher_resistance"
+        end
+
+        local selected = nil
+        for _, candidate in ipairs(pending.candidates or {}) do
+            if candidate.actor == actor or (candidate.actor and actor and candidate.actor.id == actor.id) then
+                selected = candidate.actor
+                break
+            end
+        end
+
+        if not selected then
+            return false, "invalid_ambusher"
+        end
+
+        local resistance = self:resolveAmbusherResistance({
+            resistAmbushWithAmbusher = true,
+            ambusherResistActor = selected,
+        })
+        if resistance and resistance.success then
+            self.surprised = false
+        end
+
+        self.eventBus:emit("ambusher_resistance_resolved", {
+            actor = selected,
+            resistance = resistance,
+            resisted = resistance and resistance.success == true,
+        })
+
+        self:finishAmbusherResistanceWindow({ challengeConfig = pending.challengeConfig })
+        return true, resistance
+    end
+
+    function controller:skipAmbusherResistance()
+        local pending = self.pendingAmbusherResistance
+        if not pending then
+            return false, "no_pending_ambusher_resistance"
+        end
+
+        self.ambushResistance = {
+            success = false,
+            skipped = true,
+            effects = { "ambusher_ambush_resistance", "ambusher_resistance_skipped" },
+        }
+        self.eventBus:emit("ambusher_resistance_skipped", self.ambushResistance)
+        self:finishAmbusherResistanceWindow({ challengeConfig = pending.challengeConfig })
+        return true, self.ambushResistance
     end
 
     function controller:wantsAmbusherResistance(options)
@@ -786,8 +2240,9 @@ function M.createChallengeController(config)
         return nil
     end
 
-    function controller:resolveSurpriseAction(npc, actionSpec, shankedTargets)
+    function controller:resolveSurpriseAction(npc, actionSpec, shankedTargets, surpriseOptions)
         actionSpec = actionSpec or {}
+        surpriseOptions = surpriseOptions or {}
         local tactic = normalizeAmbushTactic(actionSpec.tactic or actionSpec.type or actionSpec.action)
         local result = {
             actor = npc,
@@ -849,7 +2304,19 @@ function M.createChallengeController(config)
 
         -- Tactic 3: each attacker deals 1 Wound, but each adventurer can only
         -- be attacked once before the Challenge begins.
-        local woundResult = target.takeWound and target:takeWound(actionSpec.damageType or "normal", actionSpec.woundOptions)
+        local woundOptions = actionSpec.woundOptions and cloneValue(actionSpec.woundOptions) or {}
+        local sleepingVulnerable = surpriseOptions.sleepingVulnerable == true or
+            surpriseOptions.sleepingSurprise == true or surpriseOptions.surpriseEquipmentInactive == true or
+            actionSpec.sleepingVulnerable == true or actionSpec.sleepingSurprise == true or
+            actionSpec.surpriseEquipmentInactive == true
+        if sleepingVulnerable then
+            woundOptions.ignoreArmor = true
+            result.sleepingVulnerable = true
+            result.effects[#result.effects + 1] = "sleeping_vulnerable"
+            result.effects[#result.effects + 1] = "sleeping_armor_inactive"
+            result.effects[#result.effects + 1] = "sleeping_weapons_inactive"
+        end
+        local woundResult = target.takeWound and target:takeWound(actionSpec.damageType or "normal", woundOptions)
         if shankedTargets and target.id then
             shankedTargets[target.id] = true
         end
@@ -869,7 +2336,7 @@ function M.createChallengeController(config)
         for index, npc in ipairs(options.npcs or self.npcs or {}) do
             if not self:isDefeated(npc) then
                 local actionSpec = surpriseActionForNPC(actions, npc, index)
-                results[#results + 1] = self:resolveSurpriseAction(npc, actionSpec, shankedTargets)
+                results[#results + 1] = self:resolveSurpriseAction(npc, actionSpec, shankedTargets, options)
             end
         end
 
@@ -879,6 +2346,8 @@ function M.createChallengeController(config)
             npcs = self.npcs,
             results = results,
             sceneAdvantages = self.sceneAdvantages,
+            sleepingVulnerable = options.sleepingVulnerable == true or options.sleepingSurprise == true or
+                options.surpriseEquipmentInactive == true,
         })
 
         return results
@@ -1039,6 +2508,9 @@ function M.createChallengeController(config)
                 round = self.currentRound,
             })
             self:clearExpiredChickenDoom(self.currentRound)
+            if self.actionResolver and self.actionResolver.clearExpiredWraithTangibility then
+                self.actionResolver:clearExpiredWraithTangibility(self.currentRound, self.allCombatants)
+            end
             if self.gameClock and self.gameClock.endRound then
                 local reshuffled = self.gameClock:endRound()
                 if reshuffled then
@@ -1060,14 +2532,6 @@ function M.createChallengeController(config)
         local actingEntities = self:getEntitiesAtCount(self.currentCount)
 
         if #actingEntities > 0 then
-            -- Sort by PC first (tie-breaker: PCs act before NPCs, p.112)
-            table.sort(actingEntities, function(a, b)
-                -- PCs go first unless NPC has shield (simplified for now)
-                if a.isPC and not b.isPC then return true end
-                if b.isPC and not a.isPC then return false end
-                return false  -- Same type, maintain order
-            end)
-
             -- Start first entity's turn
             self:startEntityTurn(actingEntities[1])
         else
@@ -1087,7 +2551,123 @@ function M.createChallengeController(config)
                 end
             end
         end
-        return result
+        return self:sortInitiativeTieEntities(result, count)
+    end
+
+    function controller:setInitiativeTieOrder(count, order)
+        if type(count) == "table" and order == nil then
+            self.initiativeTieOrder = count
+            return true
+        end
+        if not count or type(order) ~= "table" then
+            return false, "invalid_tie_order"
+        end
+        self.initiativeTieOrder = self.initiativeTieOrder or {}
+        self.initiativeTieOrder[count] = order
+        return true
+    end
+
+    function controller:getInitiativeTieOrder(count)
+        local orders = self.initiativeTieOrder
+        if type(orders) ~= "table" then
+            return nil
+        end
+        return orders[count] or orders[tostring(count)]
+    end
+
+    function controller:tieOrderTokenMatchesEntity(token, entity)
+        if not entity then
+            return false
+        end
+        if token == entity then
+            return true
+        end
+        if type(token) == "string" then
+            return token == entity.id or token == entity.name
+        end
+        if type(token) == "table" then
+            return token.entity == entity or token.target == entity or
+                (token.id and token.id == entity.id) or
+                (token.entityId and token.entityId == entity.id) or
+                (token.name and token.name == entity.name)
+        end
+        return false
+    end
+
+    function controller:getInitiativeTieRank(entity, count)
+        local order = self:getInitiativeTieOrder(count)
+        if type(order) ~= "table" then
+            return nil
+        end
+        for rank, token in ipairs(order) do
+            if self:tieOrderTokenMatchesEntity(token, entity) then
+                return rank
+            end
+        end
+        return nil
+    end
+
+    function controller:sortInitiativeTieEntities(entities, count)
+        if type(entities) ~= "table" or #entities <= 1 then
+            return entities
+        end
+
+        local ranked = {}
+        local hasExplicitRank = false
+        for index, entity in ipairs(entities) do
+            local rank = self:getInitiativeTieRank(entity, count)
+            if rank then
+                hasExplicitRank = true
+            end
+            ranked[#ranked + 1] = {
+                entity = entity,
+                index = index,
+                rank = rank or math.huge,
+            }
+        end
+
+        if not hasExplicitRank then
+            return entities
+        end
+
+        table.sort(ranked, function(a, b)
+            if a.rank ~= b.rank then
+                return a.rank < b.rank
+            end
+            return a.index < b.index
+        end)
+
+        for index, entry in ipairs(ranked) do
+            entities[index] = entry.entity
+        end
+
+        return entities
+    end
+
+    function controller:getChallengeCardsForEntity(entity)
+        if not entity or not entity.id or not self.playerHand then
+            return nil
+        end
+
+        local handData = self.playerHand.hands and self.playerHand.hands[entity.id]
+        if not handData then
+            return nil
+        end
+
+        if self.playerHand.getHand then
+            return self.playerHand:getHand(entity)
+        end
+
+        return handData.cards or {}
+    end
+
+    function controller:shouldSkipForNoChallengeCards(entity)
+        if not entity or entity.isPC ~= true then
+            return false
+        end
+
+        local cards = self:getChallengeCardsForEntity(entity)
+        return cards ~= nil and #cards == 0
     end
 
     --- Start a specific entity's turn
@@ -1112,8 +2692,41 @@ function M.createChallengeController(config)
 
         print("[Turn] Count " .. self.currentCount .. ": " .. (entity.name or entity.id) .. "'s turn")
 
+        local resolver = self.actionResolver
+        if not resolver then
+            local action_resolver = require('logic.action_resolver')
+            resolver = action_resolver.createActionResolver({
+                eventBus = self.eventBus,
+                zoneSystem = self.zoneSystem,
+                challengeController = self,
+            })
+            self.actionResolver = resolver
+        end
+        if resolver.applyEliteRetributiveStartTurn then
+            local retributive = resolver:applyEliteRetributiveStartTurn(entity, self.allCombatants, {
+                round = self.currentRound,
+                count = self.currentCount,
+            })
+            self.lastEliteRetributiveResult = retributive
+            if retributive and retributive.retributiveHits and #retributive.retributiveHits > 0 then
+                self.eventBus:emit("elite_retributive_start_turn", {
+                    activeEntity = entity,
+                    result = retributive,
+                })
+                if self:isDefeated(entity) then
+                    self:skipTurn(entity, "elite_retributive")
+                    return
+                end
+            end
+        end
+
         if self:isChickenDoomed(self.activeEntity) then
             self:skipTurn(self.activeEntity, "chicken_doom")
+            return
+        end
+
+        if self:shouldSkipForNoChallengeCards(self.activeEntity) then
+            self:skipTurn(self.activeEntity, "no_challenge_cards")
             return
         end
 
@@ -1202,6 +2815,637 @@ function M.createChallengeController(config)
             return false
         end
         return entityA.isPC ~= entityB.isPC
+    end
+
+    function controller:isCounterSpellIncomingAction(action)
+        if not action or action.countered or action.fizzled or action.counterSpellBlocked == true then
+            return false
+        end
+
+        local actionType = normalizeTalentKey(action.type or action.id)
+        return actionType == "speak_incantation" or action.spellId ~= nil or
+            action.spell ~= nil or action.incomingSpell ~= nil
+    end
+
+    function controller:getCounterSpellCandidateEntities()
+        local candidates = {}
+        local seen = {}
+
+        local function add(entity)
+            if not entity then
+                return
+            end
+            local key = entity.id or entity
+            if seen[key] then
+                return
+            end
+            seen[key] = true
+            candidates[#candidates + 1] = entity
+        end
+
+        for _, entity in ipairs(self.allCombatants or {}) do
+            add(entity)
+        end
+        for _, entity in ipairs(self.pcs or {}) do
+            add(entity)
+        end
+        for _, entity in ipairs(self.guild or {}) do
+            add(entity)
+        end
+
+        return candidates
+    end
+
+    function controller:canCounterSpellIncoming(counterer, card, incomingAction, opts)
+        opts = opts or {}
+        if not self:isCounterSpellIncomingAction(incomingAction) then
+            return false, "incoming_spell_required"
+        end
+        if not counterer then
+            return false, "missing_counterspeller"
+        end
+        if counterer == incomingAction.actor or
+           (counterer.id and incomingAction.actor and counterer.id == incomingAction.actor.id) then
+            return false, "cannot_counter_own_spell"
+        end
+        if opts.allowAlliedCounterspell ~= true and not self:areHostile(counterer, incomingAction.actor) then
+            return false, "requires_enemy_spell"
+        end
+        if not entityHasUsableTalent(counterer, "counter_spell") then
+            return false, "requires_counter_spell"
+        end
+        if not entityCanSpeak(counterer) then
+            return false, "counter_spell_silenced"
+        end
+        if getEntityResolveAmount(counterer) < 1 then
+            return false, "resolve_missing"
+        end
+        if incomingAction.canPerceiveCasting == false or incomingAction.canPerceiveCaster == false or
+           opts.canPerceiveCasting == false or opts.canPerceiveCaster == false then
+            return false, "counter_spell_caster_unseen"
+        end
+        if card then
+            local cardSuit = action_registry.cardSuitToActionSuit(card.suit)
+            if cardSuit ~= action_registry.SUITS.WANDS then
+                return false, "requires_wands_card"
+            end
+        elseif opts.requireCard ~= false then
+            return false, "card_required"
+        end
+
+        return true, nil
+    end
+
+    function controller:getCounterSpellInterruptCandidates(incomingAction, opts)
+        local candidates = {}
+        if not self:isCounterSpellIncomingAction(incomingAction) then
+            return candidates
+        end
+
+        opts = opts or {}
+        for _, entity in ipairs(self:getCounterSpellCandidateEntities()) do
+            local ok, reason = self:canCounterSpellIncoming(entity, nil, incomingAction, {
+                allowAlliedCounterspell = opts.allowAlliedCounterspell,
+                canPerceiveCasting = opts.canPerceiveCasting,
+                canPerceiveCaster = opts.canPerceiveCaster,
+                requireCard = false,
+            })
+            if ok then
+                candidates[#candidates + 1] = {
+                    actor = entity,
+                    counterer = entity,
+                    incomingAction = incomingAction,
+                    spellCaster = incomingAction.actor,
+                }
+            elseif opts.includeBlocked then
+                candidates[#candidates + 1] = {
+                    actor = entity,
+                    counterer = entity,
+                    incomingAction = incomingAction,
+                    spellCaster = incomingAction.actor,
+                    blocked = true,
+                    reason = reason,
+                }
+            end
+        end
+
+        return candidates
+    end
+
+    function controller:actionTargetsEntity(action, entity)
+        if not action or not entity then
+            return false
+        end
+
+        local entityId = entity.id
+        local function matches(candidate)
+            if not candidate then
+                return false
+            end
+            return candidate == entity or (entityId and candidate.id == entityId)
+        end
+
+        if matches(action.target) or matches(action.defender) or matches(action.victim) then
+            return true
+        end
+
+        local targets = action.targets or action.targetEntities
+        if type(targets) == "table" then
+            for _, target in ipairs(targets) do
+                if matches(target) then
+                    return true
+                end
+            end
+        end
+
+        return false
+    end
+
+    function controller:isHeavyMetalMachineIncomingAction(action)
+        if not action or action.countered or action.fizzled then
+            return false
+        end
+        local actionType = normalizeTalentKey(action.type or action.id)
+        if actionType == "heavy_metal_machine" or actionType == "counter_spell" then
+            return false
+        end
+        return action.target ~= nil or action.defender ~= nil or action.victim ~= nil or
+            action.targets ~= nil or action.targetEntities ~= nil
+    end
+
+    function controller:canUseHeavyMetalMachineInterrupt(entity, card, incomingAction, opts)
+        opts = opts or {}
+        if not self:isHeavyMetalMachineIncomingAction(incomingAction) then
+            return false, "incoming_action_required"
+        end
+        if not entity then
+            return false, "missing_actor"
+        end
+        if not self:actionTargetsEntity(incomingAction, entity) then
+            return false, "requires_targeted_action"
+        end
+        if incomingAction.actor == entity or
+           (incomingAction.actor and entity.id and incomingAction.actor.id == entity.id) then
+            return false, "cannot_interrupt_own_action"
+        end
+        if not entityHasUsableTalent(entity, "heavy_metal_machine") then
+            return false, "requires_heavy_metal_machine"
+        end
+
+        local armor = getWornIronOrSteelArmor(entity)
+        if not armor then
+            return false, "requires_iron_or_steel_armor"
+        end
+
+        local slot = self.getInitiativeSlot and self:getInitiativeSlot(entity.id)
+        if not slot then
+            return false, "initiative_required"
+        end
+
+        local round = self.currentRound or incomingAction.round or incomingAction.currentRound or 0
+        if entity.heavyMetalMachineUsedRound == round then
+            return false, "heavy_metal_machine_spent"
+        end
+
+        if opts.requireCard ~= false and not card then
+            return false, "card_required"
+        end
+
+        return true, nil, armor
+    end
+
+    function controller:getHeavyMetalMachineInterruptCandidates(incomingAction, opts)
+        local candidates = {}
+        if not self:isHeavyMetalMachineIncomingAction(incomingAction) then
+            return candidates
+        end
+
+        opts = opts or {}
+        local hand = opts.playerHand or self.playerHand
+        local requireHandCard = opts.requireHandCard ~= false
+
+        for _, entity in ipairs(self:getCounterSpellCandidateEntities()) do
+            local hasCard = true
+            if requireHandCard then
+                local cards = hand and hand.getHand and hand:getHand(entity) or nil
+                hasCard = cards and #cards > 0
+            end
+
+            local ok, reason, armor = false, "card_required", nil
+            if hasCard then
+                ok, reason, armor = self:canUseHeavyMetalMachineInterrupt(entity, nil, incomingAction, {
+                    requireCard = false,
+                })
+            end
+
+            if ok then
+                candidates[#candidates + 1] = {
+                    actor = entity,
+                    defender = entity,
+                    incomingAction = incomingAction,
+                    incomingActor = incomingAction.actor,
+                    armor = armor,
+                }
+            elseif opts.includeBlocked then
+                candidates[#candidates + 1] = {
+                    actor = entity,
+                    defender = entity,
+                    incomingAction = incomingAction,
+                    incomingActor = incomingAction.actor,
+                    blocked = true,
+                    reason = reason,
+                }
+            end
+        end
+
+        return candidates
+    end
+
+    function controller:announceHeavyMetalMachineInterrupts(incomingAction, opts)
+        local candidates = self:getHeavyMetalMachineInterruptCandidates(incomingAction, opts)
+        if #candidates == 0 then
+            self.pendingHeavyMetalMachineInterrupt = nil
+            return 0
+        end
+
+        incomingAction.heavyMetalMachinePromptPending = true
+        self.pendingHeavyMetalMachineInterrupt = {
+            incomingAction = incomingAction,
+            incomingActor = incomingAction.actor,
+            candidates = candidates,
+            round = self.currentRound,
+            count = self.currentCount,
+        }
+
+        self.eventBus:emit("heavy_metal_machine_interrupt_available", self.pendingHeavyMetalMachineInterrupt)
+        return #candidates
+    end
+
+    function controller:beginHeavyMetalMachineInterruptWindow(incomingAction, opts)
+        if not incomingAction then
+            return false
+        end
+        if incomingAction.heavyMetalMachineIncomingEmitted or
+           (incomingAction.heavyMetalMachineDecisionResolved and not incomingAction.heavyMetalMachinePromptPending) then
+            return false
+        end
+
+        local count = self:announceHeavyMetalMachineInterrupts(incomingAction, opts)
+        if count == 0 then
+            return false
+        end
+
+        self.awaitingHeavyMetalMachineDecision = true
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = incomingAction
+
+        self.eventBus:emit("heavy_metal_machine_interrupt_pause", self.pendingHeavyMetalMachineInterrupt)
+        return true
+    end
+
+    function controller:isAegisIncomingAction(action)
+        if not action or action.countered or action.fizzled then
+            return false
+        end
+        if action.aegisElectionResolved == true then
+            return false
+        end
+        if action.useAegis == true and
+           not (self.pendingAegisElection and self.pendingAegisElection.incomingAction == action) then
+            return false
+        end
+
+        local actionType = normalizeTalentKey(action.type or action.id)
+        if actionType == "counter_spell" or actionType == "heavy_metal_machine" then
+            return false
+        end
+        if action.aegisPhysical == false or action.physicalSource == false then
+            return false
+        end
+        if action.aegisPhysical == true or action.physicalSource == true or action.trap == true then
+            return true
+        end
+
+        return actionType == "melee" or actionType == "missile" or actionType == "attack" or
+            actionType == "use_item"
+    end
+
+    function controller:canElectAegisForIncoming(entity, incomingAction)
+        if not self:isAegisIncomingAction(incomingAction) then
+            return false, "incoming_physical_effect_required"
+        end
+        if not entity then
+            return false, "missing_actor"
+        end
+        if not self:actionTargetsEntity(incomingAction, entity) then
+            return false, "requires_targeted_effect"
+        end
+        if not entityHasUsableTalent(entity, "aegis") then
+            return false, "requires_aegis"
+        end
+
+        local shield, location = getCarriedIntactShield(entity)
+        if not shield then
+            return false, "requires_intact_shield"
+        end
+
+        return true, nil, shield, location
+    end
+
+    function controller:getAegisElectionCandidates(incomingAction, opts)
+        local candidates = {}
+        if not self:isAegisIncomingAction(incomingAction) then
+            return candidates
+        end
+
+        opts = opts or {}
+        for _, entity in ipairs(self:getCounterSpellCandidateEntities()) do
+            local ok, reason, shield, location = self:canElectAegisForIncoming(entity, incomingAction)
+            if ok then
+                candidates[#candidates + 1] = {
+                    actor = entity,
+                    defender = entity,
+                    incomingAction = incomingAction,
+                    incomingActor = incomingAction.actor,
+                    shield = shield,
+                    shieldLocation = location,
+                }
+            elseif opts.includeBlocked then
+                candidates[#candidates + 1] = {
+                    actor = entity,
+                    defender = entity,
+                    incomingAction = incomingAction,
+                    incomingActor = incomingAction.actor,
+                    blocked = true,
+                    reason = reason,
+                }
+            end
+        end
+
+        return candidates
+    end
+
+    function controller:announceAegisElection(incomingAction, opts)
+        local candidates = self:getAegisElectionCandidates(incomingAction, opts)
+        if #candidates == 0 then
+            self.pendingAegisElection = nil
+            return 0
+        end
+
+        incomingAction.aegisPromptPending = true
+        self.pendingAegisElection = {
+            incomingAction = incomingAction,
+            incomingActor = incomingAction.actor,
+            candidates = candidates,
+            round = self.currentRound,
+            count = self.currentCount,
+        }
+
+        self.eventBus:emit("aegis_election_available", self.pendingAegisElection)
+        return #candidates
+    end
+
+    function controller:beginAegisElectionWindow(incomingAction, opts)
+        if not incomingAction then
+            return false
+        end
+        if incomingAction.aegisIncomingEmitted or
+           (incomingAction.aegisDecisionResolved and not incomingAction.aegisPromptPending) then
+            return false
+        end
+
+        local count = self:announceAegisElection(incomingAction, opts)
+        if count == 0 then
+            return false
+        end
+
+        self.awaitingAegisDecision = true
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = incomingAction
+
+        self.eventBus:emit("aegis_election_pause", self.pendingAegisElection)
+        return true
+    end
+
+    function controller:beginIncomingActionInterruptWindow(incomingAction, opts)
+        if self:beginCounterSpellInterruptWindow(incomingAction, opts) then
+            return true
+        end
+        if self:beginHeavyMetalMachineInterruptWindow(incomingAction, opts) then
+            return true
+        end
+        if self:beginAegisElectionWindow(incomingAction, opts) then
+            return true
+        end
+        return false
+    end
+
+    function controller:announceCounterSpellInterrupts(incomingAction, opts)
+        local candidates = self:getCounterSpellInterruptCandidates(incomingAction, opts)
+        if #candidates == 0 then
+            self.pendingCounterSpellInterrupt = nil
+            return 0
+        end
+
+        incomingAction.counterSpellPromptPending = true
+        self.pendingCounterSpellInterrupt = {
+            incomingAction = incomingAction,
+            spellCaster = incomingAction.actor,
+            candidates = candidates,
+            round = self.currentRound,
+            count = self.currentCount,
+        }
+
+        self.eventBus:emit("counter_spell_interrupt_available", self.pendingCounterSpellInterrupt)
+        return #candidates
+    end
+
+    function controller:beginCounterSpellInterruptWindow(incomingAction, opts)
+        local count = self:announceCounterSpellInterrupts(incomingAction, opts)
+        if count == 0 then
+            return false
+        end
+
+        if incomingAction.counterSpellIncomingEmitted then
+            return true
+        end
+
+        if self.pendingCounterSpellRestore and
+           self.pendingCounterSpellRestore.incomingAction == incomingAction then
+            return true
+        end
+
+        if incomingAction.counterSpellDecisionResolved and
+           not incomingAction.counterSpellPromptPending then
+            return false
+        end
+
+        self.awaitingCounterSpellDecision = true
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = incomingAction
+
+        self.eventBus:emit("counter_spell_interrupt_pause", self.pendingCounterSpellInterrupt)
+        return true
+    end
+
+    function controller:resolveCounterSpellPendingIncoming(incomingAction)
+        local pending = self.pendingCounterSpellInterrupt
+        local action = incomingAction or (pending and pending.incomingAction)
+        if not action then
+            return false, "no_pending_counter_spell"
+        end
+        if action.counterSpellIncomingEmitted then
+            return false, "incoming_already_emitted"
+        end
+
+        action.counterSpellDecisionResolved = true
+        action.counterSpellPromptPending = false
+        action.counterSpellIncomingEmitted = true
+
+        if pending and pending.incomingAction == action then
+            self.pendingCounterSpellInterrupt = nil
+        end
+        self.awaitingCounterSpellDecision = false
+
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = action
+
+        self.eventBus:emit("counter_spell_interrupt_resolved", {
+            incomingAction = action,
+            spellCaster = action.actor,
+            countered = action.countered == true or action.fizzled == true,
+        })
+
+        if not action.countered and not action.fizzled then
+            if self:beginHeavyMetalMachineInterruptWindow(action) then
+                return true, action
+            end
+            if self:beginAegisElectionWindow(action) then
+                return true, action
+            end
+        end
+
+        self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
+
+        return true, action
+    end
+
+    function controller:skipCounterSpellInterrupt(incomingAction)
+        local pending = self.pendingCounterSpellInterrupt
+        local action = incomingAction or (pending and pending.incomingAction)
+        if not action then
+            return false, "no_pending_counter_spell"
+        end
+
+        action.counterSpellSkipped = true
+        self.eventBus:emit("counter_spell_interrupt_skipped", {
+            incomingAction = action,
+            spellCaster = action.actor,
+        })
+
+        return self:resolveCounterSpellPendingIncoming(action)
+    end
+
+    function controller:resolveHeavyMetalMachinePendingIncoming(incomingAction)
+        local pending = self.pendingHeavyMetalMachineInterrupt
+        local action = incomingAction or (pending and pending.incomingAction)
+        if not action then
+            return false, "no_pending_heavy_metal_machine"
+        end
+        if action.heavyMetalMachineIncomingEmitted then
+            return false, "incoming_already_emitted"
+        end
+
+        action.heavyMetalMachineDecisionResolved = true
+        action.heavyMetalMachinePromptPending = false
+        action.heavyMetalMachineIncomingEmitted = true
+
+        if pending and pending.incomingAction == action then
+            self.pendingHeavyMetalMachineInterrupt = nil
+        end
+        self.awaitingHeavyMetalMachineDecision = false
+
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = action
+
+        self.eventBus:emit("heavy_metal_machine_interrupt_resolved", {
+            incomingAction = action,
+            incomingActor = action.actor,
+            played = action.heavyMetalMachineInterruptPlayed == true,
+        })
+
+        if self:beginAegisElectionWindow(action) then
+            return true, action
+        end
+
+        self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
+
+        return true, action
+    end
+
+    function controller:skipHeavyMetalMachineInterrupt(incomingAction)
+        local pending = self.pendingHeavyMetalMachineInterrupt
+        local action = incomingAction or (pending and pending.incomingAction)
+        if not action then
+            return false, "no_pending_heavy_metal_machine"
+        end
+
+        action.heavyMetalMachineSkipped = true
+        self.eventBus:emit("heavy_metal_machine_interrupt_skipped", {
+            incomingAction = action,
+            incomingActor = action.actor,
+        })
+
+        return self:resolveHeavyMetalMachinePendingIncoming(action)
+    end
+
+    function controller:resolveAegisPendingIncoming(incomingAction)
+        local pending = self.pendingAegisElection
+        local action = incomingAction or (pending and pending.incomingAction)
+        if not action then
+            return false, "no_pending_aegis"
+        end
+        if action.aegisIncomingEmitted then
+            return false, "incoming_already_emitted"
+        end
+
+        action.aegisDecisionResolved = true
+        action.aegisPromptPending = false
+        action.aegisIncomingEmitted = true
+
+        if pending and pending.incomingAction == action then
+            self.pendingAegisElection = nil
+        end
+        self.awaitingAegisDecision = false
+
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = action
+
+        self.eventBus:emit("aegis_election_resolved", {
+            incomingAction = action,
+            incomingActor = action.actor,
+            elected = action.useAegis == true,
+            defender = action.aegisActor,
+        })
+        self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
+
+        return true, action
+    end
+
+    function controller:skipAegisElection(incomingAction)
+        local pending = self.pendingAegisElection
+        local action = incomingAction or (pending and pending.incomingAction)
+        if not action then
+            return false, "no_pending_aegis"
+        end
+
+        action.aegisSkipped = true
+        self.eventBus:emit("aegis_election_skipped", {
+            incomingAction = action,
+            incomingActor = action.actor,
+        })
+
+        return self:resolveAegisPendingIncoming(action)
     end
 
     --- Normalize trigger definition for pending vigilance
@@ -1465,10 +3709,13 @@ function M.createChallengeController(config)
                             followUpAction = reaction.type,
                         })
                     else
+                        local discarded = self:discardFacedownCard(entity, pendingVigilance.card, "vigilance_trigger_failed")
                         self.eventBus:emit("vigilance_trigger_failed", {
                             actor = entity,
                             triggerAction = triggeringAction,
                             reason = reason,
+                            card = pendingVigilance.card,
+                            discarded = discarded,
                         })
                         print("[VIGILANCE] " .. (entity.name or entity.id) .. " trigger failed: " .. tostring(reason))
                     end
@@ -1538,6 +3785,10 @@ function M.createChallengeController(config)
         self.state = M.STATES.RESOLVING
         self.pendingAction = reaction
 
+        if self:beginIncomingActionInterruptWindow(reaction) then
+            return
+        end
+
         -- Resolve through the standard pipeline
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, reaction)
     end
@@ -1558,6 +3809,10 @@ function M.createChallengeController(config)
         action.round = self.currentRound
         action.count = self.currentCount
         action.challengeController = self
+
+        if self:beginIncomingActionInterruptWindow(action) then
+            return true
+        end
 
         -- Move to resolving state
         self.state = M.STATES.RESOLVING
@@ -1626,6 +3881,11 @@ function M.createChallengeController(config)
         self.awaitingVisualSync = false
         self.pendingAction = nil
 
+        if self.pendingCounterSpellRestore then
+            self:completeCounterSpellInterrupt(completedAction)
+            return
+        end
+
         -- S4.9: Check if this was a Fool interrupt
         if self.pendingFoolRestore then
             self:completeFoolInterrupt()
@@ -1635,6 +3895,10 @@ function M.createChallengeController(config)
         if self.pendingQuickRestore then
             self:completeQuickInterrupt()
             return
+        end
+
+        if completedAction and completedAction.isVigilanceReaction then
+            self:discardResolvedVigilanceReaction(completedAction, "vigilance_resolved")
         end
 
         -- Queue vigilance reactions triggered by the just-resolved action
@@ -1683,6 +3947,32 @@ function M.createChallengeController(config)
     -- @param card table: The card being used (must match action suit)
     -- @param action table: { type, target, ... }
     -- @return boolean, string: success, error
+    function controller:getMinorActionEntityKey(entity)
+        if not entity then
+            return nil
+        end
+        return entity.minorActionGroupId or entity.initiativeGroupId or entity.enemyGroupId or
+            entity.groupId or entity.mobId or entity.id or entity
+    end
+
+    function controller:minorActionEntityMatches(entityA, entityB)
+        if entityA == entityB then
+            return true
+        end
+        local keyA = self:getMinorActionEntityKey(entityA)
+        local keyB = self:getMinorActionEntityKey(entityB)
+        return keyA ~= nil and keyB ~= nil and keyA == keyB
+    end
+
+    function controller:hasPendingMinorForEntity(entity)
+        for _, declaration in ipairs(self.pendingMinors or {}) do
+            if self:minorActionEntityMatches(entity, declaration.entity) then
+                return true
+            end
+        end
+        return false
+    end
+
     function controller:declareMinorAction(entity, card, action)
         if self.state ~= M.STATES.MINOR_WINDOW then
             return false, "not_in_minor_window"
@@ -1692,8 +3982,12 @@ function M.createChallengeController(config)
             return false, "invalid_minor_declaration"
         end
 
-        if self.activeEntity and entity == self.activeEntity then
+        if self.activeEntity and self:minorActionEntityMatches(entity, self.activeEntity) then
             return false, "acting_entity_cannot_minor"
+        end
+
+        if self:hasPendingMinorForEntity(entity) then
+            return false, "minor_action_already_declared"
         end
 
         -- Verify card suit matches action suit (S6.2/S6.4 requirement)
@@ -1702,12 +3996,18 @@ function M.createChallengeController(config)
         local actionDef = actionRegistry.getAction(action.type)
 
         if actionDef then
-            local talentMinor = actionRegistry.canUseMinorActionWithCard(actionDef, cardSuit, entity)
-            if actionDef.suit ~= cardSuit and actionDef.suit ~= actionRegistry.SUITS.MISC and not talentMinor then
-                return false, "suit_mismatch"
-            end
             if actionDef.suit == actionRegistry.SUITS.MISC then
                 return false, "misc_not_allowed"  -- Misc actions not allowed as minors
+            end
+            if canGMIgnoreMinorSuit(entity, card) then
+                if isGreaterDoomCard(card) then
+                    return false, "greater_doom_standard_action_blocked"
+                end
+            else
+                local talentMinor = actionRegistry.canUseMinorActionWithCard(actionDef, cardSuit, entity)
+                if actionDef.suit ~= cardSuit and not talentMinor then
+                    return false, "suit_mismatch"
+                end
             end
         end
 
@@ -1803,13 +4103,20 @@ function M.createChallengeController(config)
         fullAction.isMinorAction = true  -- Flag for resolver (uses face value only)
         fullAction.challengeController = self
 
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = fullAction
+        self.resolvingMinors = true
+
+        if self:beginIncomingActionInterruptWindow(fullAction) then
+            return
+        end
+
         -- Emit action for resolution
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, fullAction)
 
         -- Wait for visual sync before processing next minor
         self.state = M.STATES.VISUAL_SYNC
         self.awaitingVisualSync = true
-        self.pendingAction = fullAction
 
         -- The onVisualComplete will be called after animation
         -- We need to track that we're resolving minors
@@ -1865,35 +4172,56 @@ function M.createChallengeController(config)
 
     --- Attempt to flee from the challenge
     -- @param entity table: The entity attempting to flee
-    -- @return boolean: success
-    function controller:attemptFlee(entity)
-        -- Flee logic would involve a test
-        -- For now, simplified: flee always succeeds if no engagement
-        local success = true
+    -- @param options table|nil: Retreat pursuit/test details for the resolver
+    -- @return boolean, table: success, resolver result
+    function controller:attemptFlee(entity, options)
+        options = options or {}
 
-        if success then
-            -- Remove entity from combatants
-            for i, e in ipairs(self.allCombatants) do
-                if e == entity then
-                    table.remove(self.allCombatants, i)
-                    break
-                end
-            end
-
-            -- Check if all PCs fled
-            local remainingPCs = 0
-            for _, e in ipairs(self.allCombatants) do
-                if e.isPC then
-                    remainingPCs = remainingPCs + 1
-                end
-            end
-
-            if remainingPCs == 0 then
-                self:endChallenge(M.OUTCOMES.FLED)
-            end
+        local action_resolver = require('logic.action_resolver')
+        local resolver = self.actionResolver
+        if not resolver then
+            resolver = action_resolver.createActionResolver({
+                eventBus = self.eventBus,
+                zoneSystem = self.zoneSystem,
+                challengeController = self,
+            })
+            self.actionResolver = resolver
         end
 
-        return success
+        local action = {}
+        for key, value in pairs(options) do
+            action[key] = value
+        end
+        action.actor = action.actor or entity
+        action.card = action.card or { name = "Retreat", value = 0, suit = constants.SUITS.PENTACLES }
+        action.type = action.type or action_resolver.ACTION_TYPES.FLEE
+        action.challengeController = action.challengeController or self
+        if not action.participants then
+            action.participants = (self.pcs and #self.pcs > 0) and self.pcs or { entity }
+        end
+        action.allEntities = action.allEntities or self.allCombatants
+
+        local result = resolver:resolve(action)
+        self.lastRetreatResult = result
+        if result and result.needsGroupTest then
+            self.pendingRetreat = action
+            self.eventBus:emit(events.EVENTS.REQUEST_RETREAT_GROUP_TEST, {
+                actor = entity,
+                action = action,
+                result = result,
+                request = result.groupTestRequest,
+            })
+        else
+            self.pendingRetreat = nil
+        end
+
+        self.eventBus:emit("challenge_retreat_attempted", {
+            actor = entity,
+            action = action,
+            result = result,
+        })
+
+        return result and result.success == true, result
     end
 
     ----------------------------------------------------------------------------
@@ -1924,19 +4252,15 @@ function M.createChallengeController(config)
             return false, "not_the_fool"
         end
 
+        if action and not followUpCard and not action.followUpCard then
+            return false, "missing_fool_followup_card"
+        end
+
         print("[FOOL INTERRUPT] " .. (entity.name or entity.id) .. " plays The Fool!")
 
         -- Store the current state to restore after interrupt
         local previousState = self.state
         local previousActive = self.activeEntity
-
-        -- Emit interrupt event
-        self.eventBus:emit("fool_interrupt_start", {
-            entity = entity,
-            card = foolCard,
-            previousState = previousState,
-            previousActive = previousActive,
-        })
 
         -- Temporarily make the interrupting entity active
         self.activeEntity = entity
@@ -1951,6 +4275,48 @@ function M.createChallengeController(config)
             followUpAction = action and action.type,
             target = action and action.target,
         }
+        if action then
+            local followUpActionType = action.foolFollowUpAction or action.type
+            action.actor = entity
+            action.card = foolCard
+            action.foolCard = foolCard
+            action.followUpCard = followUpCard or action.followUpCard
+            action.foolFollowUpAction = followUpActionType
+            if not action.followUpAction then
+                action.followUpAction = followUpActionType
+            end
+            action.round = self.currentRound
+            action.count = self.currentCount
+            action.challengeController = self
+            action.isFoolInterrupt = true
+            action.foolInterrupt = true
+            action.isInterrupt = true
+        else
+            interruptAction.foolCard = foolCard
+            interruptAction.followUpCard = followUpCard
+            interruptAction.isFoolInterrupt = true
+            interruptAction.foolInterrupt = true
+            interruptAction.isInterrupt = true
+            interruptAction.round = self.currentRound
+            interruptAction.count = self.currentCount
+            interruptAction.challengeController = self
+        end
+
+        self.pendingFoolRestore = {
+            state = previousState,
+            activeEntity = previousActive,
+        }
+        self.pendingAction = interruptAction
+
+        -- Emit interrupt event
+        self.eventBus:emit("fool_interrupt_start", {
+            entity = entity,
+            card = foolCard,
+            followUpCard = interruptAction.followUpCard,
+            action = interruptAction,
+            previousState = previousState,
+            previousActive = previousActive,
+        })
 
         -- Emit the action for resolution
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, interruptAction)
@@ -1962,13 +4328,6 @@ function M.createChallengeController(config)
             })
         end
 
-        -- Note: Resolution will call back via resolveAction()
-        -- After resolution, we need to restore the previous state
-        self.pendingFoolRestore = {
-            state = previousState,
-            activeEntity = previousActive,
-        }
-
         return true
     end
 
@@ -1978,6 +4337,7 @@ function M.createChallengeController(config)
             self.state = self.pendingFoolRestore.state
             self.activeEntity = self.pendingFoolRestore.activeEntity
             self.pendingFoolRestore = nil
+            self.pendingAction = nil
 
             self.eventBus:emit("fool_interrupt_complete", {})
 
@@ -2043,6 +4403,21 @@ function M.createChallengeController(config)
         action.challengeController = self
         action.isQuickInterrupt = true
         action.quickInterrupt = true
+        action.quickTalentInterrupt = true
+        action.quickInterruptContext = {
+            actor = entity,
+            actorId = entity and entity.id,
+            card = card,
+            cardName = card and card.name,
+            cardSuit = card and card.suit,
+            cardValue = card and card.value,
+            actionType = action.type,
+            round = self.currentRound,
+            count = self.currentCount,
+            previousState = previousState,
+            previousActive = previousActive,
+            previousActiveId = previousActive and previousActive.id,
+        }
 
         self.pendingAction = action
 
@@ -2050,6 +4425,7 @@ function M.createChallengeController(config)
             entity = entity,
             card = card,
             action = action,
+            context = action.quickInterruptContext,
             previousState = previousState,
             previousActive = previousActive,
         })
@@ -2057,6 +4433,98 @@ function M.createChallengeController(config)
         self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, action)
 
         return true
+    end
+
+    ----------------------------------------------------------------------------
+    -- COUNTER-SPELL INTERRUPT
+    -- A Wands talent reaction that can fizzle an incoming spell before it resolves.
+    ----------------------------------------------------------------------------
+
+    function controller:playCounterSpellInterrupt(entity, card, incomingAction, opts)
+        opts = opts or {}
+        local ok, reason = self:canCounterSpellIncoming(entity, card, incomingAction, opts)
+        if not ok then
+            return false, reason
+        end
+
+        print("[COUNTER-SPELL] " .. (entity.name or entity.id) ..
+              " interrupts " .. ((incomingAction.actor and (incomingAction.actor.name or incomingAction.actor.id)) or "a spellcaster"))
+
+        local counterAction = {
+            actor = entity,
+            target = incomingAction.actor,
+            card = card,
+            type = "counter_spell",
+            incomingAction = incomingAction,
+            spellAction = incomingAction,
+            incomingSpell = incomingAction.spell or incomingAction.incomingSpell,
+            canPerceiveCasting = opts.canPerceiveCasting ~= false and incomingAction.canPerceiveCasting ~= false,
+            canPerceiveCaster = opts.canPerceiveCaster ~= false and incomingAction.canPerceiveCaster ~= false,
+            round = self.currentRound,
+            count = self.currentCount,
+            challengeController = self,
+            isCounterSpellInterrupt = true,
+            counterSpellInterrupt = true,
+            isInterrupt = true,
+        }
+
+        local pending = self.pendingCounterSpellInterrupt
+        local shouldResumeIncoming = opts.resumeIncoming
+        if shouldResumeIncoming == nil then
+            shouldResumeIncoming = pending and pending.incomingAction == incomingAction and
+                not incomingAction.counterSpellIncomingEmitted
+        end
+
+        incomingAction.counterSpellDecisionResolved = true
+        incomingAction.counterSpellPromptPending = false
+        incomingAction.counterSpellInterruptPlayed = true
+
+        if pending and pending.incomingAction == incomingAction then
+            self.pendingCounterSpellInterrupt = nil
+        end
+        self.awaitingCounterSpellDecision = false
+
+        if shouldResumeIncoming then
+            self.pendingCounterSpellRestore = {
+                incomingAction = incomingAction,
+                counterAction = counterAction,
+            }
+        end
+
+        self.state = M.STATES.RESOLVING
+        self.pendingAction = counterAction
+
+        self.eventBus:emit("counter_spell_interrupt_start", {
+            entity = entity,
+            counterer = entity,
+            card = card,
+            action = counterAction,
+            incomingAction = incomingAction,
+            spellCaster = incomingAction.actor,
+        })
+
+        self.eventBus:emit(events.EVENTS.CHALLENGE_ACTION, counterAction)
+
+        return true, counterAction
+    end
+
+    function controller:completeCounterSpellInterrupt(counterAction)
+        local pending = self.pendingCounterSpellRestore
+        if not pending then
+            return false
+        end
+
+        self.pendingCounterSpellRestore = nil
+
+        self.eventBus:emit("counter_spell_interrupt_complete", {
+            action = counterAction or pending.counterAction,
+            counterAction = counterAction or pending.counterAction,
+            incomingAction = pending.incomingAction,
+            spellCaster = pending.incomingAction and pending.incomingAction.actor,
+        })
+
+        print("[COUNTER-SPELL] Complete, resolving incoming spell")
+        return self:resolveCounterSpellPendingIncoming(pending.incomingAction)
     end
 
     function controller:completeQuickInterrupt()
@@ -2070,6 +4538,144 @@ function M.createChallengeController(config)
 
             print("[QUICK INTERRUPT] Complete, resuming normal turn order")
         end
+    end
+
+    ----------------------------------------------------------------------------
+    -- HEAVY METAL MACHINE INTERRUPT
+    -- An iron/steel-armored Swords talent user can boost Initiative against
+    -- one incoming targeted action by discarding any Challenge card.
+    ----------------------------------------------------------------------------
+
+    function controller:playHeavyMetalMachineInterrupt(entity, card, incomingAction, opts)
+        opts = opts or {}
+        local ok, reason, armor = self:canUseHeavyMetalMachineInterrupt(entity, card, incomingAction, opts)
+        if not ok then
+            return false, reason
+        end
+
+        local round = self.currentRound or incomingAction.round or incomingAction.currentRound or 0
+        local bonus = entity.swords or (entity.getAttribute and entity:getAttribute(constants.SUITS.SWORDS)) or 0
+
+        entity.heavyMetalMachineUsedRound = round
+        entity.heavyMetalMachineInterrupt = {
+            round = round,
+            bonus = bonus,
+            card = card,
+            armor = armor,
+            againstAction = incomingAction,
+            againstActionId = incomingAction.id,
+            againstActorId = incomingAction.actor and incomingAction.actor.id,
+        }
+
+        incomingAction.heavyMetalMachineInterruptPlayed = true
+
+        local pending = self.pendingHeavyMetalMachineInterrupt
+        if pending and pending.incomingAction == incomingAction then
+            self.pendingHeavyMetalMachineInterrupt = nil
+        end
+        self.awaitingHeavyMetalMachineDecision = false
+
+        print("[HEAVY METAL MACHINE] " .. (entity.name or entity.id) ..
+              " boosts Initiative against " ..
+              ((incomingAction.actor and (incomingAction.actor.name or incomingAction.actor.id)) or "an incoming action"))
+
+        self.eventBus:emit("heavy_metal_machine_interrupt_start", {
+            entity = entity,
+            actor = entity,
+            card = card,
+            incomingAction = incomingAction,
+            incomingActor = incomingAction.actor,
+            bonus = bonus,
+            armor = armor,
+        })
+
+        return self:resolveHeavyMetalMachinePendingIncoming(incomingAction)
+    end
+
+    ----------------------------------------------------------------------------
+    -- AEGIS ELECTION
+    -- A shield-bearing Aegis user can elect to Notch the shield instead of
+    -- suffering a physical effect. The resolver consumes this flag only if the
+    -- incoming effect actually lands.
+    ----------------------------------------------------------------------------
+
+    function controller:electAegisForIncoming(entity, incomingAction)
+        local ok, reason, shield, location = self:canElectAegisForIncoming(entity, incomingAction)
+        if not ok then
+            return false, reason
+        end
+
+        incomingAction.useAegis = true
+        incomingAction.aegis = true
+        incomingAction.aegisActors = incomingAction.aegisActors or {}
+        incomingAction.aegisActorList = incomingAction.aegisActorList or {}
+        if entity.id then
+            incomingAction.aegisActors[entity.id] = {
+                actor = entity,
+                shield = shield,
+                shieldLocation = location,
+            }
+        end
+        incomingAction.aegisActorList[#incomingAction.aegisActorList + 1] = {
+            actor = entity,
+            shield = shield,
+            shieldLocation = location,
+        }
+        if not incomingAction.aegisActor then
+            incomingAction.aegisActor = entity
+            incomingAction.aegisShield = shield
+            incomingAction.aegisShieldLocation = location
+        end
+        incomingAction.aegisElectionPlayed = true
+
+        local pending = self.pendingAegisElection
+        if pending and pending.incomingAction == incomingAction then
+            local remaining = {}
+            for _, candidate in ipairs(pending.candidates or {}) do
+                local actor = candidate.actor
+                if not actor or not entity.id or actor.id ~= entity.id then
+                    remaining[#remaining + 1] = candidate
+                end
+            end
+            if #remaining > 0 then
+                pending.candidates = remaining
+                self.pendingAegisElection = pending
+            else
+                self.pendingAegisElection = nil
+            end
+        end
+
+        print("[AEGIS] " .. (entity.name or entity.id) ..
+              " elects to Notch " .. (shield.name or "a shield") ..
+              " if the effect lands")
+
+        if self.pendingAegisElection then
+            self.awaitingAegisDecision = true
+            self.eventBus:emit("aegis_election_selected", {
+                entity = entity,
+                actor = entity,
+                incomingAction = incomingAction,
+                incomingActor = incomingAction.actor,
+                shield = shield,
+                shieldLocation = location,
+                remaining = self.pendingAegisElection.candidates,
+            })
+            self.eventBus:emit("aegis_election_available", self.pendingAegisElection)
+            return true, incomingAction
+        end
+
+        self.awaitingAegisDecision = false
+
+        self.eventBus:emit("aegis_election_start", {
+            entity = entity,
+            actor = entity,
+            incomingAction = incomingAction,
+            incomingActor = incomingAction.actor,
+            shield = shield,
+            shieldLocation = location,
+        })
+
+        return self:resolveAegisPendingIncoming(incomingAction)
     end
 
     ----------------------------------------------------------------------------
@@ -2184,9 +4790,18 @@ function M.createChallengeController(config)
             counselor = counselor,
             target = target,
             card = heldCard,
+            cardIndex = cardIndex,
+            cardName = heldCard.name,
+            cardSuit = heldCard.suit,
+            cardValue = heldCard.value,
             actionType = actionType,
+            actionName = actionDef.name,
+            actionSuit = actionDef.suit,
+            round = round,
             interrupt = interrupt,
             resolveSpent = resolveSpent,
+            sourceHandSize = #sourceHand,
+            targetHandSize = #targetHand,
         }
 
         self.eventBus:emit("counsel_card_given", detail)

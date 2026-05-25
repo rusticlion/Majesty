@@ -8,6 +8,8 @@
 local M = {}
 
 local events = require('logic.events')
+local constants = require('constants')
+local action_resolver = require('logic.action_resolver')
 
 --------------------------------------------------------------------------------
 -- CONSTANTS
@@ -42,6 +44,9 @@ function M.createBeltHotbar(config)
 
         -- Visibility
         isVisible = true,
+
+        -- Optional shared resolver; created lazily for quick item effects.
+        actionResolver = config.actionResolver,
 
         unsubscribeActivePC = nil,
     }
@@ -94,6 +99,15 @@ function M.createBeltHotbar(config)
     -- ITEM USE
     ----------------------------------------------------------------------------
 
+    function hotbar:getActionResolver()
+        if not self.actionResolver then
+            self.actionResolver = action_resolver.createActionResolver({
+                eventBus = self.eventBus,
+            })
+        end
+        return self.actionResolver
+    end
+
     local function isItemLit(item)
         local props = item and item.properties
         if not props then return false end
@@ -134,8 +148,7 @@ function M.createBeltHotbar(config)
             return true
         elseif item.name and item.name:lower():find("potion") then
             -- Potion - use it
-            self:usePotion(pc, item)
-            return true
+            return self:usePotion(pc, item)
         end
 
         print("[HOTBAR] Cannot use item: " .. item.name)
@@ -189,14 +202,28 @@ function M.createBeltHotbar(config)
     function hotbar:usePotion(pc, item)
         print("[HOTBAR] " .. pc.name .. " drinks " .. item.name)
 
-        -- Remove potion
-        pc.inventory:removeItem(item.id)
+        local resolver = self:getActionResolver()
+        local result = resolver:resolve({
+            actor = pc,
+            target = pc,
+            card = { name = "Belt Quick Use", value = 0, suit = constants.SUITS.CUPS },
+            type = action_resolver.ACTION_TYPES.USE_ITEM,
+            itemId = item.id,
+            quickUseFromBelt = true,
+        })
 
-        -- TODO: Apply potion effects based on type
         self.eventBus:emit("potion_consumed", {
             entity = pc,
             item = item,
+            result = result,
+            consumed = result and result.consumedItem ~= nil,
         })
+
+        if result and not result.success then
+            print("[HOTBAR] " .. (result.description or "Potion has no effect."))
+        end
+
+        return result and result.success == true
     end
 
     ----------------------------------------------------------------------------

@@ -74,6 +74,65 @@ for disposition, states in pairs(M.STATES) do
     end
 end
 
+M.FAME_REACTIONS = {
+    [0] = {
+        id = "unknown",
+        recognition = "unknown",
+        scope = "none",
+        reaction = "Who are you again? Am I supposed to have heard of you?",
+    },
+    [1] = {
+        id = "token_name_recognition",
+        recognition = "token",
+        scope = "city_gossip",
+        reaction = "Token name recognition",
+    },
+    [2] = {
+        id = "known_underworld",
+        recognition = "known",
+        scope = "underworld",
+        reaction = "Known generally in the Underworld",
+    },
+    [3] = {
+        id = "famous_underworld",
+        recognition = "famous",
+        scope = "underworld",
+        reaction = "Famous within the Underworld",
+    },
+    [4] = {
+        id = "known_city",
+        recognition = "known",
+        scope = "city",
+        reaction = "Known generally in the City",
+    },
+    [5] = {
+        id = "famous_city",
+        recognition = "famous",
+        scope = "city",
+        reaction = "Famous within the City",
+    },
+}
+
+local POSITIVE_FAME_TONES = {
+    benevolent = true,
+    beloved = true,
+    celebrated = true,
+    heroic = true,
+    honorable = true,
+    helpful = true,
+    trustworthy = true,
+}
+
+local NEGATIVE_FAME_TONES = {
+    cruel = "distaste",
+    dastardly = "distaste",
+    feared = "fear",
+    infamous = "distaste",
+    notorious = "distaste",
+    terrifying = "fear",
+    villainous = "distaste",
+}
+
 --------------------------------------------------------------------------------
 -- DISPOSITION PROPERTIES
 -- Each disposition has properties that affect social interactions
@@ -174,6 +233,18 @@ local function normalizeText(value)
     return value:lower():gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+local function cloneTable(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneTable(entry)
+    end
+    return copy
+end
+
 function M.normalizeSeverity(severity, fallback)
     fallback = fallback or M.SEVERITY.BASIC
 
@@ -249,6 +320,50 @@ function M.dispositionFromMinorDiscard(card)
     end
 
     return disposition, M.SEVERITY.BASIC, M.getDispositionLabel(disposition, M.SEVERITY.BASIC)
+end
+
+function M.getFameReaction(fame, opts)
+    opts = opts or {}
+    local value = math.max(0, math.min(5, math.floor(tonumber(fame) or 0)))
+    local reaction = cloneTable(M.FAME_REACTIONS[value] or M.FAME_REACTIONS[0])
+    reaction.fame = value
+    reaction.highFame = value >= 4
+
+    local tone = normalizeText(opts.reputation or opts.tone or opts.deedTone or opts.fameTone)
+    local favorable = opts.favorable
+    if tone ~= "" then
+        reaction.reputation = tone
+    end
+    if favorable == nil and POSITIVE_FAME_TONES[tone] then
+        favorable = true
+    elseif favorable == nil and NEGATIVE_FAME_TONES[tone] then
+        favorable = false
+    end
+
+    local frame = {
+        bias = value == 0 and "none" or "recognition_only",
+        appliesToStartingDisposition = false,
+    }
+    if reaction.highFame then
+        frame.appliesToStartingDisposition = true
+        if favorable == true then
+            frame.bias = "more_favorable"
+            frame.suggestedDisposition = M.DISPOSITIONS.TRUST
+            frame.suggestedSeverity = M.SEVERITY.MILD
+        elseif favorable == false then
+            frame.bias = "less_favorable"
+            frame.suggestedDisposition = NEGATIVE_FAME_TONES[tone] or M.DISPOSITIONS.DISTASTE
+            frame.suggestedSeverity = M.SEVERITY.MILD
+        else
+            frame.bias = "gm_judgment"
+        end
+    end
+
+    if frame.suggestedDisposition then
+        frame.suggestedLabel = M.getDispositionLabel(frame.suggestedDisposition, frame.suggestedSeverity)
+    end
+    reaction.dispositionFrame = frame
+    return reaction
 end
 
 --- Get the next disposition in the wheel

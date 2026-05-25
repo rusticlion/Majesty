@@ -82,6 +82,17 @@ M.blueprints = {
                     healWounds = 2,
                 },
             },
+            {
+                id = "fear",
+                name = "Fear",
+                description = "Compare the lesser doom to same-zone adventurers' Initiative, adding Wands on the undead's turn; beaten adventurers are Displaced to an adjacent zone of the player's choice.",
+                effect = {
+                    type = "undead_fear",
+                    targetScope = "same_zone_adventurers",
+                    displacement = "adjacent_player_choice",
+                    addWandsOnOwnTurn = true,
+                },
+            },
         },
         greaterDoom = {
             id = "last_grasp",
@@ -1077,6 +1088,10 @@ M.blueprints = {
                 id = "expeditious_retreat",
                 name = "Expeditious Retreat",
                 description = "Discard a greater doom card to automatically disengage from all adventurers; this does not count toward the one-card-per-turn limit.",
+                effect = {
+                    type = "disengage_all",
+                    countsTowardTurnCard = false,
+                },
             },
             {
                 id = "sleep_song",
@@ -1169,6 +1184,35 @@ M.blueprints = {
                     type = "greater_doom_attack",
                 },
             },
+            {
+                id = "deadly_attack",
+                name = "Deadly Attack",
+                description = "A successful Attack deals 2 Wounds.",
+                effect = {
+                    type = "brute_deadly_attack",
+                    wounds = 2,
+                    bruteTemplate = true,
+                },
+            },
+            {
+                id = "corrosive_attack",
+                name = "Corrosive Attack",
+                description = "A successful Attack destroys one item instead of dealing damage.",
+                effect = {
+                    type = "brute_corrosive_attack",
+                    replacesDamage = true,
+                    bruteTemplate = true,
+                },
+            },
+            {
+                id = "untouchable",
+                name = "Untouchable",
+                description = "Discard a greater doom as the brute's Initiative.",
+                effect = {
+                    type = "greater_doom_as_initiative",
+                    bruteTemplate = true,
+                },
+            },
         },
         alchemy = {
             reagentTemplateId = "ogre_reagent",
@@ -1258,6 +1302,10 @@ M.blueprints = {
                 id = "expeditious_retreat",
                 name = "Expeditious Retreat",
                 description = "Discard a greater doom card to automatically disengage from all combatants; this does not count toward the one-card-per-turn limit.",
+                effect = {
+                    type = "disengage_all",
+                    countsTowardTurnCard = false,
+                },
             },
             {
                 id = "resilient",
@@ -1937,12 +1985,44 @@ M.blueprints = {
                 targetRootedUntilAllLimbsFreed = true,
                 recoverFreesOneLimbAtATime = true,
             },
+            sorcery = {
+                spellIds = { "illusion" },
+                componentTemplateIds = { "component_illusion" },
+                greaterDoomSubstitutesResolve = true,
+                extraGreaterDoomAddsResolve = 1,
+            },
         },
         alchemy = {
             reagentTemplateId = "brain_spider_reagent",
             yield = 1,
         },
-        starting_gear = {},
+        knownSpells = {
+            illusion = {
+                id = "illusion",
+                source = "brain_spider_sorcery",
+            },
+        },
+        preferredActions = {
+            {
+                id = "brain_spider_sorcery_illusion",
+                type = "speak_incantation",
+                spellId = "illusion",
+                source = "brain_spider_sorcery",
+                cardPolicy = "lesser",
+                greaterDoomId = "sorcery",
+                requiresGreaterDoom = true,
+                targetMode = "environment",
+                targetOptional = true,
+                resolveSpent = 1,
+                illusionKind = "object",
+                image = "a false passage or distracting hologram",
+            },
+        },
+        starting_gear = {
+            hands = {
+                { templateId = "component_illusion" },
+            },
+        },
         lesserDooms = {
             {
                 id = "great_leap",
@@ -1987,80 +2067,521 @@ M.blueprints = {
                     recoverFreesOneLimb = true,
                 },
             },
+            {
+                id = "sorcery",
+                name = "Sorcery",
+                activation = "speak_incantations",
+                description = "Cast Illusion with a held seven-faceted prism by discarding a greater doom card instead of spending Resolve. Each additional greater doom discarded counts as +1 Resolve.",
+                effect = {
+                    type = "spellcasting_resolve_substitute",
+                    spellIds = { "illusion" },
+                    componentTemplateIds = { "component_illusion" },
+                    greaterDoomSubstitutesResolve = true,
+                    extraGreaterDoomAddsResolve = 1,
+                },
+            },
         },
     },
 
     puppet_mummy = {
         name = "Puppet-Mummy",
         attributes = {
-            swords    = 4,
-            pentacles = 2,
-            cups      = 1,
-            wands     = 1,
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
         },
-        -- HD: 2/0 - Dried corpses, no armor but must be hacked apart
-        health = 2,
+        health = 1,
         defense = 0,
-        instantDestruction = true,  -- Undead puppet, just stops moving
-        baseMorale = 20,  -- S12.3: Mindless undead, controlled by their master
-        starting_gear = {
-            hands = {
-                { name = "Corroded Khopesh", size = 1, durability = 1 },
+        instantDestruction = true,
+        baseMorale = 20,
+        tags = { "construct", "corpse", "puppet_mummy", "marionette" },
+        aiTags = { "puppet_mummy", "marionette", "gang_up", "roughhouse", "disarm" },
+        puppetMummy = {
+            marionetteCorpses = {
+                notUndead = true,
+                notLiving = true,
+                animatedByWebs = true,
+                poisonImmune = true,
+                illusionImmune = true,
+                necromancyImmune = true,
+            },
+            lastGrasp = {
+                ignoreWoundByDiscardingGreaterDoom = true,
+                countsTowardTurnCard = false,
+                severedLimb = {
+                    sameInitiativeAsPuppetMummy = true,
+                    health = 1,
+                    cannotUseLastGrasp = true,
+                    addsNewEnemy = true,
+                },
+            },
+        },
+        notes = {
+            marionetteCorpses = "Puppet-mummies are not undead; they are corpses animated by webs and are affected by neither living-target nor undead-target effects.",
+        },
+        social = {
+            languages = {
+                cannotSpeak = true,
+            },
+        },
+        starting_gear = {},
+        greaterDooms = {
+            {
+                id = "last_grasp",
+                name = "Last Grasp",
+                description = "When the puppet-mummy would take a Wound, discard a greater doom instead. The Wound is prevented and a severed limb continues to attack independently.",
+                effect = {
+                    type = "ignore_wound_spawn_limb",
+                    countsTowardTurnCard = false,
+                    severedLimb = {
+                        sameInitiativeAsPuppetMummy = true,
+                        health = 1,
+                        cannotUseLastGrasp = true,
+                    },
+                },
             },
         },
     },
 
     giant_centipede = {
-        name = "Giant Centipede",
+        name = "Dire Centipede",
         attributes = {
-            swords    = 3,
-            pentacles = 5,
-            cups      = 1,
-            wands     = 2,
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
         },
-        -- HD: 2/2 - Hard carapace, segmented body
         health = 2,
-        defense = 2,  -- Hard chitinous shell
-        baseMorale = 12,  -- S12.3: Instinctive beast, will flee if badly hurt
-        starting_gear = {},  -- Venomous mandibles
+        defense = 0,
+        baseMorale = 12,
+        tags = { "beast", "minion", "centipede", "dire_centipede", "giant_centipede" },
+        aiTags = { "beast", "centipede", "fleet", "trample", "lowest_initiative" },
+        social = {
+            likes = {
+                "soft_earth",
+                "easy_sources_of_food",
+            },
+            hates = {
+                "fire",
+            },
+        },
+        notes = {
+            fleet = "On its turn, can Move 1 zone without spending a card.",
+        },
+        direCentipede = {
+            fleetMoveZones = 1,
+            freeMoveOnTurn = true,
+            trample = {
+                secondAttackAfterMiss = true,
+                targetScope = "same_zone",
+            },
+        },
+        lesserDooms = {
+            {
+                id = "trample",
+                name = "Trample",
+                description = "On an unsuccessful Attack, the centipede may use its Attack action against a second target in the same zone.",
+                effect = {
+                    type = "second_attack_after_miss",
+                    targetScope = "same_zone",
+                },
+            },
+        },
+        starting_gear = {},
     },
 
-    -- BOSS: Glaura Glossolalia, the Brain Spider Queen
-    -- S10.4: Enemy with a "Greater Doom" (Major Arcana)
+    dire_centipede_book_worm = {
+        name = "Book Worm",
+        attributes = {
+            swords    = 0,
+            pentacles = 0,
+            cups      = 0,
+            wands     = 0,
+        },
+        health = 2,
+        defense = 0,
+        baseMorale = 12,
+        tags = { "beast", "minion", "centipede", "dire_centipede", "giant_centipede", "sentient", "book_worm" },
+        aiTags = { "beast", "centipede", "fleet", "trample", "social", "rumor_npc" },
+        social = {
+            disposition = "amiable",
+            likes = {
+                "books",
+                "scrolls",
+                "nerdy_conversation",
+            },
+            hates = {
+                "fire",
+                "book_burning",
+            },
+            languages = {
+                vetus = true,
+                only = "vetus",
+            },
+        },
+        notes = {
+            sentient = "A dire centipede made sentient by eating too many scrolls from the Scriptorium.",
+            speech = "Book Worm only speaks Vetus.",
+            personality = "Generally amiable, but a terrible nerd.",
+            fleet = "On her turn, can Move 1 zone without spending a card.",
+        },
+        direCentipede = {
+            fleetMoveZones = 1,
+            freeMoveOnTurn = true,
+            trample = {
+                secondAttackAfterMiss = true,
+                targetScope = "same_zone",
+            },
+        },
+        bookWorm = {
+            sentientFromEatingScrolls = true,
+            onlySpeaksVetus = true,
+            amiable = true,
+            terribleNerd = true,
+            rumors = {
+                {
+                    id = "glaura_star_child_egg",
+                    truth = "partial",
+                    summary = "Glaura Glossolalia has a magic god-child egg she is trying to hatch through magic; she thinks this will make her immortal.",
+                },
+                {
+                    id = "statue_eye_beams",
+                    truth = "true",
+                    summary = "The statue in room 108 killed an adventurer with eye beams.",
+                },
+            },
+            bookGiftRumor = {
+                requiresNewBook = true,
+                id = "hidden_mural_doors",
+                truth = "true",
+                summary = "There are hidden doors in the murals.",
+            },
+        },
+        lesserDooms = {
+            {
+                id = "trample",
+                name = "Trample",
+                description = "On an unsuccessful Attack, the centipede may use its Attack action against a second target in the same zone.",
+                effect = {
+                    type = "second_attack_after_miss",
+                    targetScope = "same_zone",
+                },
+            },
+        },
+        starting_gear = {},
+    },
+
+    -- Glaura Glossolalia, the Brain Spider Queen
+    -- Appendix E: uses the Brain Spider stat block and Sorcery doom package.
     brain_spider_queen = {
         name = "Glaura Glossolalia",
         attributes = {
-            swords    = 4,
-            pentacles = 5,
-            cups      = 6,  -- Master psychic
-            wands     = 6,  -- Powerful caster
+            swords    = 1,
+            pentacles = 4,
+            cups      = 2,
+            wands     = 3,
         },
-        -- HD: 5/4 - Boss-level durability with reinforced carapace
-        health = 5,
-        defense = 4,  -- Reinforced psychic carapace
-        baseMorale = 18,  -- S12.3: Cunning boss, will use every trick before fleeing
-        tags = { "monster", "arachnid", "brain_spider", "boss" },
+        health = 3,
+        defense = 3,
+        baseMorale = 14,
+        rank = "strategist",
+        tags = { "monster", "sorcerous", "strategist", "arachnid", "brain_spider", "telepathic", "boss" },
+        aiTags = { "boss", "sorcerous", "brain_spider", "strategist", "leaper", "wall_crawler", "webber", "spellcaster" },
+        social = {
+            likes = {
+                "crude_jokes",
+                "ribald_songs",
+            },
+            hates = {
+                "mythric_priests",
+            },
+            languages = {
+                telepathic = true,
+                communicatesWithAnyLanguage = true,
+            },
+        },
+        notes = {
+            squishy = "Immune to bludgeoning and smashing weapons, such as hammers and maces.",
+            telepathic = "Speaks telepathically and can communicate with anyone regardless of language.",
+        },
+        brainSpider = {
+            squishy = {
+                immuneToBludgeoning = true,
+                immuneToSmashing = true,
+                examples = { "hammers", "maces" },
+            },
+            telepathic = {
+                speaksTelepathically = true,
+                communicatesRegardlessOfLanguage = true,
+            },
+            greatLeap = {
+                dashJumpZones = 2,
+                clearsInterveningObstacles = true,
+            },
+            wallCrawling = {
+                effortlessClimb = true,
+                moveOntoWallCanAvoidAndLeave = true,
+            },
+            web = {
+                replacesAttackDamage = true,
+                targetRootedUntilAllLimbsFreed = true,
+                recoverFreesOneLimbAtATime = true,
+            },
+            sorcery = {
+                spellIds = { "illusion" },
+                componentTemplateIds = { "component_illusion" },
+                greaterDoomSubstitutesResolve = true,
+                extraGreaterDoomAddsResolve = 1,
+            },
+        },
         alchemy = {
             reagentTemplateId = "brain_spider_reagent",
             yield = 1,
         },
-        starting_gear = {},
-
-        -- Greater Doom: A devastating special ability
-        greaterDoom = {
-            name = "Star-Child's Scream",
-            description = "Glaura channels the psychic power of the sleeping star-child. All adventurers must test Cups vs 14 or become Stressed and take 1 Wound.",
-            trigger = "on_staggered",  -- Triggers when first staggered
-            effect = {
-                type = "group_test",
-                attribute = "cups",
-                difficulty = 14,
-                onFailure = { condition = "stressed", damage = 1 },
+        knownSpells = {
+            illusion = {
+                id = "illusion",
+                source = "brain_spider_sorcery",
             },
         },
+        preferredActions = {
+            {
+                id = "brain_spider_sorcery_illusion",
+                type = "speak_incantation",
+                spellId = "illusion",
+                source = "brain_spider_sorcery",
+                cardPolicy = "lesser",
+                greaterDoomId = "sorcery",
+                requiresGreaterDoom = true,
+                targetMode = "environment",
+                targetOptional = true,
+                resolveSpent = 1,
+                illusionKind = "object",
+                image = "a false passage or distracting hologram",
+            },
+        },
+        starting_gear = {
+            hands = {
+                { templateId = "component_illusion" },
+            },
+        },
+        lesserDooms = {
+            {
+                id = "great_leap",
+                name = "Great Leap",
+                description = "The brain spider can jump 2 zones when Dashing, clearing intervening obstacles such as pits, hazardous terrain, or blocking adventurers.",
+                effect = {
+                    type = "dash_jump",
+                    moveZones = 2,
+                    clearsInterveningObstacles = true,
+                },
+            },
+            {
+                id = "wall_crawling",
+                name = "Wall Crawling",
+                description = "The brain spider can effortlessly climb walls; moving onto a wall can let it avoid adventurers and leave the area unless they can keep up.",
+                effect = {
+                    type = "wall_crawl",
+                    avoidsAdventurers = true,
+                    canLeaveArea = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "tactics",
+                name = "Tactics",
+                description = "Discard a greater doom card to turn a standard Challenge Action into an interrupt.",
+                effect = {
+                    type = "standard_action_as_interrupt",
+                },
+            },
+            {
+                id = "web",
+                name = "Web",
+                activation = "attack_rider",
+                description = "When the brain spider Attacks, discard a greater doom to wrap the target in webs instead of dealing damage. The target is Rooted until each limb is freed with Recover.",
+                effect = {
+                    type = "web",
+                    limbs = 4,
+                    suppressDamage = true,
+                    rootUntilAllLimbsFreed = true,
+                    recoverFreesOneLimb = true,
+                },
+            },
+            {
+                id = "sorcery",
+                name = "Sorcery",
+                activation = "speak_incantations",
+                description = "Cast Illusion with a held seven-faceted prism by discarding a greater doom card instead of spending Resolve. Each additional greater doom discarded counts as +1 Resolve.",
+                effect = {
+                    type = "spellcasting_resolve_substitute",
+                    spellIds = { "illusion" },
+                    componentTemplateIds = { "component_illusion" },
+                    greaterDoomSubstitutesResolve = true,
+                    extraGreaterDoomAddsResolve = 1,
+                },
+            },
+        },
+    },
 
-        -- Boss-specific AI behaviors
-        aiTags = { "boss", "psychic", "summons_minions" },
+    -- Kodi Dove-devourer
+    -- Appendix E: uses the Brain Spider stat block and Sorcery doom package.
+    brain_spider_kodi = {
+        name = "Kodi Dove-devourer",
+        attributes = {
+            swords    = 1,
+            pentacles = 4,
+            cups      = 2,
+            wands     = 3,
+        },
+        health = 3,
+        defense = 3,
+        baseMorale = 14,
+        rank = "strategist",
+        tags = { "monster", "sorcerous", "strategist", "arachnid", "brain_spider", "telepathic", "named" },
+        aiTags = { "sorcerous", "brain_spider", "strategist", "leaper", "wall_crawler", "webber", "spellcaster", "illusionist" },
+        social = {
+            likes = {
+                "goats",
+                "drugs",
+                "banjo_music",
+            },
+            hates = {
+                "goblins",
+                "being_looked_down_on",
+                "nobility",
+            },
+            languages = {
+                telepathic = true,
+                communicatesWithAnyLanguage = true,
+            },
+        },
+        notes = {
+            squishy = "Immune to bludgeoning and smashing weapons, such as hammers and maces.",
+            telepathic = "Speaks telepathically and can communicate with anyone regardless of language.",
+            personality = "Ambitious, greedy, and possessive of everything caught in his webs.",
+        },
+        brainSpider = {
+            squishy = {
+                immuneToBludgeoning = true,
+                immuneToSmashing = true,
+                examples = { "hammers", "maces" },
+            },
+            telepathic = {
+                speaksTelepathically = true,
+                communicatesRegardlessOfLanguage = true,
+            },
+            greatLeap = {
+                dashJumpZones = 2,
+                clearsInterveningObstacles = true,
+            },
+            wallCrawling = {
+                effortlessClimb = true,
+                moveOntoWallCanAvoidAndLeave = true,
+            },
+            web = {
+                replacesAttackDamage = true,
+                targetRootedUntilAllLimbsFreed = true,
+                recoverFreesOneLimbAtATime = true,
+            },
+            sorcery = {
+                spellIds = { "illusion" },
+                componentTemplateIds = { "component_illusion" },
+                greaterDoomSubstitutesResolve = true,
+                extraGreaterDoomAddsResolve = 1,
+            },
+        },
+        alchemy = {
+            reagentTemplateId = "brain_spider_reagent",
+            yield = 1,
+        },
+        knownSpells = {
+            illusion = {
+                id = "illusion",
+                source = "brain_spider_sorcery",
+            },
+        },
+        preferredActions = {
+            {
+                id = "brain_spider_sorcery_illusion",
+                type = "speak_incantation",
+                spellId = "illusion",
+                source = "brain_spider_sorcery",
+                cardPolicy = "lesser",
+                greaterDoomId = "sorcery",
+                requiresGreaterDoom = true,
+                targetMode = "environment",
+                targetOptional = true,
+                resolveSpent = 1,
+                illusionKind = "object",
+                image = "a false passage or distracting hologram",
+            },
+        },
+        starting_gear = {
+            hands = {
+                { templateId = "component_illusion" },
+            },
+        },
+        lesserDooms = {
+            {
+                id = "great_leap",
+                name = "Great Leap",
+                description = "The brain spider can jump 2 zones when Dashing, clearing intervening obstacles such as pits, hazardous terrain, or blocking adventurers.",
+                effect = {
+                    type = "dash_jump",
+                    moveZones = 2,
+                    clearsInterveningObstacles = true,
+                },
+            },
+            {
+                id = "wall_crawling",
+                name = "Wall Crawling",
+                description = "The brain spider can effortlessly climb walls; moving onto a wall can let it avoid adventurers and leave the area unless they can keep up.",
+                effect = {
+                    type = "wall_crawl",
+                    avoidsAdventurers = true,
+                    canLeaveArea = true,
+                },
+            },
+        },
+        greaterDooms = {
+            {
+                id = "tactics",
+                name = "Tactics",
+                description = "Discard a greater doom card to turn a standard Challenge Action into an interrupt.",
+                effect = {
+                    type = "standard_action_as_interrupt",
+                },
+            },
+            {
+                id = "web",
+                name = "Web",
+                activation = "attack_rider",
+                description = "When the brain spider Attacks, discard a greater doom to wrap the target in webs instead of dealing damage. The target is Rooted until each limb is freed with Recover.",
+                effect = {
+                    type = "web",
+                    limbs = 4,
+                    suppressDamage = true,
+                    rootUntilAllLimbsFreed = true,
+                    recoverFreesOneLimb = true,
+                },
+            },
+            {
+                id = "sorcery",
+                name = "Sorcery",
+                activation = "speak_incantations",
+                description = "Cast Illusion with a held seven-faceted prism by discarding a greater doom card instead of spending Resolve. Each additional greater doom discarded counts as +1 Resolve.",
+                effect = {
+                    type = "spellcasting_resolve_substitute",
+                    spellIds = { "illusion" },
+                    componentTemplateIds = { "component_illusion" },
+                    greaterDoomSubstitutesResolve = true,
+                    extraGreaterDoomAddsResolve = 1,
+                },
+            },
+        },
     },
 
     slime = {
@@ -2966,6 +3487,15 @@ M.blueprints = {
                 physicalInteractionEndsEffect = true,
             },
         },
+        spirit = {
+            naturalSorcery = {
+                spells = { "illusion", "shroud" },
+                branch = "weird",
+                noComponents = true,
+                noResolve = true,
+                maxResolveValue = 1,
+            },
+        },
         lesserDooms = {
             {
                 id = "body_of_smokeless_fire",
@@ -2985,6 +3515,17 @@ M.blueprints = {
                     type = "become_shrouded",
                     costsAnyCard = true,
                     endsOnPhysicalInteraction = true,
+                },
+            },
+            {
+                id = "natural_sorcery",
+                name = "Natural Sorcery",
+                description = "Cast one of the jinn's Weird spells through Speak Incantations without components or Resolve.",
+                effect = {
+                    type = "natural_sorcery",
+                    spells = { "illusion", "shroud" },
+                    noComponents = true,
+                    noResolve = true,
                 },
             },
         },
@@ -3054,11 +3595,19 @@ M.blueprints = {
                 id = "vomit",
                 name = "Vomit",
                 description = "A successful Attack can deal no damage and Notch one target item.",
+                effect = {
+                    type = "attack_notch_item_no_damage",
+                    suppressDamage = true,
+                },
             },
             {
                 id = "piss_and_shit",
                 name = "Piss and Shit",
                 description = "A successful Roughhouse can also make the target Stressed.",
+                effect = {
+                    type = "roughhouse_stress",
+                    condition = "stressed",
+                },
             },
         },
         greaterDooms = {

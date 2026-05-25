@@ -6,6 +6,7 @@ local constants = require('constants')
 
 local deck = require('logic.deck')
 local game_clock = require('logic.game_clock')
+local meatgrinder = require('logic.meatgrinder')
 local watch_manager = require('logic.watch_manager')
 local room_manager = require('logic.room_manager')
 local events = require('logic.events')
@@ -99,6 +100,12 @@ function M.initialize(config)
     -- Create the guild (4 adventurers)
     createGuild()
 
+    -- Register authored dungeon Meatgrinder entries.
+    gameState.meatgrinder = meatgrinder.createMeatgrinder({
+        eventBus = gameState.eventBus,
+    })
+    gameState.meatgrinder:registerTable(tomb_data.meatgrinder)
+
     -- Create watch manager
     gameState.watchManager = watch_manager.createWatchManager({
         gameClock    = gameState.gameClock,
@@ -107,12 +114,17 @@ function M.initialize(config)
         guild        = gameState.guild,
         eventBus     = gameState.eventBus,
         startingRoom = "101_entrance",
+        meatgrinder  = gameState.meatgrinder,
+        roomManager  = gameState.roomManager,
     })
 
     -- Create light system
     gameState.lightSystem = light_system.createLightSystem({
-        eventBus = gameState.eventBus,
-        guild    = gameState.guild,
+        eventBus     = gameState.eventBus,
+        guild        = gameState.guild,
+        roomManager  = gameState.roomManager,
+        watchManager = gameState.watchManager,
+        currentRoomId = gameState.watchManager and gameState.watchManager:getCurrentRoom(),
     })
     gameState.lightSystem:init()
 
@@ -289,6 +301,15 @@ function M.initialize(config)
     gameState.maleficenceModal:init()
 
     gameState.eventBus:on(events.EVENTS.CHALLENGE_ACTION, function(data)
+        if data.promptWoundChoice == nil then
+            data.promptWoundChoice = true
+        end
+        if data.promptAcrobatFallChoice == nil then
+            data.promptAcrobatFallChoice = true
+        end
+        if data.promptTraversalTestOfFate == nil then
+            data.promptTraversalTestOfFate = true
+        end
         local result = gameState.actionResolver:resolve(data)
         if result and result.pendingTestOfFate then
             gameState.pendingTestAction = data
@@ -296,6 +317,25 @@ function M.initialize(config)
         end
         if result and result.pendingBidLore then
             gameState.pendingLoreAction = data
+            return
+        end
+        if result and result.pendingWoundChoice then
+            gameState.pendingWoundAction = data
+            return
+        end
+        if result and result.pendingAcrobatFallChoice then
+            gameState.pendingAcrobatFallAction = data
+            return
+        end
+        if result and result.needsGroupTest and result.groupTestRequest then
+            gameState.pendingRetreatAction = data
+            gameState.challengeController.pendingRetreat = data
+            gameState.eventBus:emit(events.EVENTS.REQUEST_RETREAT_GROUP_TEST, {
+                actor = data.actor,
+                action = data,
+                result = result,
+                request = result.groupTestRequest,
+            })
             return
         end
         gameState.challengeController:resolveAction(data)
@@ -309,7 +349,23 @@ function M.initialize(config)
         local action = gameState.pendingTestAction
         gameState.pendingTestAction = nil
 
-        gameState.actionResolver:resolveTestOfFateOutcome(action, data.result)
+        local result = gameState.actionResolver:resolveTestOfFateOutcome(action, data.result)
+        if result and result.pendingTestOfFate then
+            gameState.pendingTestAction = action
+            return
+        end
+        if result and result.pendingBidLore then
+            gameState.pendingLoreAction = action
+            return
+        end
+        if result and result.pendingWoundChoice then
+            gameState.pendingWoundAction = action
+            return
+        end
+        if result and result.pendingAcrobatFallChoice then
+            gameState.pendingAcrobatFallAction = action
+            return
+        end
         gameState.challengeController:resolveAction(action)
     end)
 
@@ -322,6 +378,72 @@ function M.initialize(config)
         gameState.pendingLoreAction = nil
 
         gameState.actionResolver:resolveBidLoreOutcome(action, data.result)
+        gameState.challengeController:resolveAction(action)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.WOUND_CHOICE_COMPLETE, function(data)
+        if not gameState.pendingWoundAction then
+            return
+        end
+
+        local action = gameState.pendingWoundAction
+        gameState.pendingWoundAction = nil
+
+        local ok, resultOrReason = gameState.actionResolver:resolvePendingWoundChoice(action, data)
+        if not ok then
+            print("[WOUND] Choice failed: " .. tostring(resultOrReason))
+            gameState.pendingWoundAction = action
+            return
+        end
+        if action.pendingWoundChoice then
+            gameState.pendingWoundAction = action
+            return
+        end
+        gameState.challengeController:resolveAction(action)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.ACROBAT_FALL_CHOICE_COMPLETE, function(data)
+        if not gameState.pendingAcrobatFallAction then
+            return
+        end
+
+        local action = gameState.pendingAcrobatFallAction
+        gameState.pendingAcrobatFallAction = nil
+
+        local ok, resultOrReason = gameState.actionResolver:resolvePendingAcrobatFallChoice(action, data)
+        if not ok then
+            print("[ACROBAT] Fall choice failed: " .. tostring(resultOrReason))
+            gameState.pendingAcrobatFallAction = action
+            return
+        end
+        gameState.challengeController:resolveAction(action)
+    end)
+
+    gameState.eventBus:on(events.EVENTS.RETREAT_GROUP_TEST_COMPLETE, function(data)
+        local action = gameState.pendingRetreatAction or (data and data.action)
+        if not action then
+            return
+        end
+
+        action.retreatTestCards = data.retreatTestCards or data.groupTestCards or action.retreatTestCards
+        action.groupTestCards = action.retreatTestCards
+        action.retreatFavorTarget = data.retreatFavorTarget or data.favorTarget or action.retreatFavorTarget
+
+        local result = gameState.actionResolver:resolve(action)
+        if result and result.needsGroupTest and result.groupTestRequest then
+            gameState.pendingRetreatAction = action
+            gameState.challengeController.pendingRetreat = action
+            gameState.eventBus:emit(events.EVENTS.REQUEST_RETREAT_GROUP_TEST, {
+                actor = action.actor,
+                action = action,
+                result = result,
+                request = result.groupTestRequest,
+            })
+            return
+        end
+
+        gameState.pendingRetreatAction = nil
+        gameState.challengeController.pendingRetreat = nil
         gameState.challengeController:resolveAction(action)
     end)
 
@@ -438,6 +560,9 @@ function M.initialize(config)
         })
         gameState.pendingTestAction = nil
         gameState.pendingLoreAction = nil
+        gameState.pendingWoundAction = nil
+        gameState.pendingAcrobatFallAction = nil
+        gameState.pendingRetreatAction = nil
         if gameState.testOfFateModal then
             gameState.testOfFateModal:hide()
         end

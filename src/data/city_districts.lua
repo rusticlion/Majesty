@@ -388,6 +388,10 @@ M.districts = {
                 maxCostGold = 1000,
                 commandsKnown = 1,
             }),
+            action("train_animal_companion", "Train animal companion", "Pay animal trainers to teach or retrain one animal companion command.", {
+                costGold = 100,
+                commandsTaught = 1,
+            }),
         }),
         [5] = district(SUITS.CUPS, 5, "rouge_road", "Rouge Road", {
             action("marriage_feast", "Marriage feast", "Spend Crawl gold on a wedding feast for XP.", {

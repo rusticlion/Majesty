@@ -136,6 +136,14 @@ function M.createDeck(cards)
         return card
     end
 
+    function deck:drawDiscard()
+        local card = table.remove(self.discard_pile)
+        if card and self.onDraw then
+            self.onDraw(card)
+        end
+        return card
+    end
+
     ----------------------------------------------------------------------------
     -- DISCARD: Move a card to the discard pile
     ----------------------------------------------------------------------------

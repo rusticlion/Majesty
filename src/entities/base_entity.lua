@@ -11,6 +11,18 @@ local M = {}
 local constants = require('constants')
 local SUITS = constants.SUITS
 
+local function cloneValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneValue(entry)
+    end
+    return copy
+end
+
 local function countEntries(tableValue)
     local count = 0
     if not tableValue then
@@ -109,6 +121,59 @@ local function normalizeDamageType(damageType)
         return "normal"
     end
     return damageType
+end
+
+local function normalizeTalentId(talentId)
+    local normalized = tostring(talentId or ""):lower()
+    normalized = normalized:gsub("[’']", "")
+    normalized = normalized:gsub("[^%w]+", "_")
+    normalized = normalized:gsub("^_+", ""):gsub("_+$", "")
+    return normalized
+end
+
+local function applyWoundedTalentState(entity, talentId, options)
+    if not entity or not talentId then
+        return
+    end
+
+    options = options or {}
+    entity.lastWoundedTalentId = talentId
+    entity.lastWoundTalentReaction = nil
+
+    local normalized = normalizeTalentId(talentId)
+    if normalized == "blur" then
+        entity.conditions = entity.conditions or {}
+        entity.conditions.shrouded = true
+        entity.conditions.invisible = true
+        entity.shroudedBy = entity
+        entity.shroud = entity.shroud or {
+            source = "blur",
+            talentId = talentId,
+            lastsUntilAction = true,
+            persistsWhileStill = true,
+        }
+        entity.blurShroud = entity.shroud
+        entity.lastWoundTalentReaction = {
+            talentId = talentId,
+            type = "blur_shrouded",
+        }
+    elseif normalized == "berserkergang" and
+           (options.enterBerserkergang == true or options.enterBerserk == true or options.berserk == true) then
+        entity.conditions = entity.conditions or {}
+        entity.conditions.berserkergang = true
+        entity.conditions.berserk = true
+        entity.berserkergang = entity.berserkergang or {}
+        entity.berserkergang.active = true
+        entity.berserkergang.source = "wounded_talent"
+        entity.berserkergang.talentId = talentId
+        entity.berserkergang.enemiesDefeatedEnds = true
+        entity.berserkergang.allyHurtsBecomeEnemies = true
+        entity.berserkergang.canEndEarlyForResolve = true
+        entity.lastWoundTalentReaction = {
+            talentId = talentId,
+            type = "berserkergang_entered",
+        }
+    end
 end
 
 local function normalizeWoundChoice(choice)
@@ -225,6 +290,141 @@ M.CONDITIONS = {
     INJURED     = "injured",
     DEATHS_DOOR = "deaths_door",
 }
+
+M.WOUND_RULES_REFERENCE = {
+    source = "Core Rules Chapter 7: Wounds, Notching Armor, and Tracking Enemy Damage",
+    sourcePages = "124-126",
+    playerWounds = {
+        anyOrder = true,
+        stressedIsNotAWound = true,
+        choices = {
+            {
+                id = "armor",
+                label = "Notch armor, helm, or shield",
+                result = "armor_notched",
+                blockedBy = { "piercing", "critical", "no_available_notches" },
+            },
+            {
+                id = "talent",
+                label = "Wound a talent",
+                result = "talent_wounded",
+                limit = 2,
+                blockedBy = { "no_unwounded_talent_slots", "critical" },
+            },
+            {
+                id = "staggered",
+                label = "Mark Staggered",
+                condition = M.CONDITIONS.STAGGERED,
+                blockedBy = { "already_staggered", "critical" },
+            },
+            {
+                id = "injured",
+                label = "Mark Injured",
+                condition = M.CONDITIONS.INJURED,
+                forcedBy = { "critical_when_not_already_injured" },
+                blockedBy = { "already_injured" },
+            },
+            {
+                id = "deaths_door",
+                label = "Mark Death's Door",
+                condition = M.CONDITIONS.DEATHS_DOOR,
+                forcedBy = { "already_injured" },
+                nextWound = "dead",
+            },
+        },
+        runtimeHooks = {
+            "getAvailableWoundChoices",
+            "getAvailableWoundTalentChoices",
+            "canTakeWoundChoice",
+            "applyWoundChoice",
+            "takeWound",
+            "getWoundsTaken",
+            "remainingProtection",
+            "woundsUntilDeath",
+        },
+    },
+    damageTypes = {
+        normal = {
+            id = "normal",
+            armorAllowed = true,
+            talentAllowed = true,
+            conditionTrack = { "staggered", "injured", "deaths_door", "dead" },
+        },
+        piercing = {
+            id = "piercing",
+            armorAllowed = false,
+            talentAllowed = true,
+            conditionTrack = { "staggered", "injured", "deaths_door", "dead" },
+            npcEffect = "bypasses Defense and reduces Health",
+        },
+        critical = {
+            id = "critical",
+            armorAllowed = false,
+            talentAllowed = false,
+            conditionTrack = { "injured", "deaths_door", "dead" },
+            npcEffect = "bypasses Defense and reduces Health",
+        },
+    },
+    armorNotches = {
+        appliesTo = { "armor", "helm", "shield" },
+        destroyedAtZeroNotches = true,
+        repairedInCityPhase = true,
+        destroyedItemsProvideNoBenefit = true,
+    },
+    npcHealthDefense = {
+        sourcePages = "125",
+        format = "HD: Health/Defense",
+        defenseReducedFirst = true,
+        healthReducedAfterDefense = true,
+        piercingBypassesDefense = true,
+        criticalBypassesDefense = true,
+        zeroHealth = "deaths_door_or_destroyed",
+        instantDestructionExamples = { "undead", "constructs" },
+        runtimeHooks = {
+            "takeWoundNPC",
+            "getHD",
+            "getHDDisplay",
+            "remainingProtection",
+            "woundsUntilDeath",
+        },
+    },
+    deathsDoor = {
+        sourcePages = "126",
+        unconscious = true,
+        quasiDeath = true,
+        lingersForOneWatch = true,
+        unhealedDeath = true,
+        underworldDeathRaisesUndead = true,
+        poulticeAllowsWandsSave = true,
+        healEffectClearsDeathsDoor = true,
+        healedTargetMarksStressed = true,
+        runtimeHooks = {
+            "markDeathsDoor",
+            "clearDeathsDoor",
+            "markDead",
+            "markUndeadRising",
+            "markUndeadRaised",
+            "healWound",
+        },
+    },
+}
+
+function M.getWoundRulesReference()
+    return cloneValue(M.WOUND_RULES_REFERENCE)
+end
+
+function M.getPlayerWoundTrack()
+    return cloneValue(M.WOUND_RULES_REFERENCE.playerWounds)
+end
+
+function M.getDamageTypeDetails(damageType)
+    local normalized = normalizeDamageType(damageType)
+    return cloneValue(M.WOUND_RULES_REFERENCE.damageTypes[normalized])
+end
+
+function M.getNPCHealthDefenseRules()
+    return cloneValue(M.WOUND_RULES_REFERENCE.npcHealthDefense)
+end
 
 --------------------------------------------------------------------------------
 -- ENTITY FACTORY
@@ -544,6 +744,26 @@ function M.createEntity(config)
         return countEntries(self.talents)
     end
 
+    function entity:getAvailableWoundTalentChoices()
+        local choices = {}
+        if not self.isPC or not hasAvailableTalentWound(self) then
+            return choices
+        end
+
+        for _, talentId in ipairs(sortedTalentIds(self.talents)) do
+            local talent = self.talents[talentId]
+            if type(talent) == "table" and not talent.wounded then
+                choices[#choices + 1] = {
+                    id = talentId,
+                    name = talent.name or talent.label or talentId,
+                    talent = talent,
+                }
+            end
+        end
+
+        return choices
+    end
+
     function entity:getAvailableWoundChoices(damageType)
         damageType = normalizeDamageType(damageType)
 
@@ -643,6 +863,7 @@ function M.createEntity(config)
             end
             if woundedTalent then
                 self.woundedTalents = self.woundedTalents + 1
+                applyWoundedTalentState(self, woundedTalent, options)
                 return "talent_wounded"
             end
             return nil
@@ -685,6 +906,8 @@ function M.createEntity(config)
         end
         options = options or {}
         damageType = normalizeDamageType(damageType)
+        self.lastWoundedTalentId = nil
+        self.lastWoundTalentReaction = nil
 
         -- Branch: NPCs use simplified Health/Defense system (p. 125)
         if not self.isPC then
@@ -721,7 +944,10 @@ function M.createEntity(config)
 
         local requestedChoice = normalizeWoundChoice(options.choice or options.woundChoice)
         if requestedChoice then
-            local canChoose = self:canTakeWoundChoice(requestedChoice, damageType)
+            local canChoose = requestedChoice ~= "armor" or options.ignoreArmor ~= true
+            if canChoose then
+                canChoose = self:canTakeWoundChoice(requestedChoice, damageType)
+            end
             if canChoose then
                 local chosenResult = self:applyWoundChoice(requestedChoice, options)
                 if chosenResult then
@@ -731,7 +957,8 @@ function M.createEntity(config)
         end
 
         -- Default 1: Notch Armor (if available and not piercing/critical)
-        if damageType == "normal" and self.armorSlots > 0 and self.armorNotches < self.armorSlots then
+        if damageType == "normal" and options.ignoreArmor ~= true and
+            self.armorSlots > 0 and self.armorNotches < self.armorSlots then
             self.armorNotches = self.armorNotches + 1
             return "armor_notched"
         end
@@ -742,6 +969,7 @@ function M.createEntity(config)
             local woundedTalent = woundNextTalent(self)
             if woundedTalent then
                 self.woundedTalents = self.woundedTalents + 1
+                applyWoundedTalentState(self, woundedTalent, options)
                 return "talent_wounded"
             end
         end

@@ -5,6 +5,8 @@
 -- Defines all actions from the rulebook (p. 116-120) with their suit tags,
 -- attributes, and descriptions.
 
+local constants = require('constants')
+
 local M = {}
 
 --------------------------------------------------------------------------------
@@ -18,8 +20,37 @@ M.SUITS = {
     MISC      = "misc",  -- Miscellaneous (any suit)
 }
 
+local function cloneValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneValue(entry)
+    end
+    return copy
+end
+
 local function normalizeTalentId(talentId)
     return tostring(talentId or ""):lower():gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+end
+
+local function isMajorArcanaChallengeCard(card)
+    local value = tonumber(card and card.value)
+    if not value or value < 1 or value > 21 then
+        return false
+    end
+    return card.is_major == true or card.suit == constants.SUITS.MAJOR
+end
+
+local function isGreaterDoomCard(card)
+    local value = tonumber(card and card.value) or 0
+    return isMajorArcanaChallengeCard(card) and value >= 15 and value <= 21
+end
+
+local function canGMIgnoreMinorSuit(entity, card)
+    return entity and entity.isPC == false and isMajorArcanaChallengeCard(card)
 end
 
 local function hasUsableTalent(entity, talentId)
@@ -124,6 +155,49 @@ local function canUseTwoHandedFocus(entity)
     return hasUsableTalent(entity, "two_handed_focus") and getTwoHandedFocusWeapon(entity) ~= nil
 end
 
+local function listContainsNormalized(items, value)
+    local normalized = normalizeTalentId(value)
+    for _, item in ipairs(items or {}) do
+        if normalizeTalentId(item) == normalized then
+            return true
+        end
+    end
+    return false
+end
+
+local function hasWornArmorType(entity, armorTypes)
+    if not entity then
+        return false
+    end
+
+    local actorArmorType = normalizeTalentId(entity.armorType or entity.armor_type)
+    if actorArmorType ~= "" and listContainsNormalized(armorTypes, actorArmorType) then
+        return true
+    end
+
+    local armor = entity.armor
+    if type(armor) == "table" then
+        local props = armor.properties or {}
+        local armorType = normalizeTalentId(armor.armorType or armor.armor_type or props.armorType or props.armor_type)
+        if armorType ~= "" and listContainsNormalized(armorTypes, armorType) then
+            return true
+        end
+    end
+
+    local inv = entity.inventory
+    local belt = inv and inv.getItems and inv:getItems("belt") or inv and inv.belt or {}
+    for _, item in ipairs(belt or {}) do
+        local props = item.properties or {}
+        local armorType = normalizeTalentId(item.armorType or item.armor_type or props.armorType or props.armor_type)
+        if (item.isArmor or props.armor) and not item.destroyed and
+           listContainsNormalized(armorTypes, armorType) then
+            return true
+        end
+    end
+
+    return false
+end
+
 --------------------------------------------------------------------------------
 -- ACTION DEFINITIONS
 --------------------------------------------------------------------------------
@@ -162,6 +236,17 @@ M.ACTIONS = {
         targetType = "enemy",
         requiresWeaponType = "ranged",
         isRanged = true,  -- S12.2: Cannot use while engaged
+        challengeAction = true,
+    },
+    {
+        id = "aim",
+        name = "Aim",
+        suit = M.SUITS.SWORDS,
+        attribute = "swords",
+        description = "Prepare a facedown bow shot; reveal it on your next bow Attack to add this card's value.",
+        requiresTarget = true,
+        targetType = "enemy",
+        requiresWeaponType = "bow",
         challengeAction = true,
     },
     {
@@ -292,7 +377,7 @@ M.ACTIONS = {
         name = "Aid Another",
         suit = M.SUITS.CUPS,
         attribute = "cups",
-        description = "Bank a bonus for an ally's next action (card value + Cups).",
+        description = "Bank a bonus for an ally's declared trigger action (card value + Cups).",
         requiresTarget = true,
         targetType = "ally",
         challengeAction = true,
@@ -394,7 +479,6 @@ M.ACTIONS = {
         description = "Interrupt or negate sorcery through the Counter-spell talent.",
         requiresTarget = false,
         challengeAction = true,
-        showInCommandBoard = false,
     },
     {
         id = "recover",
@@ -438,9 +522,9 @@ M.ACTIONS = {
         attribute = nil,
         description = "Use the Dwimmercraft talent for minor magic or second sight.",
         requiresTarget = false,
+        allowMinor = false,
         autoSuccess = true,
         challengeAction = true,
-        showInCommandBoard = false,
     },
 
     ----------------------------------------------------------------------------
@@ -547,6 +631,30 @@ M.ACTIONS = {
         challengeAction = true,
     },
     {
+        id = "heavy_metal_machine",
+        name = "Heavy Metal Machine",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Ready iron or steel armor to add Swords to Initiative against one incoming action.",
+        requiresTarget = false,
+        allowMinor = false,
+        requiresTalent = "heavy_metal_machine",
+        requiresArmorTypeAny = { "iron", "steel" },
+        challengeAction = true,
+    },
+    {
+        id = "up_my_sleeve",
+        name = "Up My Sleeve",
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        description = "Spend Resolve to declare a common one-slot item you had all along.",
+        requiresTarget = false,
+        allowMinor = false,
+        autoSuccess = true,
+        requiresTalent = "up_my_sleeve",
+        challengeAction = true,
+    },
+    {
         id = "vigilance",
         name = "Vigilance",
         suit = M.SUITS.MISC,
@@ -555,6 +663,520 @@ M.ACTIONS = {
         requiresTarget = false,
         allowMinor = false,
         challengeAction = true,
+    },
+}
+
+M.CHALLENGE_ACTION_DETAILS = {
+    {
+        id = "melee",
+        rulebookId = "attack",
+        label = "Attack (Melee)",
+        sourcePages = "116",
+        category = M.SUITS.SWORDS,
+        suit = M.SUITS.SWORDS,
+        attribute = "swords",
+        canBeMinor = true,
+        target = "same-zone enemy",
+        primaryValue = "card value + Swords",
+        minorValue = "card face value only",
+        successTest = "exceed target Initiative",
+        tieRule = "attacker wins unless defender has a shield",
+        effects = {
+            "Reveal target Initiative.",
+            "Deal 1 Wound on a hit.",
+            "Successful melee Attacks engage attacker and target.",
+        },
+    },
+    {
+        id = "missile",
+        rulebookId = "attack",
+        label = "Attack (Missile)",
+        sourcePages = "116",
+        category = M.SUITS.SWORDS,
+        suit = M.SUITS.SWORDS,
+        attribute = "swords",
+        canBeMinor = true,
+        target = "enemy in range",
+        primaryValue = "card value + Swords",
+        minorValue = "card face value only",
+        successTest = "exceed target Initiative",
+        tieRule = "attacker wins unless defender has a shield",
+        effects = {
+            "Reveal target Initiative.",
+            "Deal 1 Wound on a hit.",
+            "Engaged attackers cannot ordinarily make missile Attacks.",
+        },
+    },
+    {
+        id = "riposte",
+        rulebookId = "riposte",
+        label = "Riposte",
+        sourcePages = "116",
+        category = M.SUITS.SWORDS,
+        suit = M.SUITS.SWORDS,
+        attribute = "swords",
+        canBeMinor = true,
+        facedown = true,
+        trigger = "next targeted by an Attack, Roughhouse, or similar action",
+        primaryValue = "card value + Swords when played on your turn",
+        minorValue = "card face value only when played as a minor action",
+        successTest = "Riposte value exceeds incoming action value",
+        tieRule = "riposter wins unless attacker has a shield",
+        effects = {
+            "Deal 1 Wound to the attacker on a successful counterstrike.",
+            "Discard the Riposte card after it resolves.",
+        },
+    },
+    {
+        id = "avoid",
+        rulebookId = "avoid",
+        label = "Avoid",
+        sourcePages = "117",
+        category = M.SUITS.PENTACLES,
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        canBeMinor = true,
+        target = "danger, threat, guard, or engaged opponent",
+        primaryValue = "card value + Pentacles",
+        minorValue = "card face value only",
+        successTest = "equal or exceed engaged opponent Initiative, otherwise exceed non-engaged threat Initiative",
+        effects = {
+            "Move to an adjacent zone.",
+            "Safely disengage from opponents beaten or tied by the Avoid value.",
+            "Opponents not Avoided may deal 1 Wound before movement.",
+        },
+    },
+    {
+        id = "dash",
+        rulebookId = "dash",
+        label = "Dash",
+        sourcePages = "117",
+        category = M.SUITS.PENTACLES,
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        canBeMinor = true,
+        primaryValue = "card value + Pentacles",
+        minorValue = "card face value only",
+        effects = {
+            "Leave the current zone and move up to two zones away.",
+        },
+    },
+    {
+        id = "dodge",
+        rulebookId = "dodge",
+        label = "Dodge",
+        sourcePages = "117",
+        category = M.SUITS.PENTACLES,
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        canBeMinor = true,
+        facedown = true,
+        trigger = "next targeted by an Attack, Roughhouse, or similar action",
+        primaryValue = "card value + Pentacles when played on your turn",
+        minorValue = "card face value only when played as a minor action",
+        effects = {
+            "Add the Dodge value to Initiative against the triggering action.",
+            "If the boosted Initiative exceeds the incoming action value, the action misses.",
+            "Discard the Dodge card after it resolves.",
+        },
+    },
+    {
+        id = "roughhouse",
+        rulebookId = "roughhouse",
+        label = "Roughhouse",
+        sourcePages = "117",
+        category = M.SUITS.PENTACLES,
+        suit = M.SUITS.PENTACLES,
+        attribute = "pentacles",
+        canBeMinor = true,
+        target = "opponent",
+        primaryValue = "card value + Pentacles",
+        minorValue = "card face value only",
+        successTest = "exceed target Initiative",
+        effects = {
+            "Choose Disarm, Displace, Root, or Trip on success.",
+            "The target uses Recover to remove the imposed effect.",
+        },
+        choices = { "disarm", "displace", "root", "trip" },
+    },
+    {
+        id = "aid",
+        rulebookId = "aid_another",
+        label = "Aid Another",
+        sourcePages = "118",
+        category = M.SUITS.CUPS,
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        canBeMinor = true,
+        facedown = true,
+        target = "ally and declared trigger action",
+        primaryValue = "card value + Cups",
+        minorValue = "card face value only",
+        effects = {
+            "Reveal when the ally performs the trigger action.",
+            "Add Aid Another value to the ally's action value.",
+        },
+    },
+    {
+        id = "command",
+        rulebookId = "command",
+        label = "Command",
+        sourcePages = "118",
+        category = M.SUITS.CUPS,
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        canBeMinor = true,
+        target = "animal companion or similar ally",
+        primaryValue = "card value + Cups",
+        minorValue = "card face value only",
+        effects = {
+            "Known commands with no combatant target can use any value.",
+            "Commands targeting a combatant compare against that target's Initiative.",
+            "Animal companions act through Command rather than taking independent actions.",
+        },
+    },
+    {
+        id = "pull_item",
+        rulebookId = "pull_item_from_pack",
+        label = "Pull Item from Pack",
+        sourcePages = "118",
+        category = M.SUITS.CUPS,
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        canBeMinor = true,
+        primaryValue = "card value + Cups",
+        minorValue = "card face value only",
+        effects = {
+            "Pull an item from the pack and swap it with an item in hand.",
+        },
+    },
+    {
+        id = "use_item",
+        rulebookId = "use_item",
+        label = "Use Item",
+        sourcePages = "118",
+        category = M.SUITS.CUPS,
+        suit = M.SUITS.CUPS,
+        attribute = "cups",
+        canBeMinor = true,
+        primaryValue = "card value + Cups",
+        minorValue = "card face value only",
+        effects = {
+            "Self-use can use any value.",
+            "Hostile combatant use compares against target Initiative.",
+            "Bomb-like uses are Attack-like but tied to Cups.",
+        },
+    },
+    {
+        id = "banter",
+        rulebookId = "banter",
+        label = "Banter",
+        sourcePages = "119",
+        category = M.SUITS.WANDS,
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        canBeMinor = true,
+        target = "enemy with Morale",
+        primaryValue = "card value + Wands",
+        minorValue = "card face value only",
+        successTest = "exceed target Morale",
+        effects = {
+            "Shift target Disposition by one step in intensity or to an adjacent emotion.",
+            "GM may apply favor or disfavor from the target's likes and dislikes.",
+        },
+    },
+    {
+        id = "speak_incantation",
+        rulebookId = "speak_incantation",
+        label = "Speak Incantation",
+        sourcePages = "119",
+        category = M.SUITS.WANDS,
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        canBeMinor = true,
+        target = "spell target",
+        primaryValue = "card value + Wands",
+        minorValue = "card face value only",
+        successTest = "exceed target Initiative when opposed",
+        tieRule = "caster wins unless defender has a shield",
+        requirements = {
+            "trained spell talent",
+            "spell component held in one hand",
+            "ability to speak",
+        },
+    },
+    {
+        id = "recover",
+        rulebookId = "recover",
+        label = "Recover",
+        sourcePages = "119",
+        category = M.SUITS.WANDS,
+        suit = M.SUITS.WANDS,
+        attribute = "wands",
+        canBeMinor = true,
+        primaryValue = "card value + Wands",
+        minorValue = "card face value only",
+        effects = {
+            "Remove one GM-approved recoverable effect.",
+            "Hard-to-escape effects such as chains, curses, or petrification may be nonrecoverable.",
+        },
+    },
+    {
+        id = "bid_lore",
+        rulebookId = "bid_lore",
+        label = "Bid Lore",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card; card value does not decide the lore answer",
+        effects = {
+            "Spend the Challenge action and card whether the GM accepts, rejects, or asks for a rephrase.",
+        },
+    },
+    {
+        id = "guard",
+        rulebookId = "guard",
+        label = "Guard",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card from hand",
+        requirements = { "shield" },
+        effects = {
+            "Replace current Initiative with the played card's value.",
+            "Discard the old Initiative card.",
+        },
+    },
+    {
+        id = "move",
+        rulebookId = "move",
+        label = "Move",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card",
+        effects = {
+            "Move from the current zone to an adjacent zone.",
+            "Obstacles, engagement, or hazards may require Avoid or another procedure instead.",
+        },
+    },
+    {
+        id = "pull_item_belt",
+        rulebookId = "pull_item_from_belt",
+        label = "Pull Item from Belt",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card",
+        effects = {
+            "Pull an item from the belt and swap it with an item in hand.",
+        },
+    },
+    {
+        id = "reload",
+        rulebookId = "reload_crossbow",
+        label = "Reload Crossbow",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card",
+        requirements = { "unloaded crossbow", "bolt ammunition" },
+        effects = {
+            "Fit another bolt into a crossbow and crank the cranequin.",
+        },
+    },
+    {
+        id = "test_fate",
+        rulebookId = "test_fate",
+        label = "Test Fate",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "spend any card, then draw a separate minor-arcana test card",
+        effects = {
+            "Use for risky feats more complex than Trivial Action.",
+            "The spent Challenge card is not the Test Fate card.",
+            "Resolve, pushed fate, and motif bids use the normal Test Fate procedure.",
+        },
+    },
+    {
+        id = "trivial_action",
+        rulebookId = "trivial_action",
+        label = "Trivial Action",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card of any value",
+        effects = {
+            "Resolve a momentary, uncontested interaction not covered by other actions.",
+        },
+        examples = {
+            "open a door",
+            "throw a lever",
+            "pick up an ordinary ground item",
+            "drop prone",
+        },
+    },
+    {
+        id = "up_my_sleeve",
+        rulebookId = "up_my_sleeve",
+        label = "Up My Sleeve",
+        sourcePages = "74",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "any card; spend 1 Resolve",
+        requirements = {
+            "Up My Sleeve talent",
+            "common one-slot item",
+            "maximum twice per Crawl",
+        },
+        effects = {
+            "Produce the declared item in hand as something carried the whole time.",
+        },
+        examples = {
+            "lockpick",
+            "dagger",
+            "handkerchief",
+            "empty vial",
+            "length of wire",
+        },
+    },
+    {
+        id = "vigilance",
+        rulebookId = "vigilance",
+        label = "Vigilance",
+        sourcePages = "120",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        facedown = true,
+        cardSuitRule = "same_suit_as_follow_up_action",
+        trigger = "declared circumstance before the follow-up action",
+        primaryValue = "matching-suit card for the declared follow-up action",
+        effects = {
+            "Play the card facedown.",
+            "Declare a trigger and the action taken when the trigger occurs.",
+            "Flip the card and resolve the follow-up action when triggered.",
+        },
+    },
+    {
+        id = "flee",
+        rulebookId = "retreat",
+        label = "Flee",
+        sourcePages = "123-124",
+        category = M.SUITS.MISC,
+        suit = M.SUITS.MISC,
+        attribute = nil,
+        canBeMinor = false,
+        primaryValue = "each adventurer spends a miscellaneous Challenge card if retreat happens mid-Challenge",
+        effects = {
+            "Fast or magical pursuers can make escape impossible.",
+            "Slow, awkward, or lair-bound foes may allow clean retreat.",
+            "Equivalent pursuit uses a Pentacles group test from the highest and lowest Pentacles adventurers.",
+        },
+    },
+}
+
+M.CHALLENGE_ACTION_REFERENCE = {
+    source = "Core Rules Chapter 7: Challenge Actions",
+    sourcePages = "116-120",
+    actionPages = "116-120",
+    gmingPages = "121-123",
+    freeActions = {
+        requireCard = false,
+        examples = {
+            "talk in character",
+            "move around within a zone",
+        },
+        limits = {
+            "Speech can be blocked by silence or similar effects.",
+            "Within-zone movement can be blocked by restraints or similar effects.",
+        },
+    },
+    valueRules = {
+        primaryTurn = {
+            addAttribute = true,
+            description = "Suited Challenge Actions add the matching attribute to the played card value on the actor's turn.",
+        },
+        minorAction = {
+            addAttribute = false,
+            description = "Minor actions use only the played card's face value.",
+        },
+        miscellaneous = {
+            anySuit = true,
+            addAttribute = false,
+            description = "Miscellaneous actions can use any suit unless their individual procedure says otherwise.",
+        },
+    },
+    suitGroups = {
+        { suit = M.SUITS.SWORDS, label = "Swords", actions = { "melee", "missile", "riposte" } },
+        { suit = M.SUITS.PENTACLES, label = "Pentacles", actions = { "avoid", "dash", "dodge", "roughhouse" } },
+        { suit = M.SUITS.CUPS, label = "Cups", actions = { "aid", "command", "pull_item", "use_item" } },
+        { suit = M.SUITS.WANDS, label = "Wands", actions = { "banter", "speak_incantation", "recover" } },
+        {
+            suit = M.SUITS.MISC,
+            label = "Miscellaneous",
+            actions = {
+                "bid_lore",
+                "guard",
+                "move",
+                "pull_item_belt",
+                "reload",
+                "test_fate",
+                "trivial_action",
+                "vigilance",
+            },
+        },
+    },
+    coreActionIds = {
+        "melee",
+        "missile",
+        "riposte",
+        "avoid",
+        "dash",
+        "dodge",
+        "roughhouse",
+        "aid",
+        "command",
+        "pull_item",
+        "use_item",
+        "banter",
+        "speak_incantation",
+        "recover",
+        "bid_lore",
+        "guard",
+        "move",
+        "pull_item_belt",
+        "reload",
+        "test_fate",
+        "trivial_action",
+        "vigilance",
+    },
+    relatedProcedures = {
+        flee = "Retreat procedure, Core Rules Chapter 7 pp. 123-124",
+    },
+    extensionActionIds = {
+        "aim",
+        "counter_spell",
+        "dwimmercraft",
+        "heavy_metal_machine",
     },
 }
 
@@ -588,6 +1210,36 @@ M.ALIASES = {
     cast = "speak_incantation",
 }
 
+M.CHALLENGE_ACTION_ALIASES = {
+    attack = "melee",
+    attack_melee = "melee",
+    melee_attack = "melee",
+    attack_ranged = "missile",
+    attack_missile = "missile",
+    ranged_attack = "missile",
+    missile_attack = "missile",
+    aid_another = "aid",
+    pull_item_from_pack = "pull_item",
+    pull_from_pack = "pull_item",
+    use_an_item = "use_item",
+    speak_incantation = "speak_incantation",
+    cast_spell = "speak_incantation",
+    pull_item_from_belt = "pull_item_belt",
+    pull_from_belt = "pull_item_belt",
+    reload_crossbow = "reload",
+    test_of_fate = "test_fate",
+    test_fate = "test_fate",
+    trivial = "trivial_action",
+    trivial_action = "trivial_action",
+    retreat = "flee",
+}
+
+M.challengeActionDetailsById = {}
+for _, details in ipairs(M.CHALLENGE_ACTION_DETAILS) do
+    M.challengeActionDetailsById[details.id] = details
+    M.challengeActionDetailsById[details.rulebookId] = M.challengeActionDetailsById[details.rulebookId] or details
+end
+
 local function normalizeActionId(actionId)
     local current = actionId
     local seen = {}
@@ -598,6 +1250,11 @@ local function normalizeActionId(actionId)
     end
 
     return current or actionId
+end
+
+local function normalizeChallengeActionLookup(actionId)
+    local normalized = normalizeTalentId(actionId)
+    return M.CHALLENGE_ACTION_ALIASES[normalized] or normalizeActionId(normalized)
 end
 
 local function hasTagInHands(entity, requiredTag)
@@ -652,6 +1309,14 @@ function M.checkActionRequirements(action, entity)
         end
     end
 
+    if action.requiresTalent and not hasUsableTalent(entity, action.requiresTalent) then
+        return false, "Requires " .. tostring(action.requiresTalent):gsub("_", " ")
+    end
+
+    if action.requiresArmorTypeAny and not hasWornArmorType(entity, action.requiresArmorTypeAny) then
+        return false, "Requires worn iron or steel armor."
+    end
+
     if action.requiresTag then
         if not hasTagInHands(entity, action.requiresTag) then
             return false, "Requires " .. action.requiresTag
@@ -696,6 +1361,19 @@ function M.getAction(actionId)
     return M.byId[normalized]
 end
 
+function M.getChallengeActionReference()
+    return cloneValue(M.CHALLENGE_ACTION_REFERENCE)
+end
+
+function M.getChallengeActionDetails(actionId)
+    if actionId == nil then
+        return cloneValue(M.CHALLENGE_ACTION_DETAILS)
+    end
+
+    local normalized = normalizeChallengeActionLookup(actionId)
+    return cloneValue(M.challengeActionDetailsById[normalized])
+end
+
 --- Get actions for a suit
 -- @param options table|nil: { challengeOnly = bool, commandBoardOnly = bool }
 function M.getActionsForSuit(suit, options)
@@ -731,6 +1409,7 @@ end
 function M.getAvailableActions(card, isPrimaryTurn, entity)
     local available = {}
     local cardSuit = M.cardSuitToActionSuit(card.suit)
+    local gmMinorSuitBypass = not isPrimaryTurn and canGMIgnoreMinorSuit(entity, card)
 
     for _, action in ipairs(M.ACTIONS) do
         local canUse = false
@@ -738,6 +1417,10 @@ function M.getAvailableActions(card, isPrimaryTurn, entity)
         if isPrimaryTurn then
             -- On primary turn, any action is available
             canUse = true
+        elseif gmMinorSuitBypass then
+            -- The GM uses suitless major arcana; lesser dooms cover ordinary Challenge Actions.
+            canUse = action.suit ~= M.SUITS.MISC and action.allowMinor ~= false and
+                not isGreaterDoomCard(card)
         else
             -- On minor turn, only suit-matched actions (excluding misc)
             if action.suit == cardSuit and action.allowMinor ~= false then

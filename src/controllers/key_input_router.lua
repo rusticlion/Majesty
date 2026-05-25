@@ -107,6 +107,16 @@ function M.createKeyInputRouter(config)
         return false
     end
 
+    function router:textinput(text)
+        if gameState.commandBoard and gameState.commandBoard.isVisible and gameState.commandBoard.textinput then
+            if gameState.commandBoard:textinput(text) then
+                return true
+            end
+        end
+
+        return false
+    end
+
     return router
 end
 

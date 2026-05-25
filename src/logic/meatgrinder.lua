@@ -44,6 +44,72 @@ local function createResult(category, data)
     }
 end
 
+local function copyShallow(source)
+    local copy = {}
+    for key, value in pairs(source or {}) do
+        copy[key] = value
+    end
+    return copy
+end
+
+local function selectEncounterEntry(entry, card)
+    if type(entry) == "table" and #entry > 0 and not entry.description and
+       not entry.blueprint_id and not entry.spawns and not entry.effects then
+        local index = ((card.value - 16) % #entry) + 1
+        return entry[index]
+    end
+    return entry
+end
+
+local function getConfiguredEncounter(card, room, context)
+    context = context or {}
+    room = room or {}
+
+    local entry = context.randomEncounter or context.random_encounter or
+        context.encounter or context.defaultRandomEncounter
+    if not entry then
+        entry = room.randomEncounter or room.random_encounter
+    end
+    if not entry and room.properties then
+        entry = room.properties.randomEncounter or room.properties.random_encounter
+    end
+
+    return selectEncounterEntry(entry, card)
+end
+
+local function normalizeEncounterEntry(entry)
+    if type(entry) == "string" then
+        return {
+            description = entry,
+            effects = {
+                { type = "encounter_start" },
+            },
+        }
+    end
+
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    local data = copyShallow(entry)
+    data.effects = data.effects or {
+        { type = "encounter_start" },
+    }
+
+    if not data.spawns and data.blueprint_id then
+        local spawn = copyShallow(data)
+        spawn.count = spawn.count or 1
+        spawn.description = nil
+        spawn.effects = nil
+        spawn.spawns = nil
+        data.spawns = {
+            spawn,
+        }
+    end
+
+    return data
+end
+
 --------------------------------------------------------------------------------
 -- DEFAULT EVENT HANDLERS
 -- These are used when a room doesn't provide custom handlers
@@ -86,27 +152,68 @@ end
 --- XI-XV: Travel Event
 -- Resource tax, traps, hazards requiring choices or tests
 defaultHandlers[M.CATEGORIES.TRAVEL_EVENT] = function(card, room, context)
-    -- Default travel events - rooms should override for specific hazards
     local travelEvents = {
         {
-            description = "The path ahead is treacherous. Test Pentacles or take a wound from a fall.",
-            effects = { { type = "test_required", attribute = "pentacles", failure = "wound" } },
+            description = "The lead marcher steps in fresh droppings; cleanup is needed soon to avoid Stress.",
+            effects = {
+                {
+                    type = "droppings",
+                    target = "first_in_marching_order",
+                    cleanupRequired = true,
+                    stressIfUnclean = true,
+                    loreReveal = "fresh_ogre_spoor",
+                    sourceCreature = "ogre",
+                    freshnessDays = 1,
+                },
+            },
         },
         {
-            description = "A loose stone triggers a grinding noise behind you. Something is alerted.",
-            effects = { { type = "noise", severity = 1 } },
+            description = "A flooded rushing river blocks the way; turn back or swim through the cold current.",
+            effects = {
+                {
+                    type = "rushing_river",
+                    options = { "turn_back", "cross" },
+                    attribute = "swords",
+                    failure = "wound",
+                    stressTarget = "crossers",
+                    destroysFragilePackItems = true,
+                },
+            },
         },
         {
-            description = "Your pack catches on a jagged outcropping. One random item is damaged.",
-            effects = { { type = "item_damage", target = "random" } },
+            description = "A random adventurer discovers a hole in their pack; the last listed pack item is gone.",
+            effects = {
+                {
+                    type = "hole_in_pack",
+                    target = "random_adventurer",
+                    lostItem = "last_listed_pack_item",
+                    backtrackingCostsWatches = true,
+                },
+            },
         },
         {
-            description = "The air grows thin and stale. Everyone becomes Stressed unless you turn back.",
-            effects = { { type = "choice", options = { "stress_all", "turn_back" } } },
+            description = "A field of faintly glowing mushrooms surrounds a corpse and a cracked chest.",
+            effects = {
+                {
+                    type = "bad_scene",
+                    poisonousMushrooms = true,
+                    corpseHazard = "zombie",
+                    chestHazard = true,
+                    treasurePresent = true,
+                    gmAdjudication = true,
+                },
+            },
         },
         {
-            description = "A hidden pit! The first in marching order must test Pentacles or fall.",
-            effects = { { type = "trap", trap_type = "pit", target = "first_in_march" } },
+            description = "Thick webs block the path, with hanging sacks visible above the way forward.",
+            effects = {
+                {
+                    type = "webs",
+                    blocksPath = true,
+                    visibleHangingSacks = true,
+                    rescueOpportunity = true,
+                },
+            },
         },
     }
 
@@ -118,16 +225,18 @@ end
 --- XVI-XX: Random Encounter
 -- Meet denizens of the Underworld
 defaultHandlers[M.CATEGORIES.RANDOM_ENCOUNTER] = function(card, room, context)
-    -- Default encounters - rooms MUST override for thematic content
-    -- This is just a placeholder that spawns generic threats
+    local authored = normalizeEncounterEntry(getConfiguredEncounter(card, room, context))
+    if authored then
+        return createResult(M.CATEGORIES.RANDOM_ENCOUNTER, authored)
+    end
+
     return createResult(M.CATEGORIES.RANDOM_ENCOUNTER, {
-        description = "Something stirs in the darkness...",
-        spawns = {
-            { blueprint_id = "skeleton_brute", count = 1 },
-        },
+        description = "A random encounter occurs; choose or author a local scenario for this dungeon.",
         effects = {
             { type = "encounter_start" },
+            { type = "gm_authored_random_encounter_required" },
         },
+        requiresAuthoredEncounter = true,
     })
 end
 
@@ -141,6 +250,113 @@ defaultHandlers[M.CATEGORIES.QUEST_RUMOR] = function(card, room, context)
             { type = "quest_progress", hint = true },
         },
     })
+end
+
+--------------------------------------------------------------------------------
+-- AUTHORED TABLE HANDLERS
+--------------------------------------------------------------------------------
+
+local categoryTableKeys = {
+    [M.CATEGORIES.TORCHES_GUTTER]   = "torches_gutter",
+    [M.CATEGORIES.CURIOSITY]        = "curiosity",
+    [M.CATEGORIES.TRAVEL_EVENT]     = "travel_event",
+    [M.CATEGORIES.RANDOM_ENCOUNTER] = "random_encounter",
+    [M.CATEGORIES.QUEST_RUMOR]      = "quest_rumor",
+}
+
+local categoryOffsets = {
+    [M.CATEGORIES.TORCHES_GUTTER]   = 0,
+    [M.CATEGORIES.CURIOSITY]        = 5,
+    [M.CATEGORIES.TRAVEL_EVENT]     = 10,
+    [M.CATEGORIES.RANDOM_ENCOUNTER] = 15,
+}
+
+local function shallowCopy(source)
+    local copy = {}
+    for key, value in pairs(source or {}) do
+        copy[key] = value
+    end
+    return copy
+end
+
+local function normalizeTableEntry(entry)
+    if type(entry) == "string" then
+        return { description = entry }
+    end
+
+    if type(entry) ~= "table" then
+        return { description = tostring(entry or "") }
+    end
+
+    local data = shallowCopy(entry)
+
+    if not data.effects and data.effect then
+        local effect = shallowCopy(data)
+        effect.type = data.effect
+        effect.effect = nil
+        effect.description = nil
+        effect.spawns = nil
+        data.effects = { effect }
+    end
+
+    if not data.spawns and data.blueprint_id then
+        local spawn = shallowCopy(data)
+        spawn.count = spawn.count or 1
+        spawn.description = nil
+        spawn.effects = nil
+        spawn.spawns = nil
+        data.spawns = {
+            spawn,
+        }
+    end
+
+    return data
+end
+
+local function selectTableEntry(tableData, category, cardValue)
+    local tableKey = categoryTableKeys[category]
+    local section = tableKey and tableData and tableData[tableKey]
+    if not section then
+        return nil
+    end
+
+    if category == M.CATEGORIES.QUEST_RUMOR then
+        return section
+    end
+
+    if type(section) ~= "table" then
+        return section
+    end
+
+    if category == M.CATEGORIES.TORCHES_GUTTER and
+        (section.description or section.effect or section.effects or section.blueprint_id) then
+        return section
+    end
+
+    local offset = categoryOffsets[category] or 0
+    local index = cardValue - offset
+    return section[index]
+end
+
+--- Create category handlers from an authored Meatgrinder table.
+-- Authored tables use I-V/VI-X/etc. indexes within each section; handlers
+-- convert the card value into a standard Meatgrinder result object.
+function M.createTableHandlers(tableData)
+    local handlers = {}
+
+    for category, _ in pairs(categoryTableKeys) do
+        handlers[category] = function(card, room, context)
+            local entry = selectTableEntry(tableData, category, card.value)
+            if not entry then
+                local fallback = defaultHandlers[category]
+                return fallback and fallback(card, room, context) or createResult(category, {})
+            end
+
+            return createResult(category, normalizeTableEntry(entry))
+        end
+    end
+
+    return handlers
 end
 
 --------------------------------------------------------------------------------
@@ -184,6 +400,17 @@ function M.createMeatgrinder(config)
         for category, handler in pairs(handlers) do
             self:registerHandler(category, roomId, handler)
         end
+    end
+
+    --- Register an authored Meatgrinder table.
+    -- @param tableData table: { torches_gutter, curiosity, travel_event, random_encounter, quest_rumor }
+    -- @param roomId string|nil: Room ID for room-specific overrides; nil is dungeon-wide
+    function grinder:registerTable(tableData, roomId)
+        local handlers = M.createTableHandlers(tableData or {})
+        for category, handler in pairs(handlers) do
+            self:registerHandler(category, roomId, handler)
+        end
+        return self
     end
 
     ----------------------------------------------------------------------------
@@ -267,6 +494,9 @@ function M.createMeatgrinder(config)
 
         -- Execute handler
         local result = handler(card, currentRoom, context)
+        if not result then
+            return nil
+        end
 
         -- Mark as consumed. Torches gutter results are exempt: the rulebook says
         -- they can occur multiple times and are not marked off.
@@ -277,13 +507,16 @@ function M.createMeatgrinder(config)
             result.consumed = false
         end
 
-        -- Emit event for other systems
-        self.eventBus:emit(events.EVENTS.MEATGRINDER_ROLL, {
-            card     = card,
-            category = category,
-            roomId   = roomId,
-            result   = result,
-        })
+        -- Emit event for other systems unless a caller is adapting the result
+        -- into its own event payload.
+        if context.emitEvents ~= false then
+            self.eventBus:emit(events.EVENTS.MEATGRINDER_ROLL, {
+                card     = card,
+                category = category,
+                roomId   = roomId,
+                result   = result,
+            })
+        end
 
         return result
     end

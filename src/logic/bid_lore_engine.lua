@@ -220,6 +220,70 @@ local function shortQuestionList(questionIds)
     return out
 end
 
+local function normalizeAlchemyForm(value)
+    local normalized = normalizeText(value):gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+    if normalized == "p" or normalized == "potions" then
+        return "potion"
+    elseif normalized == "b" or normalized == "bombs" then
+        return "bomb"
+    elseif normalized == "o" or normalized == "oils" then
+        return "oil"
+    elseif normalized == "potion" or normalized == "bomb" or normalized == "oil" then
+        return normalized
+    end
+    return nil
+end
+
+local function listAlchemyForms(forms)
+    local out = {}
+    local seen = {}
+    for _, form in ipairs({ "potion", "bomb", "oil" }) do
+        if forms[form] then
+            out[#out + 1] = form
+            seen[form] = true
+        end
+    end
+    for form in pairs(forms or {}) do
+        if not seen[form] then
+            out[#out + 1] = form
+        end
+    end
+    return out
+end
+
+local function buildAnswerResponse(answer, request, question)
+    if question and question.id == "alchemy_effect" and type(answer.forms) == "table" then
+        local requestedForm = normalizeAlchemyForm(
+            request.alchemyForm or request.form or request.substanceType or
+            request.alchemicalType or request.outputType or request.focus
+        )
+        local availableForms = listAlchemyForms(answer.forms)
+        local formAnswer = requestedForm and answer.forms[requestedForm] or nil
+        if not formAnswer then
+            return nil, {
+                reason = "Choose one alchemical form to ask about.",
+                suggestedAlchemyForms = availableForms,
+            }
+        end
+
+        return {
+            summary = formAnswer.summary or answer.summary or "",
+            details = cloneArray(formAnswer.details or answer.details or {}),
+            implication = formAnswer.implication or answer.implication or "",
+            sourceRefs = cloneArray(formAnswer.sourceRefs or answer.sourceRefs or {}),
+            alchemyForm = requestedForm,
+            outputTemplateId = formAnswer.outputTemplateId or formAnswer.templateId,
+        }
+    end
+
+    return {
+        summary = answer.summary or "",
+        details = cloneArray(answer.details or {}),
+        implication = answer.implication or "",
+        sourceRefs = cloneArray(answer.sourceRefs or {}),
+    }
+end
+
 function M.createBidLoreEngine(config)
     config = config or {}
 
@@ -572,14 +636,16 @@ function M.createBidLoreEngine(config)
         if uncannyOk then
             scoreBreakdown.uncannyKnowledge = true
             scoreBreakdown.uncannyKnowledgeReason = "no_party_motif"
-            local details = cloneArray(answer.details or {})
+            local response, responseError = buildAnswerResponse(answer, request, question)
+            if not response then
+                return buildResult(REPHRASE, responseError.reason, {
+                    suggestedQuestionTypes = shortQuestionList(collectAnswerQuestionIds(subject)),
+                    suggestedAlchemyForms = responseError.suggestedAlchemyForms,
+                    scoreBreakdown = scoreBreakdown,
+                })
+            end
             return buildResult(ACCEPT, "Uncanny Knowledge supplies a lore angle nobody else has.", {
-                response = {
-                    summary = answer.summary or "",
-                    details = details,
-                    implication = answer.implication or "",
-                    sourceRefs = cloneArray(answer.sourceRefs or {}),
-                },
+                response = response,
                 scoreBreakdown = scoreBreakdown,
                 suggestedQuestionTypes = {},
                 uncannyKnowledge = true,
@@ -587,14 +653,16 @@ function M.createBidLoreEngine(config)
         end
 
         if score >= 2 then
-            local details = cloneArray(answer.details or {})
+            local response, responseError = buildAnswerResponse(answer, request, question)
+            if not response then
+                return buildResult(REPHRASE, responseError.reason, {
+                    suggestedQuestionTypes = shortQuestionList(collectAnswerQuestionIds(subject)),
+                    suggestedAlchemyForms = responseError.suggestedAlchemyForms,
+                    scoreBreakdown = scoreBreakdown,
+                })
+            end
             return buildResult(ACCEPT, "Motif alignment is strong enough for a reliable answer.", {
-                response = {
-                    summary = answer.summary or "",
-                    details = details,
-                    implication = answer.implication or "",
-                    sourceRefs = cloneArray(answer.sourceRefs or {}),
-                },
+                response = response,
                 scoreBreakdown = scoreBreakdown,
                 suggestedQuestionTypes = {},
             })

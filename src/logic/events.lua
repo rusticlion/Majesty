@@ -19,10 +19,12 @@ M.EVENTS = {
     TRAVEL_EVENT      = "travel_event",
     RANDOM_ENCOUNTER  = "random_encounter",
     QUEST_RUMOR       = "quest_rumor",
+    DUNGEON_BIRD_RUMOR_DELIVERED = "dungeon_bird_rumor_delivered",
 
     -- Movement
     PARTY_MOVED       = "party_moved",
     ROOM_ENTERED      = "room_entered",
+    CRAWL_SCENE_SET   = "crawl_scene_set",
 
     -- Combat/Challenge
     CHALLENGE_START       = "challenge_start",
@@ -33,6 +35,7 @@ M.EVENTS = {
     CHALLENGE_ACTION      = "challenge_action",
     CHALLENGE_RESOLUTION  = "challenge_resolution",
     CHALLENGE_CARD_DISCARDED = "challenge_card_discarded",
+    VAMPIRE_WEAKNESS_EXPOSURE = "vampire_weakness_exposure",
     MALEDICTION_CHICKEN_DOOM = "malediction_chicken_doom",
     MALEDICTION_CHICKEN_CLEARED = "malediction_chicken_cleared",
     INITIATIVE_REVEALED   = "initiative_revealed",
@@ -42,12 +45,17 @@ M.EVENTS = {
 
     -- Wound/Damage
     WOUND_TAKEN           = "wound_taken",
+    REQUEST_WOUND_CHOICE  = "request_wound_choice",
+    WOUND_CHOICE_COMPLETE = "wound_choice_complete",
+    REQUEST_RETREAT_GROUP_TEST  = "request_retreat_group_test",
+    RETREAT_GROUP_TEST_COMPLETE = "retreat_group_test_complete",
     WOUND_HEALED          = "wound_healed",
     ENTITY_DEFEATED       = "entity_defeated",
     UNDEAD_RAISED         = "undead_raised",
     ARMOR_NOTCHED         = "armor_notched",
     TALENT_WOUNDED        = "talent_wounded",
     CONDITION_EXPIRED     = "condition_expired",
+    PROPERTY_EXPIRED      = "property_expired",
 
     -- Phase Changes
     PHASE_CHANGED     = "phase_changed",
@@ -60,6 +68,12 @@ M.EVENTS = {
     CITY_UPKEEP_RECOVERY_BOND_SPENT = "city_upkeep_recovery_bond_spent",
     CITY_ACTION_RESOLVED = "city_action_resolved",
     CITY_NEXT_CRAWL_PLANNED = "city_next_crawl_planned",
+    CITY_QUEST_DECLARED = "city_quest_declared",
+    CITY_QUEST_COMPLETED = "city_quest_completed",
+    CITY_GUILD_JOINED = "city_guild_joined",
+    CITY_GUILD_JOIN_DECLINED = "city_guild_join_declined",
+    CITY_STARTING_GEAR_SELECTED = "city_starting_gear_selected",
+    CITY_NEW_ADVENTURER_BONDS_SELECTED = "city_new_adventurer_bonds_selected",
     CITY_UNDERWORLD_RESTOCKED = "city_underworld_restocked",
     CITY_PHASE_ENDED = "city_phase_ended",
 
@@ -73,6 +87,20 @@ M.EVENTS = {
     -- Room Features (T2_5)
     FEATURE_STATE_CHANGED = "feature_state_changed",
     FEATURE_UPDATED       = "feature_updated",  -- S11.3: arbitrary feature updates
+    FEATURE_CONNECTIONS_REVEALED = "feature_connections_revealed",
+    FEATURE_CONNECTION_BLOCK_CLEARED = "feature_connection_block_cleared",
+    FEATURE_ENCOUNTER_TRIGGERED = "feature_encounter_triggered",
+    FEATURE_ILLUSION_REVEALED = "feature_illusion_revealed",
+    FEATURE_THROWN_OBJECT_RETURNED = "feature_thrown_object_returned",
+    FEATURE_WAKE_EFFECT_RESOLVED = "feature_wake_effect_resolved",
+    FEATURE_OBSERVATION_REVEALED = "feature_observation_revealed",
+    FEATURE_LOOT_CLAIMED = "feature_loot_claimed",
+    FEATURE_SCROLL_HANDLED = "feature_scroll_handled",
+    FEATURE_GHOST_CONTAINMENT_CLEARED = "feature_ghost_containment_cleared",
+    FEATURE_PUZZLE_SOLVED = "feature_puzzle_solved",
+    FEATURE_TREASURE_CLAIMED = "feature_treasure_claimed",
+    ROOM_SAFETY_CHANGED = "room_safety_changed",
+    ROOM_HAUNTING_APPEASED = "room_haunting_appeased",
     ROOM_SOCIAL_ENCOUNTER_RESOLVED = "room_social_encounter_resolved",
     ROOM_SOCIAL_FEATURE_RESOLVED = "room_social_feature_resolved",
 
@@ -132,6 +160,8 @@ M.EVENTS = {
     REQUEST_TEST_OF_FATE  = "request_test_of_fate",
     TEST_OF_FATE_COMPLETE = "test_of_fate_complete",
     TEST_FATE_PUSHED      = "test_fate_pushed",
+    REQUEST_ACROBAT_FALL_CHOICE = "request_acrobat_fall_choice",
+    ACROBAT_FALL_CHOICE_COMPLETE = "acrobat_fall_choice_complete",
 
     -- Bid Lore (Challenge async action)
     REQUEST_BID_LORE      = "request_bid_lore",
@@ -145,6 +175,7 @@ M.EVENTS = {
     CONCENTRATION_TEST_RESOLVED   = "concentration_test_resolved",
     MALEFICENCE_TRIGGERED         = "maleficence_triggered",
     MALEFICENCE_RESOLVED          = "maleficence_resolved",
+    VERITAS_LIE_DETECTED          = "veritas_lie_detected",
     SEALED_PACT_CREATED           = "sealed_pact_created",
     SEALED_PACT_VIOLATED          = "sealed_pact_violated",
     SEALED_PACT_DISPELLED         = "sealed_pact_dispelled",

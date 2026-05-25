@@ -26,6 +26,8 @@ M.INTERACTION_TYPES = {
     PROTECT  = "protect",   -- Shield from effect (shield, umbrella)
     BREAK    = "break",     -- Destroy obstacle (hammer, axe)
     RETRIEVE = "retrieve",  -- Grab distant items (hook, rope)
+    WEDGE    = "wedge",     -- Wedge a door or gate closed (iron spikes)
+    PITON    = "piton",     -- Set climbing pitons/anchors (iron spikes)
 }
 
 --------------------------------------------------------------------------------
@@ -59,6 +61,8 @@ local itemCapabilities = {
     ["Torch"]         = { M.INTERACTION_TYPES.LIGHT },
     ["Lantern"]       = { M.INTERACTION_TYPES.LIGHT },
     ["Shield"]        = { M.INTERACTION_TYPES.PROTECT },
+    ["Iron Spikes"]   = { M.INTERACTION_TYPES.WEDGE, M.INTERACTION_TYPES.PITON, M.INTERACTION_TYPES.TRIGGER },
+    ["Flint and Tinder"] = { M.INTERACTION_TYPES.LIGHT },
 }
 
 -- Generic capabilities based on item tags
@@ -70,6 +74,261 @@ local tagCapabilities = {
     [M.ITEM_TAGS.HEAVY]   = { M.INTERACTION_TYPES.TRIGGER },
     [M.ITEM_TAGS.LIGHT_SOURCE] = { M.INTERACTION_TYPES.LIGHT },
 }
+
+local toolTypeCapabilities = {
+    crowbar = { M.INTERACTION_TYPES.BREAK, M.INTERACTION_TYPES.PROBE },
+    hammer = { M.INTERACTION_TYPES.BREAK, M.INTERACTION_TYPES.TRIGGER },
+    hatchet = { M.INTERACTION_TYPES.BREAK },
+    lockpick = { M.INTERACTION_TYPES.UNLOCK },
+    grapple = { M.INTERACTION_TYPES.RETRIEVE, M.INTERACTION_TYPES.TRIGGER },
+    pole = { M.INTERACTION_TYPES.PROBE, M.INTERACTION_TYPES.TRIGGER },
+    spikes = { M.INTERACTION_TYPES.WEDGE, M.INTERACTION_TYPES.PITON, M.INTERACTION_TYPES.TRIGGER },
+    firestarter = { M.INTERACTION_TYPES.LIGHT },
+}
+
+local function normalizeKey(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    local key = value:lower()
+    key = key:gsub("^%s+", ""):gsub("%s+$", "")
+    key = key:gsub("[%s%-']+", "_")
+    return key
+end
+
+local function getItemToolType(item)
+    local props = item and item.properties or {}
+    return normalizeKey(props.toolType or item.toolType or item.type or item.templateId)
+end
+
+local function getContextInventory(context)
+    if not context then
+        return nil
+    end
+    return context.inventory or context.inv or
+        (context.adventurer and context.adventurer.inventory) or
+        (context.actor and context.actor.inventory) or
+        (context.user and context.user.inventory)
+end
+
+local function isCrowbar(item)
+    return normalizeKey(item and item.name) == "crowbar" or getItemToolType(item) == "crowbar"
+end
+
+local function isLockpick(item)
+    local props = item and item.properties or {}
+    return normalizeKey(item and item.name) == "lockpick" or normalizeKey(item and item.name) == "lockpicks" or
+        getItemToolType(item) == "lockpick" or props.lockpick == true
+end
+
+local function getItemKeyId(item)
+    local props = item and item.properties or {}
+    return item and (item.keyId or item.key_id or props.keyId or props.key_id)
+end
+
+local function getLockKeyId(lock)
+    return lock and (lock.keyId or lock.key_id)
+end
+
+local function isLockedDoorOrChest(poi)
+    if not poi then
+        return false
+    end
+
+    local kind = normalizeKey(poi.type or poi.kind or poi.category)
+    local name = normalizeKey(poi.name or poi.id) or ""
+    local doorOrChest = kind == "door" or kind == "chest" or kind == "container" or
+        name:find("door", 1, true) ~= nil or name:find("chest", 1, true) ~= nil
+    local activeLock = (poi.lock ~= nil and poi.lock.broken ~= true and poi.lock.disabled ~= true and
+        poi.lock.locked ~= false) or poi.locked == true or poi.state == "locked"
+    return doorOrChest and activeLock
+end
+
+local function hasActiveLock(poi)
+    if not poi then
+        return false
+    end
+    return (poi.lock ~= nil and poi.lock.broken ~= true and poi.lock.disabled ~= true and poi.lock.locked ~= false) or
+        poi.locked == true or poi.state == "locked"
+end
+
+local function markFeatureUnlocked(poi)
+    if not poi then
+        return
+    end
+    poi.state = "unlocked"
+    poi.locked = false
+    if poi.lock then
+        poi.lock.locked = false
+        poi.lock.picked = true
+    end
+end
+
+local function markFeatureBrokenOpen(poi)
+    if not poi then
+        return
+    end
+    poi.state = "broken"
+    poi.broken = true
+    poi.forcedOpen = true
+    poi.priedOpen = true
+    poi.locked = false
+    if poi.lock then
+        poi.lock.broken = true
+        poi.lock.disabled = true
+    end
+end
+
+local function isDoorLikePOI(poi)
+    if not poi then
+        return false
+    end
+    local props = poi.properties or {}
+    local kind = normalizeKey(poi.type or poi.kind or poi.category)
+    local name = normalizeKey(poi.name or poi.id) or ""
+    return kind == "door" or kind == "gate" or kind == "portal" or props.door == true or
+        props.gate == true or name:find("door", 1, true) ~= nil or name:find("gate", 1, true) ~= nil
+end
+
+local function isClimbSurfacePOI(poi)
+    if not poi then
+        return false
+    end
+    local props = poi.properties or {}
+    local kind = normalizeKey(poi.type or poi.kind or poi.category)
+    local name = normalizeKey(poi.name or poi.id) or ""
+    return poi.climbable == true or poi.requiresClimb == true or poi.sheer == true or poi.vertical == true or
+        props.climbable == true or props.requiresClimb == true or props.sheer == true or props.vertical == true or
+        kind == "climb" or kind == "climbing" or kind == "wall" or kind == "surface" or
+        name:find("cliff", 1, true) ~= nil or name:find("wall", 1, true) ~= nil or
+        name:find("shaft", 1, true) ~= nil or name:find("pit", 1, true) ~= nil
+end
+
+local function isFireStartPOI(poi)
+    if not poi then
+        return false
+    end
+    local props = poi.properties or {}
+    local kind = normalizeKey(poi.type or poi.kind or poi.category)
+    local name = normalizeKey(poi.name or poi.id) or ""
+    return kind == "light" or kind == "fire" or kind == "campfire" or kind == "brazier" or
+        props.light_source == true or props.firewood == true or props.fire == true or props.campfire == true or
+        props.flammable == true or name:find("fire", 1, true) ~= nil or name:find("brazier", 1, true) ~= nil
+end
+
+local function markFireStarted(poi)
+    poi.properties = poi.properties or {}
+    poi.state = "lit"
+    poi.lit = true
+    poi.isLit = true
+    poi.fireStarted = true
+    poi.properties.isLit = true
+    poi.properties.lit = true
+    poi.properties.extinguished = false
+    poi.properties.fireStarted = true
+    if poi.properties.firewood or normalizeKey(poi.type) == "campfire" then
+        poi.campfire = true
+        poi.properties.campfire = true
+    end
+end
+
+local function spendOneItemUnit(item, context)
+    local inv = getContextInventory(context)
+    if inv and item and item.stackable and item.id and inv.removeItemQuantity then
+        local ok, status = inv:removeItemQuantity(item.id, 1)
+        if ok then
+            if status == "removed" then
+                item.quantity = 0
+                item.destroyed = true
+            end
+            return true, status
+        end
+    end
+
+    if item and item.stackable then
+        local quantity = math.max(0, math.floor(tonumber(item.quantity) or 0))
+        if quantity <= 0 then
+            return false, "empty"
+        end
+        if quantity > 1 then
+            item.quantity = quantity - 1
+            return true, "decremented"
+        end
+        item.quantity = 0
+        item.destroyed = true
+        return true, "removed"
+    end
+
+    if item then
+        item.destroyed = true
+        return true, "removed"
+    end
+
+    return false, "missing_item"
+end
+
+local function markDoorWedged(poi, item)
+    poi.properties = poi.properties or {}
+    poi.state = "wedged"
+    poi.wedgedClosed = true
+    poi.spikedClosed = true
+    poi.openBlocked = true
+    poi.canOpen = false
+    poi.spikesUsed = (poi.spikesUsed or 0) + 1
+    poi.wedgedByItemId = item and item.id or nil
+    poi.properties.wedgedClosed = true
+    poi.properties.spikedClosed = true
+    poi.properties.openBlocked = true
+end
+
+local function markPitonAnchor(poi, item)
+    poi.properties = poi.properties or {}
+    poi.pitonAnchors = (poi.pitonAnchors or 0) + 1
+    poi.climbingAnchor = true
+    poi.climbAssisted = true
+    poi.properties.pitonAnchors = (poi.properties.pitonAnchors or 0) + 1
+    poi.properties.climbingAnchor = true
+    poi.properties.climbAssisted = true
+    poi.properties.pitonItemId = item and item.id or nil
+end
+
+local function testSucceeded(testResult)
+    if testResult == true then
+        return true
+    end
+    if type(testResult) == "table" then
+        return testResult.success == true
+    end
+    return false
+end
+
+local function breakOneLockpick(item, context)
+    local inv = getContextInventory(context)
+    if inv and item and item.stackable and item.id and inv.removeItemQuantity then
+        local ok, status = inv:removeItemQuantity(item.id, 1)
+        if ok then
+            return true, status
+        end
+    end
+
+    if item and item.stackable then
+        local quantity = math.max(1, math.floor(tonumber(item.quantity) or 1))
+        if quantity > 1 then
+            item.quantity = quantity - 1
+            return true, "decremented"
+        end
+        item.quantity = 0
+        item.destroyed = true
+        return true, "removed"
+    end
+
+    if item then
+        local notchResult = inventory.addNotch(item)
+        return notchResult ~= "already_destroyed", notchResult
+    end
+
+    return false, "missing_item"
+end
 
 --------------------------------------------------------------------------------
 -- ITEM INTERACTION SYSTEM FACTORY
@@ -121,6 +380,27 @@ function M.createItemInteractionSystem(config)
             end
         end
 
+        local toolType = getItemToolType(item)
+        if toolType and toolTypeCapabilities[toolType] then
+            for _, cap in ipairs(toolTypeCapabilities[toolType]) do
+                if not seen[cap] then
+                    capabilities[#capabilities + 1] = cap
+                    seen[cap] = true
+                end
+            end
+        end
+
+        if item and (item.isWeapon or item.weaponType) and not seen[M.INTERACTION_TYPES.BREAK] then
+            capabilities[#capabilities + 1] = M.INTERACTION_TYPES.BREAK
+            seen[M.INTERACTION_TYPES.BREAK] = true
+        end
+
+        local props = item and item.properties or {}
+        if (getItemKeyId(item) or props.key == true) and not seen[M.INTERACTION_TYPES.UNLOCK] then
+            capabilities[#capabilities + 1] = M.INTERACTION_TYPES.UNLOCK
+            seen[M.INTERACTION_TYPES.UNLOCK] = true
+        end
+
         return capabilities
     end
 
@@ -152,9 +432,14 @@ function M.createItemInteractionSystem(config)
         end
 
         -- Check for specific key requirements
-        if poi.lock and poi.lock.key_id then
-            if item.properties and item.properties.key_id == poi.lock.key_id then
+        local lockKeyId = getLockKeyId(poi.lock)
+        if lockKeyId then
+            local itemKeyId = getItemKeyId(item)
+            if itemKeyId == lockKeyId then
                 return true, "key_matches"
+            end
+            if itemKeyId and not isLockpick(item) then
+                return false, "key_mismatch"
             end
         end
 
@@ -163,6 +448,14 @@ function M.createItemInteractionSystem(config)
             if self:canPerform(item, M.INTERACTION_TYPES.PROBE) then
                 return true, "can_probe_hazard"
             end
+        end
+
+        if isDoorLikePOI(poi) and self:canPerform(item, M.INTERACTION_TYPES.WEDGE) then
+            return true, "can_wedge_door"
+        end
+
+        if isClimbSurfacePOI(poi) and self:canPerform(item, M.INTERACTION_TYPES.PITON) then
+            return true, "can_set_piton"
         end
 
         -- Generic capability match
@@ -207,6 +500,10 @@ function M.createItemInteractionSystem(config)
             return self:handleLight(item, poi, context)
         elseif interactionType == M.INTERACTION_TYPES.BREAK then
             return self:handleBreak(item, poi, context)
+        elseif interactionType == M.INTERACTION_TYPES.WEDGE then
+            return self:handleWedge(item, poi, context)
+        elseif interactionType == M.INTERACTION_TYPES.PITON then
+            return self:handlePiton(item, poi, context)
         end
 
         result.description = "Nothing happens."
@@ -295,20 +592,26 @@ function M.createItemInteractionSystem(config)
             itemDestroyed = false,
         }
 
-        if not poi.lock then
+        if not hasActiveLock(poi) then
             result.description = "There's nothing to unlock here."
             return result
         end
 
+        local lock = poi.lock or {}
+
         -- Check for key match
-        if poi.lock.key_id then
-            if item.properties and item.properties.key_id == poi.lock.key_id then
+        local lockKeyId = getLockKeyId(lock)
+        if lockKeyId then
+            if getItemKeyId(item) == lockKeyId then
                 result.success = true
                 result.description = "The " .. item.name .. " fits! You unlock it."
                 result.poiStateChange = "unlocked"
+                markFeatureUnlocked(poi)
 
                 if self.roomManager and context.roomId then
                     self.roomManager:setFeatureState(context.roomId, poi.id, "unlocked")
+                    local feature = self.roomManager:getFeature(context.roomId, poi.id)
+                    markFeatureUnlocked(feature)
                 end
 
                 return result
@@ -319,11 +622,42 @@ function M.createItemInteractionSystem(config)
         end
 
         -- Lockpick attempt (would normally require a test)
-        if item.name == "Lockpick" or (item.properties and item.properties.lockpick) then
+        if isLockpick(item) then
+            local difficulty = lock.difficulty or poi.difficulty or 14
+            local testResult = context and (context.testResult or context.result)
+
+            if testResult ~= nil then
+                if testSucceeded(testResult) then
+                    result.success = true
+                    result.description = "You pick the lock successfully."
+                    result.poiStateChange = "unlocked"
+                    result.targetUnlocked = true
+                    markFeatureUnlocked(poi)
+
+                    if self.roomManager and context.roomId then
+                        self.roomManager:setFeatureState(context.roomId, poi.id, "unlocked")
+                        local feature = self.roomManager:getFeature(context.roomId, poi.id)
+                        markFeatureUnlocked(feature)
+                    end
+                else
+                    local broke, breakStatus = breakOneLockpick(item, context)
+                    result.description = "You fail to pick the lock, and one of your lockpicks breaks."
+                    result.failedTest = true
+                    result.lockpickBroken = broke
+                    result.lockpickBreakStatus = breakStatus
+                    result.itemDamaged = broke
+                    result.itemDestroyed = breakStatus == "removed" or breakStatus == "destroyed"
+                end
+                return result
+            end
+
             result.requiresTest = true
             result.testConfig = {
                 attribute = "pentacles",
-                difficulty = poi.lock.difficulty or 14,
+                difficulty = difficulty,
+                breakLockpickOnFailure = true,
+                success_desc = "You pick the lock successfully.",
+                failure_desc = "You fail to pick the lock, and one of your lockpicks breaks.",
             }
             result.description = "You attempt to pick the lock..."
             return result
@@ -386,9 +720,30 @@ function M.createItemInteractionSystem(config)
         if poi.type == "light" and poi.state == "unlit" then
             result.description = "You light the " .. (poi.name or "light source") .. " with your " .. item.name .. "."
             result.poiStateChange = "lit"
+            markFireStarted(poi)
 
             if self.roomManager and context.roomId then
                 self.roomManager:setFeatureState(context.roomId, poi.id, "lit")
+                local feature = self.roomManager:getFeature(context.roomId, poi.id)
+                if feature then
+                    markFireStarted(feature)
+                end
+            end
+
+            return result
+        end
+
+        if isFireStartPOI(poi) then
+            result.description = "You start a fire at the " .. (poi.name or "fire") .. " with your " .. item.name .. "."
+            result.poiStateChange = "lit"
+            markFireStarted(poi)
+
+            if self.roomManager and context.roomId then
+                self.roomManager:setFeatureState(context.roomId, poi.id, "lit")
+                local feature = self.roomManager:getFeature(context.roomId, poi.id)
+                if feature then
+                    markFireStarted(feature)
+                end
             end
 
             return result
@@ -406,6 +761,43 @@ function M.createItemInteractionSystem(config)
             itemDamaged = false,
             itemDestroyed = false,
         }
+
+        if isCrowbar(item) and isLockedDoorOrChest(poi) then
+            local difficulty = (poi.lock and poi.lock.difficulty) or poi.difficulty or 14
+            local testResult = context and (context.testResult or context.result)
+
+            if testResult ~= nil then
+                if testSucceeded(testResult) then
+                    result.success = true
+                    result.description = "You force the " .. (poi.name or "door") .. " open with the crowbar, breaking it."
+                    result.poiStateChange = "broken"
+                    result.targetBroken = true
+                    markFeatureBrokenOpen(poi)
+
+                    if self.roomManager and context.roomId then
+                        self.roomManager:setFeatureState(context.roomId, poi.id, "broken")
+                        local feature = self.roomManager:getFeature(context.roomId, poi.id)
+                        markFeatureBrokenOpen(feature)
+                    end
+                else
+                    result.description = "The " .. (poi.name or "door") .. " holds fast."
+                    result.failedTest = true
+                end
+                return result
+            end
+
+            result.requiresTest = true
+            result.testConfig = {
+                attribute = "swords",
+                difficulty = difficulty,
+                poiStateChange = "broken",
+                breaksTarget = true,
+                success_desc = "You force the " .. (poi.name or "door") .. " open with the crowbar, breaking it.",
+                failure_desc = "The " .. (poi.name or "door") .. " holds fast.",
+            }
+            result.description = "You set the crowbar and try to force the " .. (poi.name or "door") .. "."
+            return result
+        end
 
         -- Can't break indestructible things
         if poi.indestructible then
@@ -434,6 +826,85 @@ function M.createItemInteractionSystem(config)
         end
 
         result.description = "You'd need more than a " .. item.name .. " to break that."
+        return result
+    end
+
+    --- Handle WEDGE interaction (spike a door or gate closed)
+    function system:handleWedge(item, poi, context)
+        local result = {
+            success = false,
+            description = "",
+            itemDamaged = false,
+            itemDestroyed = false,
+        }
+
+        if not isDoorLikePOI(poi) then
+            result.description = "Iron spikes can only wedge a door, gate, or similar portal."
+            return result
+        end
+        if poi.open == true or poi.state == "open" then
+            result.description = "The " .. (poi.name or "door") .. " must be closed before it can be wedged."
+            return result
+        end
+
+        local spent, spendStatus = spendOneItemUnit(item, context)
+        if not spent then
+            result.description = "No iron spike remains to wedge the " .. (poi.name or "door") .. "."
+            result.itemSpendStatus = spendStatus
+            return result
+        end
+
+        markDoorWedged(poi, item)
+        result.success = true
+        result.description = "You drive an iron spike into the " .. (poi.name or "door") .. ", wedging it closed."
+        result.poiStateChange = "wedged"
+        result.itemSpent = true
+        result.itemSpendStatus = spendStatus
+        result.itemDestroyed = spendStatus == "removed"
+
+        if self.roomManager and context.roomId then
+            self.roomManager:setFeatureState(context.roomId, poi.id, "wedged")
+            local feature = self.roomManager:getFeature(context.roomId, poi.id)
+            markDoorWedged(feature or poi, item)
+        end
+
+        return result
+    end
+
+    --- Handle PITON interaction (set a climbing anchor)
+    function system:handlePiton(item, poi, context)
+        local result = {
+            success = false,
+            description = "",
+            itemDamaged = false,
+            itemDestroyed = false,
+        }
+
+        if not isClimbSurfacePOI(poi) then
+            result.description = "There is no useful climbing surface to set a piton."
+            return result
+        end
+
+        local spent, spendStatus = spendOneItemUnit(item, context)
+        if not spent then
+            result.description = "No iron spike remains to use as a piton."
+            result.itemSpendStatus = spendStatus
+            return result
+        end
+
+        markPitonAnchor(poi, item)
+        result.success = true
+        result.description = "You drive an iron spike as a piton into the " .. (poi.name or "surface") .. "."
+        result.poiStateChange = "pitoned"
+        result.itemSpent = true
+        result.itemSpendStatus = spendStatus
+        result.itemDestroyed = spendStatus == "removed"
+
+        if self.roomManager and context.roomId then
+            local feature = self.roomManager:getFeature(context.roomId, poi.id)
+            markPitonAnchor(feature or poi, item)
+        end
+
         return result
     end
 

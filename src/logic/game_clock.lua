@@ -94,8 +94,10 @@ function M.createGameClock(playerDeck, gmDeck)
     -- If The Fool is drawn, sets pendingReshuffle flag
     -- @param card table: The card that was drawn
     -- @return card table: Returns the same card (for chaining/passthrough)
-    function clock:onCardDrawn(card)
-        if card and (card.name == "The Fool" or (card.is_major and card.value == 0)) then
+    function clock:onCardDrawn(card, context)
+        local challengeDraw = self.currentPhase == M.PHASES.CHALLENGE or
+            (type(context) == "table" and (context.challenge == true or context.phase == M.PHASES.CHALLENGE))
+        if challengeDraw and card and (card.name == "The Fool" or (card.is_major and card.value == 0)) then
             self.pendingReshuffle = true
         end
         -- Return the card unchanged - Fool's value (0) is still used for resolution

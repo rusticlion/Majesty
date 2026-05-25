@@ -100,6 +100,13 @@ local function listContainsEntityKey(list, key)
     return false
 end
 
+local function normalizeRoomId(room)
+    if type(room) == "table" then
+        return room.id or room.roomId or room.currentRoomId
+    end
+    return room
+end
+
 --------------------------------------------------------------------------------
 -- LIGHT SYSTEM FACTORY
 --------------------------------------------------------------------------------
@@ -114,6 +121,11 @@ function M.createLightSystem(config)
         eventBus   = config.eventBus or events.globalBus,
         guild      = config.guild or {},    -- Array of adventurers with inventories
         zoneSystem = config.zoneSystem,     -- Optional: for zone-based darkness
+        roomManager = config.roomManager,
+        dungeon = config.dungeon,
+        watchManager = config.watchManager,
+        currentRoomId = normalizeRoomId(config.currentRoom or config.currentRoomId or config.roomId),
+        environmentalLights = config.environmentalLights or config.environmentalLightSources,
 
         -- Track light level per entity (new system)
         entityLightLevels = {},
@@ -144,6 +156,20 @@ function M.createLightSystem(config)
 
         -- Subscribe to inventory changes (items moved between slots)
         self.eventBus:on(events.EVENTS.INVENTORY_CHANGED, function(data)
+            self:recalculateLightLevels()
+        end)
+
+        -- Room and zone movement can change whether environmental light applies.
+        self.eventBus:on(events.EVENTS.ROOM_ENTERED, function(data)
+            self.currentRoomId = normalizeRoomId(data and (data.roomId or data.room))
+            self:recalculateLightLevels()
+        end)
+
+        self.eventBus:on(events.EVENTS.ZONE_CHANGED, function(data)
+            self:recalculateLightLevels()
+        end)
+
+        self.eventBus:on("entity_zone_changed", function(data)
             self:recalculateLightLevels()
         end)
 
@@ -701,6 +727,143 @@ function M.createLightSystem(config)
         return false
     end
 
+    function system:getEntityRoomId(entity)
+        local roomId = normalizeRoomId(entity and (entity.roomId or entity.currentRoomId or entity.location))
+        if roomId then
+            return roomId
+        end
+
+        if self.currentRoomId then
+            return self.currentRoomId
+        end
+
+        local watchManager = self.watchManager
+        if watchManager then
+            if watchManager.getCurrentRoom then
+                return normalizeRoomId(watchManager:getCurrentRoom())
+            end
+            return normalizeRoomId(watchManager.currentRoom)
+        end
+
+        return nil
+    end
+
+    function system:getRoomForEnvironmentalLight(roomId)
+        if not roomId then
+            return nil
+        end
+
+        if self.roomManager and self.roomManager.getRoom then
+            local room = self.roomManager:getRoom(roomId)
+            if room then
+                return room
+            end
+        end
+
+        if self.dungeon and self.dungeon.getRoom then
+            return self.dungeon:getRoom(roomId)
+        end
+
+        return nil
+    end
+
+    function system:environmentalLightSourceIsActive(source, entity)
+        if type(source) ~= "table" then
+            return source == true
+        end
+
+        if source.environmentalLight ~= true and source.environmental_light ~= true then
+            return false
+        end
+
+        if source.destroyed or source.disabled or source.extinguished or source.inactive then
+            return false
+        end
+
+        local state = source.state
+        if state == "destroyed" or state == "disabled" or state == "extinguished" or state == "inactive" then
+            return false
+        end
+
+        local sourceZone = source.zoneId or source.zone or source.locationZone
+        local entityZone = entity and (entity.zoneId or entity.zone)
+        if sourceZone and entityZone and sourceZone ~= entityZone then
+            return false
+        end
+
+        return true
+    end
+
+    function system:configuredEnvironmentalLightApplies(roomId, entity)
+        local sources = self.environmentalLights
+        if type(sources) == "function" then
+            return sources(roomId, entity, self) == true
+        end
+
+        if type(sources) ~= "table" then
+            return false
+        end
+
+        local roomSources = sources[roomId] or sources.global
+        if roomSources == true then
+            return true
+        end
+
+        if type(roomSources) == "table" then
+            if self:environmentalLightSourceIsActive(roomSources, entity) then
+                return true
+            end
+
+            for _, source in ipairs(roomSources) do
+                if self:environmentalLightSourceIsActive(source, entity) then
+                    return true
+                end
+            end
+        end
+
+        return false
+    end
+
+    function system:roomEnvironmentalLightApplies(room, entity)
+        if not room then
+            return false
+        end
+
+        if self:environmentalLightSourceIsActive(room, entity) then
+            return true
+        end
+
+        local props = room.properties or {}
+        if self:environmentalLightSourceIsActive(props, entity) then
+            return true
+        end
+
+        local entityZone = entity and (entity.zoneId or entity.zone)
+        for _, zone in ipairs(room.zones or {}) do
+            if self:environmentalLightSourceIsActive(zone, entity) and
+               (not entityZone or zone.id == entityZone or zone.zoneId == entityZone) then
+                return true
+            end
+        end
+
+        for _, feature in ipairs(room.features or {}) do
+            if self:environmentalLightSourceIsActive(feature, entity) then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    function system:hasEnvironmentalLight(entity)
+        local roomId = self:getEntityRoomId(entity)
+        if self:configuredEnvironmentalLightApplies(roomId, entity) then
+            return true
+        end
+
+        return self:roomEnvironmentalLightApplies(self:getRoomForEnvironmentalLight(roomId), entity)
+    end
+
     --- Find all active light sources in the guild
     -- @return table: Array of { entity, item, location }
     function system:findActiveLightSources()
@@ -885,7 +1048,7 @@ function M.createLightSystem(config)
             local isLight, lightConfig = self:isLightSource(item)
             if isLight and lightConfig and lightConfig.fragile_on_belt then
                 -- Break the lantern!
-                self:breakLantern(entity, item)
+                self:breakLantern(entity, item, "wound_taken")
             end
         end
     end
@@ -902,6 +1065,14 @@ function M.createLightSystem(config)
         item.properties.broken = true
         item.properties.extinguished = true
         self:setItemLitState(item, false)
+
+        if reason == "wound_taken" or reason == "wound" then
+            entity.conditions = entity.conditions or {}
+            entity.conditions.covered_in_oil = true
+            entity.coveredInOil = true
+            entity.oilCoveredByLantern = true
+            entity.oilCoveredReason = "belt_lantern_broken"
+        end
 
         -- Emit lantern broken event
         self.eventBus:emit(events.EVENTS.LANTERN_BROKEN, {
@@ -939,11 +1110,10 @@ function M.createLightSystem(config)
             return M.LIGHT_LEVELS.DIM
         end
 
-        -- 4. Check environmental light (future stub) → DIM
-        -- TODO: Check zone/room for environmental light sources
-        -- if self:hasEnvironmentalLight(entity) then
-        --     return M.LIGHT_LEVELS.DIM
-        -- end
+        -- 4. Check environmental light from the current room or zone → DIM
+        if self:hasEnvironmentalLight(entity) then
+            return M.LIGHT_LEVELS.DIM
+        end
 
         -- 5. Otherwise → DARK
         return M.LIGHT_LEVELS.DARK
@@ -983,18 +1153,14 @@ function M.createLightSystem(config)
                 sources  = #sources,
             })
 
-            -- Apply darkness penalties if now dark
-            if self.currentLightLevel == M.LIGHT_LEVELS.DARK then
-                self:applyDarknessPenalty()
-            elseif previousPartyLevel == M.LIGHT_LEVELS.DARK then
-                self:removeDarknessPenalty()
-            end
-
             -- Notify UI callback
             if self.onDarknessChanged then
                 self.onDarknessChanged(self.currentLightLevel)
             end
         end
+
+        self:applyDarknessPenalty()
+        self:removeDarknessPenalty()
     end
 
     --- Get the worst (darkest) light level across all entities
@@ -1028,6 +1194,53 @@ function M.createLightSystem(config)
     -- When in darkness, entities gain BLIND effect
     ----------------------------------------------------------------------------
 
+    function system:markEntityBlindFromDarkness(entity)
+        if not entity then
+            return false
+        end
+
+        entity.conditions = entity.conditions or {}
+        local conditions = entity.conditions
+        if conditions.blind_from_darkness then
+            return false
+        end
+
+        local alreadyBlind = conditions.blind == true or conditions.blinded == true
+        conditions.blind_from_darkness = true
+        entity.darknessBlindActive = true
+        entity.darknessBlindHadPriorBlind = alreadyBlind
+        if not alreadyBlind then
+            conditions.blind = true
+            conditions.blinded = true
+            entity.blindFromDarkness = true
+            return true
+        end
+
+        entity.blindFromDarkness = false
+        return false
+    end
+
+    function system:clearEntityBlindFromDarkness(entity)
+        local conditions = entity and entity.conditions
+        if not conditions or not conditions.blind_from_darkness then
+            return false
+        end
+
+        local ownedBlind = entity.blindFromDarkness == true or entity.darknessBlindHadPriorBlind == false
+        conditions.blind_from_darkness = nil
+        entity.darknessBlindActive = false
+        entity.darknessBlindHadPriorBlind = nil
+        entity.blindFromDarkness = nil
+
+        if ownedBlind then
+            conditions.blind = false
+            conditions.blinded = false
+            return true
+        end
+
+        return false
+    end
+
     --- Apply darkness penalty (BLIND) to entities in the dark
     function system:applyDarknessPenalty()
         local darkCount = 0
@@ -1037,10 +1250,9 @@ function M.createLightSystem(config)
             local level = self.entityLightLevels[entityId]
 
             if level == M.LIGHT_LEVELS.DARK then
-                if entity.conditions then
-                    entity.conditions.blind = true
+                if self:markEntityBlindFromDarkness(entity) then
+                    darkCount = darkCount + 1
                 end
-                darkCount = darkCount + 1
             end
         end
 
@@ -1064,8 +1276,7 @@ function M.createLightSystem(config)
 
             -- Only remove blind if they now have light
             if level ~= M.LIGHT_LEVELS.DARK then
-                if entity.conditions and entity.conditions.blind then
-                    entity.conditions.blind = false
+                if self:clearEntityBlindFromDarkness(entity) then
                     restoredCount = restoredCount + 1
                 end
             end

@@ -66,6 +66,7 @@ gameState = {
     mouseInputRouter    = nil,  -- Extracted mouse routing
     pendingTestAction   = nil,  -- S12.5: Pending Test of Fate Challenge action
     pendingLoreAction   = nil,  -- Bid Lore: pending async Challenge action
+    pendingWoundAction  = nil,  -- Pending PC Wound choice Challenge action
     bidLoreEngine       = nil,  -- Bid Lore adjudication engine
 
     -- Camp systems (Sprint 8-9)
@@ -784,6 +785,16 @@ function drawActionVisuals()
             if data.damageDealt and data.damageDealt > 0 then
                 love.graphics.print(data.damageDealt .. " Wound(s)!", w/2 - 40, h/2 + 175)
             end
+        elseif visual.type == "text_popup" then
+            local data = visual.data or {}
+            love.graphics.setColor(0, 0, 0, 0.72 * visual.progress)
+            love.graphics.rectangle("fill", w/2 - 150, h/2 + 88, 300, 58)
+
+            love.graphics.setColor(0.9, 0.85, 0.45, visual.progress)
+            love.graphics.print(data.title or "Effect", w/2 - 130, h/2 + 96)
+
+            love.graphics.setColor(1, 1, 1, visual.progress)
+            love.graphics.print(data.text or "", w/2 - 130, h/2 + 118)
         end
     end
 end
@@ -818,5 +829,11 @@ end
 function love.keypressed(key)
     if gameState.keyInputRouter then
         gameState.keyInputRouter:keypressed(key)
+    end
+end
+
+function love.textinput(text)
+    if gameState.keyInputRouter and gameState.keyInputRouter.textinput then
+        gameState.keyInputRouter:textinput(text)
     end
 end

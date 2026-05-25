@@ -74,17 +74,142 @@ local function maxTalentWounds(entity)
     return math.min(entity.talentWoundSlots or talentCount, talentCount)
 end
 
+local function normalizeBondKey(value)
+    local normalized = tostring(value or ""):lower()
+    normalized = normalized:gsub("[’']", "")
+    normalized = normalized:gsub("[^%w]+", "_")
+    normalized = normalized:gsub("^_+", ""):gsub("_+$", "")
+    local aliases = {
+        ally_bond = "ally",
+        friendship = "ally",
+        friend = "ally",
+        adversary_bond = "adversary",
+        enemy = "adversary",
+        big = "big_little",
+        little = "big_little",
+        big_and_little = "big_little",
+        big_little_bond = "big_little",
+        best_friend_bond = "best_friend",
+        love_bond = "love",
+        lovers = "love",
+        master = "master_henchman",
+        henchman = "master_henchman",
+        master_henchman_bond = "master_henchman",
+        mentor = "mentor_mentee",
+        mentee = "mentor_mentee",
+        mentor_mentee_bond = "mentor_mentee",
+        rivalry = "rival",
+        rival_bond = "rival",
+        sibling_bond = "sibling",
+        unrequited = "unrequited_love",
+        unrequited_love_bond = "unrequited_love",
+        guardianship = "ward",
+        ward_bond = "ward",
+    }
+    return aliases[normalized] or normalized
+end
+
 --------------------------------------------------------------------------------
 -- BOND STATUS CONSTANTS
 --------------------------------------------------------------------------------
 M.BOND_STATUS = {
+    ALLY            = "ally",
+    ADVERSARY       = "adversary",
+    BIG_LITTLE      = "big_little",
+    BEST_FRIEND     = "best_friend",
     LOVE            = "love",
+    MASTER_HENCHMAN = "master_henchman",
+    MENTOR_MENTEE   = "mentor_mentee",
+    RIVAL           = "rival",
+    SIBLING         = "sibling",
+    WARD            = "ward",
     GUARDIANSHIP    = "guardianship",
     RIVALRY         = "rivalry",
     FRIENDSHIP      = "friendship",
     UNREQUITED_LOVE = "unrequited_love",
     DEBT            = "debt",
 }
+
+M.BOND_CATALOG = {
+    ally = {
+        name = "Ally",
+        chargeTrigger = "Charge when you make your ally laugh in and out of character.",
+    },
+    adversary = {
+        name = "Adversary",
+        chargeTrigger = "Charge when you witness your adversary fail a test of fate.",
+    },
+    big_little = {
+        name = "Big/Little",
+        chargeTrigger = "Both charge when your big/little aids you in a test of fate with your weakest attribute.",
+    },
+    best_friend = {
+        name = "Best Friend",
+        chargeTrigger = "Both charge when you reveal a secret to your best friend.",
+    },
+    love = {
+        name = "Love",
+        chargeTrigger = "Charge when you do something gushy and romantic for your partner.",
+    },
+    master_henchman = {
+        name = "Master/Henchman",
+        chargeTrigger = "Masters charge when they compensate their henchman; henchmen charge when using a Camp Action to benefit their master but not themselves.",
+    },
+    mentor_mentee = {
+        name = "Mentor/Mentee",
+        chargeTrigger = "Mentees charge when they ask for advice and receive it; mentors charge when a mentee follows their advice.",
+    },
+    rival = {
+        name = "Rival",
+        chargeTrigger = "Charge when you witness your rival succeed on a test of fate.",
+    },
+    sibling = {
+        name = "Sibling",
+        chargeTrigger = "Charge when you provide aid to your sibling in a test of fate.",
+    },
+    unrequited_love = {
+        name = "Unrequited Love",
+        chargeTrigger = "Charge when you do something kind for your love and they rebuff you or turn you down.",
+    },
+    ward = {
+        name = "Ward",
+        chargeTrigger = "Charge when your ward survives an entire Challenge without taking a Wound.",
+    },
+}
+
+function M.normalizeBondStatus(status)
+    local normalized = normalizeBondKey(status)
+    if M.BOND_CATALOG[normalized] then
+        return normalized
+    end
+    return nil
+end
+
+function M.getBondInfo(status)
+    local normalized = M.normalizeBondStatus(status)
+    local info = normalized and M.BOND_CATALOG[normalized]
+    if not info then
+        return nil
+    end
+    return {
+        id = normalized,
+        name = info.name,
+        chargeTrigger = info.chargeTrigger,
+    }
+end
+
+function M.applyBondMetadata(bond, status)
+    if type(bond) ~= "table" then
+        return nil
+    end
+    local info = M.getBondInfo(status or bond.status or bond.bondType)
+    if info then
+        bond.bondType = info.id
+        bond.rulebookName = info.name
+        bond.chargeTrigger = info.chargeTrigger
+    end
+    return info
+end
 
 --------------------------------------------------------------------------------
 -- ADVENTURER FACTORY
@@ -187,6 +312,9 @@ function M.createAdventurer(config)
     -- Bonds power rest/recovery mechanics
     ----------------------------------------------------------------------------
     adventurer.bonds = config.bonds or {}
+    for _, bond in pairs(adventurer.bonds) do
+        M.applyBondMetadata(bond)
+    end
 
     --- Create or update a bond with another entity
     -- @param entityId string: The other entity's ID
@@ -197,6 +325,7 @@ function M.createAdventurer(config)
         else
             self.bonds[entityId].status = status
         end
+        M.applyBondMetadata(self.bonds[entityId], status)
         return self
     end
 

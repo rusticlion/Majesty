@@ -6,7 +6,10 @@ package.path = "./?.lua;./src/?.lua;./src/?/init.lua;./src/?/?.lua;" .. package.
 local events = require('logic.events')
 local bid_lore_engine = require('logic.bid_lore_engine')
 local action_resolver = require('logic.action_resolver')
+local item_templates = require('data.item_templates')
+local lore_subjects = require('data.lore.lore_subjects')
 local crawl_screen = require('ui.screens.crawl_screen')
+local action_sequencer = require('ui.action_sequencer')
 
 local function assertTrue(value, label)
     if not value then
@@ -40,6 +43,21 @@ local function containsEffect(result, effectId)
     return false
 end
 
+local function getActionSequencerPopup(action, result, predicate)
+    local sequencer = action_sequencer.createActionSequencer({ eventBus = events.createEventBus() })
+    sequencer:queueActionSequence({
+        action = action,
+        result = result,
+    })
+    for _, step in ipairs(sequencer.currentSequence or {}) do
+        if step.type == action_sequencer.STEP_TYPES.TEXT_POPUP and step.data and
+           (not predicate or predicate(step.data)) then
+            return step.data
+        end
+    end
+    return nil
+end
+
 local function containsValue(items, value)
     for _, item in ipairs(items or {}) do
         if item == value then
@@ -48,6 +66,110 @@ local function containsValue(items, value)
     end
     return false
 end
+
+local function containsIssueCode(validation, code)
+    for _, issue in ipairs(validation and validation.errors or {}) do
+        if issue.code == code then
+            return true
+        end
+    end
+    for _, issue in ipairs(validation and validation.warnings or {}) do
+        if issue.code == code then
+            return true
+        end
+    end
+    return false
+end
+
+local loreRegistryValidation = lore_subjects.validateRegistry()
+assertTrue(loreRegistryValidation.ok, "Bid Lore subject registry should validate cleanly")
+assertTrue(loreRegistryValidation.subjectCount >= 20,
+    "Bid Lore registry validation should account for authored and Appendix B subjects")
+assertEqual(loreRegistryValidation.alchemyFormCount, 46,
+    "Bid Lore registry validation should count every authored alchemy-form answer")
+local loreChecklist = lore_subjects.createAuthoringChecklist()
+assertTrue(loreChecklist.complete, "Bid Lore authoring checklist should accept the current catalog")
+assertEqual(loreChecklist.counts.alchemyForms, 46,
+    "Bid Lore authoring checklist should expose alchemy form coverage")
+
+local badLoreSubject = {
+    id = "bad_lore_subject",
+    kind = "monster",
+    name = "Bad Lore Subject",
+    shortDescription = "Intentionally incomplete test fixture.",
+    tags = { "alchemy" },
+    enemyBlueprintIds = { "brain_spider" },
+    answers = {
+        alchemy_effect = {
+            summary = "",
+            details = {},
+            implication = "",
+            sourceRefs = {},
+            forms = {
+                potion = {
+                    summary = "",
+                    details = {},
+                    implication = "",
+                    sourceRefs = {},
+                    outputTemplateId = "not_a_real_template",
+                },
+            },
+        },
+    },
+}
+local badLoreValidation = lore_subjects.validateSubject(badLoreSubject)
+assertTrue(not badLoreValidation.ok, "Bid Lore subject validation should reject shallow answers")
+assertTrue(containsIssueCode(badLoreValidation, "summary_missing"),
+    "Bid Lore subject validation should require answer summaries")
+assertTrue(containsIssueCode(badLoreValidation, "output_template_unknown"),
+    "Bid Lore subject validation should verify alchemy output templates")
+
+local duplicateLoreRegistry = lore_subjects.validateRegistry({
+    subjects = {
+        {
+            id = "duplicate_lore_subject",
+            kind = "hazard",
+            name = "Duplicate A",
+            shortDescription = "First duplicate subject.",
+            tags = { "hazard" },
+            roomIds = { "test_room" },
+            answers = {
+                environmental_risk = {
+                    summary = "A clear risk is present.",
+                    details = { "It blocks the way." },
+                    implication = "Treat it as a hazard.",
+                    sourceRefs = { "test:duplicate_a" },
+                },
+            },
+        },
+        {
+            id = "duplicate_lore_subject",
+            kind = "hazard",
+            name = "Duplicate B",
+            shortDescription = "Second duplicate subject.",
+            tags = { "hazard" },
+            roomIds = { "test_room" },
+            answers = {
+                made_up_question = {
+                    summary = "This should not be accepted.",
+                    details = { "The question type is not registered." },
+                    implication = "The authoring tool should block it.",
+                    sourceRefs = { "test:duplicate_b" },
+                },
+            },
+        },
+    },
+})
+assertTrue(not duplicateLoreRegistry.ok, "Bid Lore registry validation should reject duplicate ids")
+assertTrue(containsIssueCode(duplicateLoreRegistry, "duplicate_subject_id"),
+    "Bid Lore registry validation should report duplicate subject ids")
+assertTrue(containsIssueCode(duplicateLoreRegistry, "unknown_question_type"),
+    "Bid Lore registry validation should report unknown question types")
+local incompleteChecklist = lore_subjects.createAuthoringChecklist({
+    subjects = { badLoreSubject },
+})
+assertTrue(not incompleteChecklist.complete,
+    "Bid Lore authoring checklist should stay incomplete while blockers remain")
 
 local available = engine:getAvailableSubjects({
     challengeController = {
@@ -83,6 +205,213 @@ local verdict = engine:adjudicate({
     focus = "tactics",
 })
 assertEqual(verdict.verdict, "accepted", "Veteran Soldier vulnerability query should be accepted")
+
+local brainSpiderBombLore = engine:adjudicate({
+    subjectId = "monster_brain_spider",
+    questionType = "alchemy_effect",
+    motif = "Big Nerd Alchemist",
+    alchemyForm = "bomb",
+})
+assertEqual(brainSpiderBombLore.verdict, "accepted",
+    "pertinent alchemy motifs should reveal one requested Appendix B brew form")
+assertEqual(brainSpiderBombLore.response.alchemyForm, "bomb",
+    "alchemy lore response should preserve the selected form")
+assertEqual(brainSpiderBombLore.response.outputTemplateId, "brain_spider_bomb",
+    "alchemy lore response should identify the matching output template")
+assertTrue(brainSpiderBombLore.response.summary:find("bomb") ~= nil,
+    "alchemy lore response should describe only the requested form")
+
+local vagueBrainSpiderLore = engine:adjudicate({
+    subjectId = "monster_brain_spider",
+    questionType = "alchemy_effect",
+    motif = "Big Nerd Alchemist",
+})
+assertEqual(vagueBrainSpiderLore.verdict, "rephrase_needed",
+    "alchemy lore should ask for one brew form instead of revealing the whole set")
+assertEqual(vagueBrainSpiderLore.loreSpend, false,
+    "rephrased alchemy lore should not spend a lore bid")
+assertTrue(containsValue(vagueBrainSpiderLore.suggestedAlchemyForms, "potion") and
+    containsValue(vagueBrainSpiderLore.suggestedAlchemyForms, "bomb") and
+    containsValue(vagueBrainSpiderLore.suggestedAlchemyForms, "oil"),
+    "vague alchemy lore should report available brew forms")
+
+local appendixBSlimeAvailable = engine:getAvailableSubjects({
+    challengeController = {
+        npcs = {
+            { blueprintId = "slime", conditions = {} },
+        },
+    },
+})
+assertTrue(containsSubject(appendixBSlimeAvailable, "appendix_b_alchemy_slime"),
+    "Appendix B alchemy subjects should be available for matching monster blueprints")
+
+local appendixBExpectedOutputs = {
+    brain_spider = {
+        subjectId = "monster_brain_spider",
+        outputs = {
+            potion = "brain_spider_potion",
+            bomb = "brain_spider_bomb",
+            oil = "brain_spider_oil",
+        },
+    },
+    cockatrice = {
+        subjectId = "appendix_b_alchemy_cockatrice",
+        outputs = {
+            bomb = "cockatrice_bomb",
+            oil = "cockatrice_oil",
+        },
+    },
+    devil = {
+        subjectId = "appendix_b_alchemy_devil",
+        outputs = {
+            potion = "devil_potion",
+            bomb = "devil_bomb",
+            oil = "devil_oil",
+        },
+    },
+    face_rat = {
+        subjectId = "appendix_b_alchemy_face_rat",
+        outputs = {
+            potion = "face_rat_potion",
+            bomb = "face_rat_bomb",
+        },
+    },
+    fungoid = {
+        subjectId = "appendix_b_alchemy_fungoid",
+        outputs = {
+            potion = "fungoid_potion",
+            bomb = "fungoid_bomb",
+            oil = "fungoid_oil",
+        },
+    },
+    griffin = {
+        subjectId = "appendix_b_alchemy_griffin",
+        outputs = {
+            potion = "griffin_potion",
+            oil = "griffin_oil",
+        },
+    },
+    harpy = {
+        subjectId = "appendix_b_alchemy_harpy",
+        outputs = {
+            potion = "harpy_potion",
+            bomb = "harpy_bomb",
+        },
+    },
+    imp = {
+        subjectId = "appendix_b_alchemy_imp",
+        outputs = {
+            potion = "imp_potion",
+            bomb = "imp_bomb",
+            oil = "imp_oil",
+        },
+    },
+    jinn = {
+        subjectId = "appendix_b_alchemy_jinn",
+        outputs = {
+            potion = "jinn_potion",
+            bomb = "jinn_bomb",
+            oil = "jinn_oil",
+        },
+    },
+    kelpie = {
+        subjectId = "appendix_b_alchemy_kelpie",
+        outputs = {
+            potion = "kelpie_potion",
+            oil = "kelpie_oil",
+        },
+    },
+    mimic = {
+        subjectId = "appendix_b_alchemy_mimic",
+        outputs = {
+            potion = "mimic_potion",
+            oil = "mimic_oil",
+        },
+    },
+    nymph = {
+        subjectId = "appendix_b_alchemy_nymph",
+        outputs = {
+            potion = "nymph_potion",
+            bomb = "nymph_bomb",
+        },
+    },
+    ogre = {
+        subjectId = "appendix_b_alchemy_ogre",
+        outputs = {
+            potion = "ogre_potion",
+            bomb = "ogre_bomb",
+            oil = "ogre_oil",
+        },
+    },
+    questing_beast = {
+        subjectId = "appendix_b_alchemy_questing_beast",
+        outputs = {
+            potion = "questing_beast_potion",
+            oil = "questing_beast_oil",
+        },
+    },
+    slime = {
+        subjectId = "appendix_b_alchemy_slime",
+        outputs = {
+            potion = "slime_potion",
+            bomb = "slime_bomb",
+            oil = "slime_oil",
+        },
+    },
+    titan = {
+        subjectId = "appendix_b_alchemy_titan",
+        outputs = {
+            potion = "titan_potion",
+            oil = "titan_oil",
+        },
+    },
+    ungoat = {
+        subjectId = "appendix_b_alchemy_ungoat",
+        outputs = {
+            potion = "ungoat_potion",
+            bomb = "ungoat_bomb",
+            oil = "ungoat_oil",
+        },
+    },
+    vampire = {
+        subjectId = "appendix_b_alchemy_vampire",
+        outputs = {
+            potion = "vampire_potion",
+            bomb = "vampire_bomb",
+        },
+    },
+    winter_wolf = {
+        subjectId = "appendix_b_alchemy_winter_wolf",
+        outputs = {
+            potion = "winter_wolf_potion",
+            oil = "winter_wolf_oil",
+        },
+    },
+}
+local appendixBAlchemyLoreCount = 0
+for source, expected in pairs(appendixBExpectedOutputs) do
+    local reagent = item_templates.getTemplate(source .. "_reagent")
+    assertTrue(reagent ~= nil, "Appendix B lore test should have reagent template for " .. source)
+    assertTrue(engine:getSubject(expected.subjectId) ~= nil,
+        "Appendix B alchemy lore subject should exist for " .. source)
+    for form, outputTemplateId in pairs(expected.outputs) do
+        appendixBAlchemyLoreCount = appendixBAlchemyLoreCount + 1
+        local lore = engine:adjudicate({
+            subjectId = expected.subjectId,
+            questionType = "alchemy_effect",
+            motif = "Big Nerd Alchemist",
+            alchemyForm = form,
+        })
+        assertEqual(lore.verdict, "accepted",
+            "Appendix B " .. source .. " " .. form .. " lore should be accepted")
+        assertEqual(lore.response.outputTemplateId, outputTemplateId,
+            "Appendix B " .. source .. " " .. form .. " lore should identify the output")
+        assertEqual(lore.response.alchemyForm, form,
+            "Appendix B " .. source .. " " .. form .. " lore should preserve the form")
+    end
+end
+assertEqual(appendixBAlchemyLoreCount, 46,
+    "Appendix B alchemy lore should cover every sampled brew output")
 
 local hunterActor = {
     id = "pc_monster_hunter_lore",
@@ -128,6 +457,144 @@ local resolver = action_resolver.createActionResolver({
     bidLoreEngine = engine,
 })
 
+function checkHumanFayLoreTalentParity(resolver)
+    local highElf = {
+        id = "pc_read_the_past",
+        name = "Read the Past",
+        loreBids = 1,
+        talents = {
+            read_the_past = { wounded = false },
+        },
+        conditions = {},
+    }
+    local recalled = resolver:resolveReadThePastLore({
+        actor = highElf,
+        question = "What crest was on the sealed door?",
+        answer = "A crowned porcupine was carved above the lock.",
+    })
+    assertTrue(recalled.success, "Read the Past should answer eidetic-memory lore")
+    assertEqual(highElf.loreBids, 0, "Accepted Read the Past should spend one lore bid")
+    assertTrue(containsEffect(recalled, "read_the_past_lore"),
+        "Read the Past should report its lore effect")
+    assertEqual(highElf.recalledMemories[1].answer, "A crowned porcupine was carved above the lock.",
+        "Read the Past should record recalled memory")
+
+    local noInfoHighElf = {
+        id = "pc_read_the_past_no_info",
+        name = "Read the Past No Info",
+        loreBids = 1,
+        talents = {
+            read_the_past = { wounded = false },
+        },
+        conditions = {},
+    }
+    local noMemory = resolver:resolveReadThePastLore({
+        actor = noInfoHighElf,
+        question = "What was behind the unseen door?",
+        noNewInformation = true,
+    })
+    assertEqual(noMemory.success, false, "Read the Past should rephrase when no memory gives new information")
+    assertEqual(noInfoHighElf.loreBids, 1, "No-new-info Read the Past should not spend lore")
+    assertTrue(containsEffect(noMemory, "read_the_past_no_new_information"),
+        "Read the Past should report no-new-info outcomes")
+
+    local woodElf = {
+        id = "pc_keen_senses",
+        name = "Keen Senses",
+        loreBids = 1,
+        talents = {
+            keen_senses = { wounded = false },
+        },
+        conditions = {},
+    }
+    local scent = resolver:resolveKeenSensesLore({
+        actor = woodElf,
+        sense = "scent",
+        question = "Which way did the thief go?",
+        answer = "The thief went down the north stairs.",
+    })
+    assertTrue(scent.success, "Keen Senses should answer momentary sensory lore")
+    assertEqual(woodElf.loreBids, 0, "Accepted Keen Senses should spend one lore bid")
+    assertEqual(scent.keenSense.expires, "momentary", "Keen Senses should last only a moment")
+    assertTrue(containsEffect(scent, "keen_senses_scent"),
+        "Keen Senses should report the sharpened sense")
+
+    local akashic = {
+        id = "pc_akashic",
+        name = "Akashic",
+        resolve = { current = 1, max = 4 },
+        talents = {
+            akashic_consciousness = { wounded = false },
+        },
+        conditions = {},
+    }
+    local ancestral = resolver:resolveAkashicConsciousness({
+        actor = akashic,
+        question = "Who sealed the star-child laboratory?",
+        answer = "An ancestor remembers House Mourn's mason sealing it.",
+    })
+    assertTrue(ancestral.success, "Akashic Consciousness should answer past-event questions")
+    assertEqual(akashic.resolve.current, 0, "Akashic Consciousness should spend one Resolve")
+    assertTrue(containsEffect(ancestral, "akashic_consciousness"),
+        "Akashic Consciousness should report the talent")
+    assertEqual(akashic.ancestralMemories[1].question, "Who sealed the star-child laboratory?",
+        "Akashic Consciousness should record the ancestral memory")
+
+    local doomSpeaker = {
+        id = "pc_spout_doom",
+        name = "Spout Doom",
+        resolve = 1,
+        talents = {
+            spout_doom = { wounded = false },
+        },
+        conditions = {},
+    }
+    local doom = resolver:resolveSpoutDoom({
+        actor = doomSpeaker,
+        ifAction = "break the mirror",
+        prophecy = "The reflected corridor will fold shut around anyone inside.",
+    })
+    assertTrue(doom.success, "Spout Doom should provide a prophecy")
+    assertEqual(doomSpeaker.resolve, 0, "Spout Doom should spend one Resolve")
+    assertTrue(doom.prophecy.poursUnbidden, "Spout Doom should mark the prophecy as spoken unbidden")
+
+    local areaSeer = {
+        id = "pc_area_sense",
+        name = "Area Sense",
+        resolve = { current = 2, max = 4 },
+        talents = {
+            area_sense = { wounded = false },
+        },
+        conditions = {},
+    }
+    local area = resolver:resolveAreaSense({
+        actor = areaSeer,
+        card = { name = "Three of Wands", value = 3, suit = "wands" },
+        visions = {
+            "A cold draft outlines a hidden door.",
+            "Dice clatter behind the next wall.",
+            "A ceiling spike hums with tension.",
+        },
+    })
+    assertTrue(area.success, "Area Sense should resolve watch-long meditation")
+    assertEqual(areaSeer.resolve.current, 0, "Area Sense should spend two Resolve")
+    assertEqual(area.visionCount, 3, "Area Sense should reveal one vision per card value")
+    assertTrue(area.areaSenseVisions.meatgrinderAfterVisions,
+        "Area Sense should preserve Meatgrinder-after-visions ordering")
+
+    local falseAreaSense = resolver:resolveAreaSense({
+        actor = {
+            id = "pc_false_area_sense",
+            name = "False Area Sense",
+            resolve = 2,
+            talents = {},
+            conditions = {},
+        },
+        card = { name = "Three of Wands", value = 3, suit = "wands" },
+    })
+    assertEqual(falseAreaSense.success, false, "Area Sense should require the arête talent")
+end
+
 local actor = {
     id = "pc_1",
     name = "Tester",
@@ -151,6 +618,20 @@ local action = {
 local result = resolver:resolve(action)
 assertTrue(result.pendingBidLore == true, "Bid Lore action should enter pending async state")
 assertEqual(requestCount, 1, "Bid Lore request event should be emitted")
+assertTrue(result.bidLoreRequest == bidLoreRequests[1],
+    "Bid Lore result should preserve the emitted async request")
+do
+    local popup = getActionSequencerPopup(action, result, function(data)
+        return data.title == "Bid Lore"
+    end)
+    assertTrue(popup ~= nil, "Bid Lore should queue a visible async-request popup")
+    assertTrue(popup.actionCard == action.card, "Bid Lore popup should preserve the spent action card")
+    assertEqual(popup.roomId, "105_hall_of_solemnity", "Bid Lore popup should preserve room context")
+    assertTrue(popup.availableSubjects == result.bidLoreRequest.availableSubjects,
+        "Bid Lore popup should preserve available subject options")
+    assertTrue(popup.questionTypes == result.bidLoreRequest.questionTypes,
+        "Bid Lore popup should preserve available question types")
+end
 
 local finalized = resolver:resolveBidLoreOutcome(action, verdict)
 assertEqual(finalized.success, true, "Accepted lore verdict should be successful")
@@ -573,6 +1054,8 @@ local malformedForetell = resolver:resolveForetellLore({
 })
 assertEqual(malformedForetell.success, false, "Foretell should require an if/will question shape")
 assertEqual(noInfoForetellActor.loreBids, 1, "Malformed Foretell should not spend a lore bid")
+
+checkHumanFayLoreTalentParity(resolver)
 
 crawlActor.loreBids = 2
 local narrative = {

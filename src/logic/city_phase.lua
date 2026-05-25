@@ -8,21 +8,82 @@ local currency = require('logic.currency')
 local constants = require('constants')
 local inventory = require('logic.inventory')
 local city_events = require('data.city_events')
+local city_districts = require('data.city_districts')
 local city_layout = require('logic.city_layout')
 local item_templates = require('data.item_templates')
 local spell_registry = require('data.spell_registry')
 local talent_catalog = require('data.talent_catalog')
 local fate_resolver = require('logic.resolver')
+local disposition = require('logic.disposition')
+local animal_companions = require('data.animal_companions')
+local bid_lore_engine = require('logic.bid_lore_engine')
+local adventurer_module = require('entities.adventurer')
+local quest_rules = require('logic.quest_rules')
+local language_catalog = require('data.language_catalog')
+local motif_catalog = require('data.motif_catalog')
 
 local M = {}
+
+function M.copyCityPhaseMetadata(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[M.copyCityPhaseMetadata(key)] = M.copyCityPhaseMetadata(entry)
+    end
+    return copy
+end
 
 M.TAX_RATE = 0.5
 M.TRAINING_COST_PER_XP = 50
 M.BUILD_COST_PER_SYLLABLE = 50
 M.FUNERAL_COST_PER_XP = 100
+M.QUEST_XP_AWARD = 3
+M.RESEARCH_COST = 50
+M.BANKING_RETURN_RATE = 0.02
+M.LEECHING_COST_PER_STAGE = 20
+M.SPELL_RESEARCH_COST_PER_TILE = 25
+M.LOAN_INTEREST_RATE = 30
+M.VISIT_GRAVE_COST = 100
+M.MAKEOVER_COST = 10
+M.PILLOW_TALK_COST = 10
+M.PLAY_OUTING_COST = 25
+M.COURT_OF_WANDS_DUES = 100
+M.BLOOD_FEAST_COST = 50
+M.SWORDWHORES_DUES = 100
+M.DOOMSAYING_COST = 10
+M.SEEK_TRUTH_COST = 50
+M.BEGGARS_GUILD_DUES = 100
+M.SEND_LETTER_COST = 10
+M.STUDY_LANGUAGE_COST = 200
+M.ANIMAL_COMPANION_TRAINING_COST = 100
 M.MAX_FAME = 5
 M.MAX_MYTHRYS_INITIATION = 21
 M.generateCityLayout = city_layout.generateCityLayout
+
+M.SUPPORT_CONTRIBUTION_IMPACTS = {
+    {
+        id = "dramatic",
+        label = "dramatic statement",
+        minimumGold = 1000,
+    },
+    {
+        id = "significant",
+        label = "significant impact",
+        minimumGold = 100,
+    },
+    {
+        id = "humble_meaningful",
+        label = "humble but meaningful impact",
+        minimumGold = 50,
+    },
+    {
+        id = "small",
+        label = "small impact",
+        minimumGold = 25,
+    },
+}
 
 M.COMMISSION_CRAFT_RATES = {
     farmer = 1,
@@ -41,6 +102,218 @@ M.STEPS = {
     PLAN_NEXT_CRAWL = "plan_next_crawl",
     RESTOCK_UNDERWORLD = "restock_underworld",
 }
+
+M.CITY_PHASE_STEP_ORDER = {
+    M.STEPS.DEATH_AND_TAXES,
+    M.STEPS.NOTEWORTHY_DEEDS,
+    M.STEPS.CITY_EVENTS,
+    M.STEPS.TURN_IN_CONTRACTS,
+    M.STEPS.UPKEEP,
+    M.STEPS.CITY_ACTIONS,
+    M.STEPS.PLAN_NEXT_CRAWL,
+    M.STEPS.RESTOCK_UNDERWORLD,
+}
+
+M.CITY_PHASE_STEP_DETAILS = {
+    {
+        index = 1,
+        key = M.STEPS.DEATH_AND_TAXES,
+        label = "Death and taxes",
+        summary = "Each adventurer pays the All-Watch 50% of carried liquid gold after returning through an Underworld gate.",
+        gmRole = "Demand the fixed tax and adjudicate any smuggling or bribery fallout.",
+        playerRole = "Declare carried liquid gold and pay from coin, not art or extravagant treasure.",
+        rules = {
+            taxRate = M.TAX_RATE,
+            liquidAssets = "gold coins",
+            nonLiquidAssets = "art and extravagance such as gems, books, decorative weapons, jewelry, and statues",
+        },
+    },
+    {
+        index = 2,
+        key = M.STEPS.NOTEWORTHY_DEEDS,
+        label = "Noteworthy deeds",
+        summary = "Erase the oldest deed, review the last Crawl, and record table-approved accomplishments as active guild deeds.",
+        gmRole = "Arbitrate whether suggested accomplishments are actually noteworthy.",
+        playerRole = "Suggest deeds and choose which five active deeds remain if the roster exceeds the Fame cap.",
+        rules = {
+            fameCap = M.MAX_FAME,
+            emptyReturnPenalty = "erase the oldest deed and lose 1 Fame",
+        },
+    },
+    {
+        index = 3,
+        key = M.STEPS.CITY_EVENTS,
+        label = "City Events",
+        summary = "Draw a numbered Major Arcana City Event, interpreting I-V as curiosities, VI-X as happenings, XI-XV as rumors, XVI-XX as travel events, and XXI as Signs and Portents.",
+        gmRole = "Maintain the twenty-one-entry City Events table and interpret the result through the City Phase.",
+        playerRole = "Respond to the event's framing, limits, rumors, or travel complications.",
+        rules = {
+            deck = "GM major arcana",
+            excludes = "The Fool",
+            signsAndPortents = "XXI consults the top minor arcana discard",
+            categories = {
+                [1] = "curiosities",
+                [6] = "happenings",
+                [11] = "rumors",
+                [16] = "travel_events",
+                [21] = "signs_and_portents",
+            },
+        },
+    },
+    {
+        index = 4,
+        key = M.STEPS.TURN_IN_CONTRACTS,
+        label = "Turn in contracts",
+        summary = "Turn in completed contracts for the promised reward and 1 XP per fulfilled contract.",
+        gmRole = "Play the patron scene and confirm completed objectives.",
+        playerRole = "Choose eligible completed contracts to turn in and divide rewards.",
+        rules = {
+            xpPerContract = 1,
+            incompleteContracts = "remain active",
+        },
+    },
+    {
+        index = 5,
+        key = M.STEPS.UPKEEP,
+        label = "Upkeep",
+        summary = "Each adventurer pays for a lifestyle tier, refills qualifying Omphalic Market gear, and may recover through common or luxurious upkeep.",
+        gmRole = "Apply current City Event price or action restrictions before resolving upkeep choices.",
+        playerRole = "Choose destitute, impoverished, common, or luxurious upkeep and any allowed refill or recovery choices.",
+        rules = {
+            tiers = {
+                destitute = 0,
+                impoverished = 25,
+                common = 50,
+                luxurious = 100,
+            },
+            destituteConsequence = "begin the next Crawl Stressed",
+            commonRecovery = "may burn charged Bonds as in Camp Recovery",
+            luxuriousRecovery = "heal all Wounds and refresh all Resolve",
+        },
+    },
+    {
+        index = 6,
+        key = M.STEPS.CITY_ACTIONS,
+        label = "City Actions",
+        summary = "Each active adventurer performs one City Action, including common actions, Camp Actions, and discovered special district actions.",
+        gmRole = "Provide common actions, discovered district actions, and rulings for unusual proposals.",
+        playerRole = "Declare one concrete action and pay any required lump-sum cost.",
+        rules = {
+            actionsPerAdventurer = 1,
+            broadException = "Beg and Busk is the main listed action that does not require a cash lump sum",
+        },
+    },
+    {
+        index = 7,
+        key = M.STEPS.PLAN_NEXT_CRAWL,
+        label = "Plan the next Crawl",
+        summary = "Reassemble in a tavern, review quests and contracts, and choose the guild's next destination or job.",
+        gmRole = "Offer four to six possible contracts or confirm continued quest/destination plans.",
+        playerRole = "Role-play the debrief and collectively sign up for a contract or choose the next objective.",
+        rules = {
+            offeredContracts = "four to six",
+            agreement = "guild decision",
+        },
+    },
+    {
+        index = 8,
+        key = M.STEPS.RESTOCK_UNDERWORLD,
+        label = "Restock the Underworld",
+        summary = "Before the next session, replace used Meatgrinder, City Event, and Signs and Portents entries and record map or faction changes.",
+        gmRole = "Refresh consumed random-table entries and update the Underworld based on the guild's consequences.",
+        playerRole = "Usually no direct action; table choices from the prior Crawl inform the restock.",
+        rules = {
+            tables = {
+                "Meatgrinder",
+                "City Events",
+                "Signs and Portents",
+            },
+        },
+    },
+}
+
+M.CITY_PHASE_PROCEDURE = {
+    source = "Core Rules Chapter 9: The City Phase",
+    trigger = "When the guild returns to civilization after a Crawl",
+    purpose = "Pursue long-term goals, research next steps, restock supplies, and refresh the Underworld before the next delve.",
+    steps = M.CITY_PHASE_STEP_DETAILS,
+}
+
+local CITY_PHASE_STEP_INDEX = {}
+for index, step in ipairs(M.CITY_PHASE_STEP_ORDER) do
+    CITY_PHASE_STEP_INDEX[step] = index
+end
+
+local CITY_PHASE_STEP_ALIASES = {
+    death = M.STEPS.DEATH_AND_TAXES,
+    tax = M.STEPS.DEATH_AND_TAXES,
+    taxes = M.STEPS.DEATH_AND_TAXES,
+    death_and_tax = M.STEPS.DEATH_AND_TAXES,
+    death_and_taxes = M.STEPS.DEATH_AND_TAXES,
+    noteworthy = M.STEPS.NOTEWORTHY_DEEDS,
+    deeds = M.STEPS.NOTEWORTHY_DEEDS,
+    noteworthy_deed = M.STEPS.NOTEWORTHY_DEEDS,
+    noteworthy_deeds = M.STEPS.NOTEWORTHY_DEEDS,
+    city_event = M.STEPS.CITY_EVENTS,
+    city_events = M.STEPS.CITY_EVENTS,
+    contract = M.STEPS.TURN_IN_CONTRACTS,
+    contracts = M.STEPS.TURN_IN_CONTRACTS,
+    turn_in_contract = M.STEPS.TURN_IN_CONTRACTS,
+    turn_in_contracts = M.STEPS.TURN_IN_CONTRACTS,
+    upkeep = M.STEPS.UPKEEP,
+    action = M.STEPS.CITY_ACTIONS,
+    actions = M.STEPS.CITY_ACTIONS,
+    city_action = M.STEPS.CITY_ACTIONS,
+    city_actions = M.STEPS.CITY_ACTIONS,
+    plan = M.STEPS.PLAN_NEXT_CRAWL,
+    next_crawl = M.STEPS.PLAN_NEXT_CRAWL,
+    plan_next_crawl = M.STEPS.PLAN_NEXT_CRAWL,
+    restock = M.STEPS.RESTOCK_UNDERWORLD,
+    restock_underworld = M.STEPS.RESTOCK_UNDERWORLD,
+}
+
+local function normalizeCityPhaseStep(step)
+    if type(step) == "table" then
+        step = step.step or step.id or step.name
+    end
+    local normalized = tostring(step or ""):lower()
+    normalized = normalized:gsub("^%s+", ""):gsub("%s+$", "")
+    normalized = normalized:gsub("[%s%-]+", "_")
+    return CITY_PHASE_STEP_ALIASES[normalized] or normalized
+end
+
+local function cityPhaseStepIndex(step)
+    return CITY_PHASE_STEP_INDEX[normalizeCityPhaseStep(step)]
+end
+
+function M.normalizeCityPhaseStep(step)
+    return normalizeCityPhaseStep(step)
+end
+
+function M.getCityPhaseStepOrder()
+    local order = {}
+    for index, step in ipairs(M.CITY_PHASE_STEP_ORDER) do
+        order[index] = step
+    end
+    return order
+end
+
+function M.getCityPhaseProcedure()
+    return M.copyCityPhaseMetadata(M.CITY_PHASE_PROCEDURE)
+end
+
+function M.getCityPhaseStepDetails(step)
+    if step == nil then
+        return M.copyCityPhaseMetadata(M.CITY_PHASE_STEP_DETAILS)
+    end
+    local stepId = normalizeCityPhaseStep(step)
+    for _, detail in ipairs(M.CITY_PHASE_STEP_DETAILS) do
+        if detail.key == stepId then
+            return M.copyCityPhaseMetadata(detail)
+        end
+    end
+    return nil
+end
 
 M.UPKEEP_TIERS = {
     destitute = {
@@ -79,9 +352,12 @@ M.ACTIONS = {
     BUILD = "build",
     CAMP_ACTION = "camp_action",
     CAROUSE = "carouse",
+    CHANGE_MOTIF = "change_motif",
     CHOOSE_MONSTER_HUNTER_FOE = "choose_monster_hunter_foe",
     COMMISSION_CRAFT = "commission_craft",
     HOLD_FUNERAL = "hold_funeral",
+    RETIRE_ADVENTURER = "retire_adventurer",
+    DECLARE_NEW_QUEST = "declare_new_quest",
     PREPARE_COMPONENTS = "prepare_components",
     PRAY_AT_MYTHRAEUM = "pray_at_mythraeum",
     TRAIN = "train",
@@ -128,6 +404,7 @@ M.ACTIONS = {
     PICNIC = "picnic",
     PURCHASE_AMULETS = "purchase_amulets",
     PURCHASE_ANIMAL_COMPANION = "purchase_animal_companion",
+    TRAIN_ANIMAL_COMPANION = "train_animal_companion",
     PURCHASE_FATE_HONEY = "purchase_fate_honey",
     PURCHASE_FIREWORKS = "purchase_fireworks",
     RESEARCH_A_NEW_SPELL = "research_a_new_spell",
@@ -149,6 +426,120 @@ M.ACTIONS = {
     VISIT_GRAVE = "visit_grave",
     VISIT_THE_PIT = "visit_the_pit",
     WRESTLE_HERECLUS = "wrestle_hereclus",
+}
+
+M.STANDARD_CITY_ACTION_DETAILS = {
+    [M.ACTIONS.BANKING] = {
+        key = M.ACTIONS.BANKING,
+        label = "Banking",
+        category = "common_city_action",
+        summary = "Store extra items and coin in Cult-run banks where gear is safe and total gold investment earns a 2% City Phase return.",
+        cost = "none",
+        returnRate = M.BANKING_RETURN_RATE,
+        preservesGear = true,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.BEG_AND_BUSK] = {
+        key = M.ACTIONS.BEG_AND_BUSK,
+        label = "Beg and Busk",
+        category = "common_city_action",
+        summary = "Sing or perform in the streets and winesinks, drawing from the minor arcana for gold equal to card value plus Wands.",
+        cost = "none",
+        deck = "minor_arcana",
+        attribute = "wands",
+        consumesCityAction = "on success",
+    },
+    [M.ACTIONS.BUILD] = {
+        key = M.ACTIONS.BUILD,
+        label = "Build",
+        category = "common_city_action",
+        summary = "Create a permanent building, monument, or civic improvement described in a few words and priced by syllable.",
+        costGoldPerSyllable = M.BUILD_COST_PER_SYLLABLE,
+        requiresGMApproval = true,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.CAMP_ACTION] = {
+        key = M.ACTIONS.CAMP_ACTION,
+        label = "Camp Action",
+        category = "common_city_action",
+        summary = "Perform any supported Camp Action during the City Phase, such as Use a Talent or Use an Item.",
+        delegatesTo = "Camp Actions",
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.CAROUSE] = {
+        key = M.ACTIONS.CAROUSE,
+        label = "Carouse",
+        category = "common_city_action",
+        summary = "Spend 50% or 100% of brought-back gold for 1 or 2 XP, then draw a Major Arcana hangover complication.",
+        spendOptions = {
+            { broughtBackGoldPercent = 50, xp = 1 },
+            { broughtBackGoldPercent = 100, xp = 2 },
+        },
+        hangoverDeck = "GM major arcana",
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.COMMISSION_CRAFT] = {
+        key = M.ACTIONS.COMMISSION_CRAFT,
+        label = "Commission Craft",
+        category = "common_city_action",
+        summary = "Commission a bespoke item outside the Omphalic Market after the GM confirms it is reasonable and names an appropriate merchant.",
+        costs = {
+            { scale = "farmer", goldPerSyllable = M.COMMISSION_CRAFT_RATES.farmer },
+            { scale = "adventurer", goldPerSyllable = M.COMMISSION_CRAFT_RATES.adventurer },
+            { scale = "noble", goldPerSyllable = M.COMMISSION_CRAFT_RATES.noble },
+            { scale = "novel", goldPerSyllable = M.COMMISSION_CRAFT_RATES.novel },
+        },
+        requiresGMApproval = true,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.HOLD_FUNERAL] = {
+        key = M.ACTIONS.HOLD_FUNERAL,
+        label = "Hold a Funeral",
+        category = "common_city_action",
+        summary = "Haul a dead adventurer from the Underworld and spend funeral expenses so the player's new adventurer can reclaim previous XP.",
+        costGoldPerXP = M.FUNERAL_COST_PER_XP,
+        requiresDeadAdventurer = true,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.PREPARE_COMPONENTS] = {
+        key = M.ACTIONS.PREPARE_COMPONENTS,
+        label = "Prepare Components",
+        category = "common_city_action",
+        summary = "Fill pack slots with chosen Appendix A spell components through talismongers, rituals, or gathering outside the City.",
+        sourceCatalog = "Appendix A spell components",
+        slotsPerComponent = 1,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.RESEARCH] = {
+        key = M.ACTIONS.RESEARCH,
+        label = "Research",
+        category = "common_city_action",
+        summary = "Spend gold and test Cups to ask the GM one question on a success or three questions on a great success.",
+        costGold = M.RESEARCH_COST,
+        attribute = "cups",
+        successQuestions = 1,
+        greatSuccessQuestions = 3,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.SUPPORT] = {
+        key = M.ACTIONS.SUPPORT,
+        label = "Support",
+        category = "common_city_action",
+        summary = "Advance a GM-approved long-term project by spending money in a way that supports the goal.",
+        complexityRange = { min = 2, max = 8 },
+        contributionImpacts = M.SUPPORT_CONTRIBUTION_IMPACTS,
+        requiresGMApproval = true,
+        consumesCityAction = true,
+    },
+    [M.ACTIONS.TRAIN] = {
+        key = M.ACTIONS.TRAIN,
+        label = "Train",
+        category = "common_city_action",
+        summary = "Seek an available expert and spend 50 gold per XP invested in a talent, preparing uses equal to XP invested.",
+        costGoldPerXP = M.TRAINING_COST_PER_XP,
+        preparesUsesEqualXP = true,
+        consumesCityAction = true,
+    },
 }
 
 M.DISTRICT_ACTION_ALIASES = {
@@ -191,6 +582,7 @@ M.DISTRICT_ACTION_ALIASES = {
     picnic = M.ACTIONS.PICNIC,
     purchase_amulets = M.ACTIONS.PURCHASE_AMULETS,
     purchase_animal_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
+    train_animal_companion = M.ACTIONS.TRAIN_ANIMAL_COMPANION,
     purchase_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
     purchase_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
     research_a_new_spell = M.ACTIONS.RESEARCH_A_NEW_SPELL,
@@ -224,6 +616,9 @@ local ACTION_ALIASES = {
     camp = M.ACTIONS.CAMP_ACTION,
     perform_camp_action = M.ACTIONS.CAMP_ACTION,
     carouse = M.ACTIONS.CAROUSE,
+    change_motif = M.ACTIONS.CHANGE_MOTIF,
+    rewrite_motif = M.ACTIONS.CHANGE_MOTIF,
+    rewrite_motif_descriptor = M.ACTIONS.CHANGE_MOTIF,
     choose_monster_hunter_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
     change_monster_hunter_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
     monster_hunter_foe = M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE,
@@ -233,6 +628,12 @@ local ACTION_ALIASES = {
     craft = M.ACTIONS.COMMISSION_CRAFT,
     hold_funeral = M.ACTIONS.HOLD_FUNERAL,
     funeral = M.ACTIONS.HOLD_FUNERAL,
+    retire = M.ACTIONS.RETIRE_ADVENTURER,
+    retirement = M.ACTIONS.RETIRE_ADVENTURER,
+    retire_adventurer = M.ACTIONS.RETIRE_ADVENTURER,
+    declare_new_quest = M.ACTIONS.DECLARE_NEW_QUEST,
+    new_quest = M.ACTIONS.DECLARE_NEW_QUEST,
+    continue_questing = M.ACTIONS.DECLARE_NEW_QUEST,
     prepare_components = M.ACTIONS.PREPARE_COMPONENTS,
     prepare_spell_components = M.ACTIONS.PREPARE_COMPONENTS,
     pray_at_mythraeum = M.ACTIONS.PRAY_AT_MYTHRAEUM,
@@ -315,6 +716,9 @@ local ACTION_ALIASES = {
     purchase_animal_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
     purchase_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
     buy_animal_companion = M.ACTIONS.PURCHASE_ANIMAL_COMPANION,
+    train_animal_companion = M.ACTIONS.TRAIN_ANIMAL_COMPANION,
+    hire_animal_trainer = M.ACTIONS.TRAIN_ANIMAL_COMPANION,
+    animal_trainer = M.ACTIONS.TRAIN_ANIMAL_COMPANION,
     purchase_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
     buy_fate_honey = M.ACTIONS.PURCHASE_FATE_HONEY,
     purchase_fireworks = M.ACTIONS.PURCHASE_FIREWORKS,
@@ -361,6 +765,100 @@ local function findDistrictAction(cityLayout, actionId)
     for _, entry in ipairs(cityLayout and cityLayout.specialCityActions or {}) do
         local action = entry.action or {}
         if action.id == actionId then
+            return entry
+        end
+    end
+    return nil
+end
+
+local function refreshCityLayoutCounts(layout)
+    if type(layout) ~= "table" then
+        return
+    end
+    layout.counts = layout.counts or {}
+    layout.counts.districtPlacements = #(layout.districts or {})
+    layout.counts.coreDistricts = #(layout.coreDistricts or {})
+    layout.counts.sprawlDistricts = #(layout.sprawlDistricts or {})
+    layout.counts.constants = #(layout.constants or {})
+    layout.counts.specialCityActions = #(layout.specialCityActions or {})
+    layout.counts.totalUniqueDistricts = layout.counts.districtPlacements + layout.counts.constants
+end
+
+local function cityLayoutDistrictId(placement)
+    return placement and placement.district and placement.district.id or placement and placement.districtId
+end
+
+local function addDistrictToCityLayout(layout, card, placement)
+    if type(layout) ~= "table" or type(card) ~= "table" then
+        return nil, "District card required"
+    end
+
+    local district = city_districts.getDistrict(card.suit, tonumber(card.value))
+    if not district then
+        return nil, "District card must map to an Appendix D district"
+    end
+
+    local entry = {
+        placement = placement or "city_event",
+        card = card,
+        district = district,
+    }
+    layout.districts = layout.districts or {}
+    layout.specialCityActions = layout.specialCityActions or {}
+    layout.districts[#layout.districts + 1] = entry
+
+    for _, specialAction in ipairs(district.specialCityActions or {}) do
+        layout.specialCityActions[#layout.specialCityActions + 1] = {
+            districtId = district.id,
+            districtName = district.name,
+            action = specialAction,
+        }
+    end
+
+    refreshCityLayoutCounts(layout)
+    return entry
+end
+
+local function findDistrictPlacement(layout, districtId)
+    if type(layout) ~= "table" then
+        return nil, nil
+    end
+
+    local wanted = districtId and tostring(districtId) or nil
+    for index, placement in ipairs(layout.districts or {}) do
+        if not wanted or tostring(cityLayoutDistrictId(placement) or "") == wanted then
+            return placement, index
+        end
+    end
+    return nil, nil
+end
+
+local function removeDistrictFromCityLayout(layout, districtId)
+    local placement, index = findDistrictPlacement(layout, districtId)
+    if not placement then
+        return nil
+    end
+
+    local removedId = cityLayoutDistrictId(placement)
+    table.remove(layout.districts, index)
+    for i = #(layout.specialCityActions or {}), 1, -1 do
+        if tostring(layout.specialCityActions[i].districtId or "") == tostring(removedId or "") then
+            table.remove(layout.specialCityActions, i)
+        end
+    end
+
+    refreshCityLayoutCounts(layout)
+    return placement
+end
+
+local function findDistrictActionEntry(layout, districtId)
+    if type(layout) ~= "table" then
+        return nil
+    end
+
+    local wanted = districtId and tostring(districtId) or nil
+    for _, entry in ipairs(layout.specialCityActions or {}) do
+        if not entry.blockedByCityEvent and (not wanted or tostring(entry.districtId or "") == wanted) then
             return entry
         end
     end
@@ -493,17 +991,30 @@ local EXOTIC_DRUGS = {
         name = "Black Honey",
         cost = 35,
         affliction = "black_honey",
+        maxStage = 2,
+        stageCosts = {
+            [1] = 5,
+            [2] = 1,
+        },
         stageEffects = {
             [1] = "May draw five Challenge cards instead of four, then spit out 1-4 teeth.",
             [2] = "Cups equals 1; disfavor on fine motor tests of fate.",
         },
         quitCharges = 5,
+        recentlyTakenEffect = "draw_five_challenge_cards",
+        reexposureClearsCuredStage = 2,
     },
     ghost_lotus = {
         id = "ghost_lotus",
         name = "Ghost Lotus",
         cost = 5,
         affliction = "ghost_lotus",
+        maxStage = 3,
+        stageRecovery = {
+            [1] = { xp = 1, charges = 0 },
+            [2] = { charges = 2 },
+            [3] = { charges = 1 },
+        },
         stageEffects = {
             [1] = "Euphoria cancels effects that hamper sleep.",
             [2] = "Cannot read or write and is immune to illusions.",
@@ -699,6 +1210,17 @@ local function normalizeActionId(actionId)
     return ACTION_ALIASES[tostring(actionId or "")] or tostring(actionId or "")
 end
 
+function M.getCityActionDetails(action)
+    if action == nil then
+        return M.copyCityPhaseMetadata(M.STANDARD_CITY_ACTION_DETAILS)
+    end
+    local actionId = action
+    if type(action) == "table" then
+        actionId = action.type or action.action or action.id
+    end
+    return M.copyCityPhaseMetadata(M.STANDARD_CITY_ACTION_DETAILS[normalizeActionId(actionId)])
+end
+
 local function actorId(actor)
     return actor and (actor.id or actor.name)
 end
@@ -727,7 +1249,19 @@ local function normalizeUpkeepTier(tier)
 end
 
 local function isActiveAdventurer(actor)
-    return actor and not (actor.conditions and actor.conditions.dead)
+    return actor and
+        not (actor.conditions and actor.conditions.dead) and
+        actor.dead ~= true and
+        actor.retired ~= true and
+        actor.lost ~= true and
+        actor.status ~= "dead" and
+        actor.status ~= "retired" and
+        actor.status ~= "lost"
+end
+
+local function isDeadAdventurer(actor)
+    local conditions = actor and actor.conditions or {}
+    return actor ~= nil and (conditions.dead == true or actor.dead == true or actor.status == "dead")
 end
 
 local function getWands(actor)
@@ -742,6 +1276,13 @@ local function getSwords(actor)
         return actor:getAttribute(constants.SUITS.SWORDS)
     end
     return tonumber(actor and actor.swords) or 0
+end
+
+local function getPentacles(actor)
+    if actor and actor.getAttribute then
+        return actor:getAttribute(constants.SUITS.PENTACLES)
+    end
+    return tonumber(actor and actor.pentacles) or 0
 end
 
 local function getCups(actor)
@@ -771,13 +1312,7 @@ local function normalizeList(value)
 end
 
 local function normalizeLanguage(value)
-    if type(value) ~= "string" then
-        return nil
-    end
-    local normalized = value:lower()
-    normalized = normalized:gsub("^%s+", ""):gsub("%s+$", "")
-    normalized = normalized:gsub("[%s%-]+", "_")
-    return normalized ~= "" and normalized or nil
+    return language_catalog.normalizeLanguage(value)
 end
 
 local function languageListHas(source, language)
@@ -829,12 +1364,169 @@ local function shallowClone(value)
     return copy
 end
 
+local function normalizedResearchAnswer(value)
+    if type(value) == "table" then
+        return shallowClone(value)
+    end
+    if type(value) == "string" then
+        local text = value:gsub("^%s+", ""):gsub("%s+$", "")
+        if text ~= "" then
+            return {
+                summary = text,
+                details = {},
+                implication = "",
+                sourceRefs = {},
+            }
+        end
+    end
+    return nil
+end
+
+local function loreAnswerResponse(answer)
+    if type(answer) ~= "table" then
+        return nil
+    end
+    return {
+        summary = answer.summary or "",
+        details = shallowClone(answer.details or {}),
+        implication = answer.implication or "",
+        sourceRefs = shallowClone(answer.sourceRefs or {}),
+    }
+end
+
+local function collectResearchQuestionRequests(request)
+    request = request or {}
+    local raw = request.questionRequests or request.researchQuestions or request.questionsToAsk or
+        request.ask or request.asks
+    if not raw and type(request.questions) == "table" then
+        raw = request.questions
+    end
+
+    local requests = {}
+    local function add(item)
+        if type(item) == "string" then
+            requests[#requests + 1] = { question = item }
+        elseif type(item) == "table" then
+            requests[#requests + 1] = item
+        end
+    end
+
+    if type(raw) == "string" then
+        add(raw)
+    elseif type(raw) == "table" then
+        if raw.subjectId or raw.loreSubjectId or raw.questionType or raw.questionTypeId or raw.questionId or
+           raw.answer or raw.response or raw.gmAnswer or raw.question then
+            add(raw)
+        else
+            for _, item in ipairs(raw) do
+                add(item)
+            end
+        end
+    elseif request.subjectId or request.loreSubjectId or request.questionType or request.questionTypeId or
+           request.questionId or request.answer or request.response or request.gmAnswer then
+        add(request)
+    end
+
+    return requests
+end
+
+local function resolveResearchQuestionRequests(controller, request, allowedQuestions)
+    allowedQuestions = math.max(0, math.floor(tonumber(allowedQuestions) or 0))
+    local requested = collectResearchQuestionRequests(request)
+    local answers = {}
+    local pending = {}
+    local overflow = {}
+    local answeredCount = math.min(allowedQuestions, #requested)
+    local engine = nil
+
+    if answeredCount > 0 then
+        engine = request.bidLoreEngine or request.loreEngine or controller.bidLoreEngine or
+            bid_lore_engine.createBidLoreEngine({})
+    end
+
+    for index = 1, answeredCount do
+        local questionRequest = requested[index] or {}
+        local subjectId = questionRequest.subjectId or questionRequest.loreSubjectId or request.subjectId or
+            request.loreSubjectId
+        local questionType = questionRequest.questionType or questionRequest.questionTypeId or
+            questionRequest.questionId or request.questionType or request.questionTypeId or request.questionId
+        local answer = normalizedResearchAnswer(questionRequest.answer or questionRequest.response or
+            questionRequest.gmAnswer)
+        local source = answer and "gm" or nil
+        local subject = subjectId and engine:getSubject(subjectId) or nil
+        local question = questionType and engine:getQuestionType(questionType) or nil
+
+        if not answer and subject and questionType then
+            answer = loreAnswerResponse(subject.answers and subject.answers[questionType])
+            if answer then
+                source = "lore_catalog"
+            end
+        end
+
+        local record = {
+            question = questionRequest.question or questionRequest.prompt,
+            subjectId = subjectId,
+            subjectName = questionRequest.subjectName or (subject and subject.name),
+            questionType = questionType,
+            questionName = questionRequest.questionName or (question and question.name),
+            response = answer,
+            source = source,
+            loreSpend = false,
+        }
+
+        if answer then
+            answers[#answers + 1] = record
+        else
+            record.response = nil
+            pending[#pending + 1] = record
+        end
+    end
+
+    for index = answeredCount + 1, #requested do
+        overflow[#overflow + 1] = shallowClone(requested[index])
+    end
+
+    return answers, pending, overflow, math.max(0, allowedQuestions - answeredCount)
+end
+
 local function contractCardValue(card)
     local value = math.floor(tonumber(card and card.value) or -1)
     if value >= 1 and value <= 14 then
         return value
     end
     return nil
+end
+
+local function contractTableEntryForValue(contractTable, value)
+    if type(contractTable) ~= "table" or not value then
+        return nil
+    end
+
+    if contractTable[value] then
+        return contractTable[value]
+    end
+
+    for _, entry in ipairs(contractTable) do
+        local entryValue = contractCardValue(entry)
+        if not entryValue then
+            entryValue = math.floor(tonumber(entry.cardValue or entry.value) or -1)
+        end
+        if entryValue == value then
+            return entry
+        end
+    end
+
+    return nil
+end
+
+local function jobBoardContractTable(opts)
+    local tableSource = "rulebook_example_contracts"
+    local contractTable = opts.contractTable or opts.jobBoardTable or opts.contractsTable or opts.contractTemplates
+    if contractTable then
+        tableSource = opts.contractTableSource or opts.tableSource or "custom_contract_table"
+        return contractTable, tableSource
+    end
+    return M.EXAMPLE_CONTRACTS, tableSource
 end
 
 local function generateContractOffer(card, index, opts)
@@ -844,7 +1536,8 @@ local function generateContractOffer(card, index, opts)
         return nil, "Job board cards must map to contracts I through King"
     end
 
-    local template = M.EXAMPLE_CONTRACTS[value]
+    local contractTable, tableSource = jobBoardContractTable(opts)
+    local template = contractTableEntryForValue(contractTable, value)
     if not template then
         return nil, "Job board contract table entry missing"
     end
@@ -852,12 +1545,13 @@ local function generateContractOffer(card, index, opts)
     local offer = shallowClone(template)
     local suitName = constants.SUIT_NAMES[card and card.suit] or card and card.suitName
     local prefix = opts.idPrefix or opts.boardId or "job_board"
-    offer.id = string.format("%s_%02d_%s_%s", slugify(prefix), index, template.id, slugify(suitName or card and card.name))
-    offer.templateId = template.id
+    local templateId = template.id or template.templateId or slugify(template.title or template.name or ("contract_" .. tostring(value)))
+    offer.id = string.format("%s_%02d_%s_%s", slugify(prefix), index, templateId, slugify(suitName or card and card.name))
+    offer.templateId = templateId
     offer.name = offer.name or offer.title
     offer.status = offer.status or "offered"
     offer.generated = true
-    offer.source = "rulebook_example_contracts"
+    offer.source = tableSource
     offer.card = card
     offer.cardValue = value
     offer.cardRank = CONTRACT_CARD_RANKS[value]
@@ -870,11 +1564,32 @@ local function normalizeGearRequests(value)
     local requests = {}
     for _, entry in ipairs(normalizeList(value)) do
         if type(entry) == "table" then
-            local templateId = entry.templateId or entry.itemTemplate or entry.itemId or entry.id or entry[1]
+            local candidate = entry.templateId or entry.itemTemplate or entry.itemTemplateId or entry.template or
+                entry.itemId or entry.id or entry[1]
+            local templateId = nil
+            if candidate and item_templates.getTemplate(candidate) then
+                templateId = candidate
+            end
+            local name = entry.name or entry.itemName or (not templateId and candidate)
             requests[#requests + 1] = {
                 templateId = templateId,
+                customId = entry.customId or (not templateId and (entry.itemId or entry.id)),
+                name = name,
+                tier = entry.tier or entry.marketTier or entry.priceLevel or entry.upkeepTier,
+                custom = entry.custom == true or entry.everyday == true or entry.gmApproved == true or
+                    entry.approved == true,
                 quantity = math.max(1, math.floor(tonumber(entry.quantity or entry.count) or 1)),
                 location = entry.location or inventory.LOCATIONS.PACK,
+                forTalent = entry.forTalent == true,
+                talentRequired = entry.talentRequired == true,
+                requiredForTalent = entry.requiredForTalent == true,
+                talentItem = entry.talentItem == true,
+                size = math.max(1, math.floor(tonumber(entry.size or entry.slots) or inventory.SIZE.NORMAL)),
+                oversized = entry.oversized == true,
+                stackable = entry.stackable == true,
+                stackSize = math.max(1, math.floor(tonumber(entry.stackSize or entry.stack_size) or 1)),
+                itemType = entry.type or entry.itemType,
+                properties = entry.properties,
             }
         else
             requests[#requests + 1] = {
@@ -1187,6 +1902,118 @@ local function replacementEntries(replacements)
     return out
 end
 
+local MEATGRINDER_RESTOCK_SECTIONS = {
+    curiosity = { key = "curiosity", offset = 5 },
+    travel_event = { key = "travel_event", offset = 10 },
+    random_encounter = { key = "random_encounter", offset = 15 },
+    quest_rumor = { key = "quest_rumor", singleton = true },
+}
+
+local function cityEventCategoryForValue(value)
+    return city_events.categoryForValue(value)
+end
+
+local function parseConsumedMeatgrinderKey(key)
+    if type(key) ~= "string" then
+        return nil
+    end
+
+    local roomId, category, cardValue = key:match("^([^:]+):([^:]+):([^:]+)$")
+    if roomId then
+        return {
+            raw = key,
+            roomId = roomId,
+            category = category,
+            cardValue = tonumber(cardValue),
+        }
+    end
+
+    roomId, category = key:match("^([^:]+):([^:]+)$")
+    if roomId then
+        return {
+            raw = key,
+            roomId = roomId,
+            category = category,
+        }
+    end
+
+    return nil
+end
+
+local function replacementEntry(replacement)
+    return replacement.entry or replacement.replacement or replacement.newEntry or replacement
+end
+
+local function withConsumedReplacementDefaults(replacements, consumedEntries)
+    if type(replacements) ~= "table" or #replacements == 0 then
+        return replacements
+    end
+
+    local out = {}
+    for index, replacement in ipairs(replacements) do
+        if type(replacement) == "table" then
+            local copy = {}
+            for key, value in pairs(replacement) do
+                copy[key] = value
+            end
+            local consumed = consumedEntries and consumedEntries[index]
+            if consumed and copy.key == nil and copy.index == nil and copy.cardValue == nil and copy.value == nil then
+                copy.key = consumed.value or consumed.cardValue or consumed.key or consumed.index
+            end
+            out[#out + 1] = copy
+        else
+            out[#out + 1] = replacement
+        end
+    end
+    return out
+end
+
+local function applyNestedMeatgrinderReplacement(tableRef, replacement)
+    local category = replacement.category or replacement.eventCategory
+    local section = category and MEATGRINDER_RESTOCK_SECTIONS[category]
+    if not section or type(tableRef[section.key]) ~= "table" then
+        return nil
+    end
+
+    local key = replacement.key or replacement.value or replacement.cardValue or replacement.index
+    local cardValue = tonumber(replacement.cardValue or replacement.value or replacement.key)
+    local newEntry = replacementEntry(replacement)
+
+    if section.singleton then
+        local oldEntry = tableRef[section.key]
+        tableRef[section.key] = newEntry
+        return {
+            key = cardValue or section.key,
+            category = category,
+            tableKey = section.key,
+            oldEntry = oldEntry,
+            newEntry = newEntry,
+        }
+    end
+
+    local index = tonumber(replacement.index)
+    if not index and cardValue then
+        index = cardValue - section.offset
+    end
+    if not index then
+        index = tonumber(key)
+    end
+    if not index then
+        return nil
+    end
+
+    local oldEntry = tableRef[section.key][index]
+    tableRef[section.key][index] = newEntry
+    return {
+        key = cardValue or key or index,
+        category = category,
+        tableKey = section.key,
+        index = index,
+        oldEntry = oldEntry,
+        newEntry = newEntry,
+    }
+end
+
 local function applyTableReplacements(tableRef, replacements)
     local details = {}
     if type(tableRef) ~= "table" then
@@ -1194,19 +2021,107 @@ local function applyTableReplacements(tableRef, replacements)
     end
 
     for _, replacement in ipairs(replacementEntries(replacements)) do
-        local key = replacement.key or replacement.value or replacement.cardValue or replacement.index or replacement.category
-        if key ~= nil then
-            local newEntry = replacement.entry or replacement.replacement or replacement.newEntry or replacement
-            local oldEntry = tableRef[key]
-            tableRef[key] = newEntry
-            details[#details + 1] = {
-                key = key,
-                oldEntry = oldEntry,
-                newEntry = newEntry,
-            }
+        local nestedDetail = applyNestedMeatgrinderReplacement(tableRef, replacement)
+        if nestedDetail then
+            details[#details + 1] = nestedDetail
+        else
+            local key = replacement.key or replacement.value or replacement.cardValue or replacement.index or replacement.category
+            if key ~= nil then
+                local newEntry = replacementEntry(replacement)
+                local oldEntry = tableRef[key]
+                tableRef[key] = newEntry
+                details[#details + 1] = {
+                    key = key,
+                    oldEntry = oldEntry,
+                    newEntry = newEntry,
+                }
+            end
         end
     end
     return details
+end
+
+local function firstRestockFact(opts)
+    if opts.notes then
+        return opts.notes
+    end
+    local faction = opts.factionUpdates and opts.factionUpdates[1]
+    if faction then
+        return "Faction response: " .. tostring(faction.response or faction.status or faction.faction or "changed")
+    end
+    local mapUpdate = opts.mapUpdates and opts.mapUpdates[1]
+    if mapUpdate then
+        return "Map update: " .. tostring(mapUpdate.roomId or mapUpdate.room or mapUpdate.state or "changed")
+    end
+    return "The Underworld changes in response to the guild's last Crawl."
+end
+
+local function generateRestockReplacements(opts)
+    opts = opts or {}
+    local generated = {
+        meatgrinder = {},
+        cityEvents = {},
+        signsAndPortents = {},
+    }
+
+    local consequence = firstRestockFact(opts)
+    for _, consumedKey in ipairs(opts.consumedMeatgrinder or {}) do
+        local parsed = parseConsumedMeatgrinderKey(consumedKey)
+        if parsed and parsed.cardValue and parsed.category ~= "torches_gutter" then
+            local roomText = parsed.roomId and parsed.roomId ~= "global" and (" in " .. parsed.roomId) or ""
+            local categoryText = tostring(parsed.category or "event"):gsub("_", " ")
+            local description = "Consequence restock: the " .. categoryText .. roomText ..
+                " changes after the guild's last Crawl. " .. consequence
+            if parsed.category == "quest_rumor" then
+                description = "A new quest rumor points to consequences of the guild's last Crawl. " .. consequence
+            end
+
+            generated.meatgrinder[#generated.meatgrinder + 1] = {
+                category = parsed.category,
+                cardValue = parsed.cardValue,
+                entry = {
+                    value = parsed.cardValue,
+                    category = parsed.category,
+                    description = description,
+                    generated = true,
+                    source = "restock_underworld",
+                    replacesConsumedKey = consumedKey,
+                    roomId = parsed.roomId,
+                    mapUpdates = opts.mapUpdates,
+                    factionUpdates = opts.factionUpdates,
+                    notes = opts.notes,
+                },
+            }
+        end
+    end
+
+    local cityEventValue = opts.cityEventValue
+    local lastCityEvent = opts.lastCityEvent
+    if not cityEventValue and lastCityEvent then
+        cityEventValue = (lastCityEvent.card and lastCityEvent.card.value) or
+            (lastCityEvent.event and lastCityEvent.event.value)
+    end
+    cityEventValue = tonumber(cityEventValue)
+    if cityEventValue then
+        local oldCategory = lastCityEvent and
+            ((lastCityEvent.event and lastCityEvent.event.category) or lastCityEvent.category)
+        local category = oldCategory or cityEventCategoryForValue(cityEventValue)
+        generated.cityEvents[#generated.cityEvents + 1] = {
+            key = cityEventValue,
+            entry = {
+                value = cityEventValue,
+                category = category,
+                title = category == city_events.CATEGORIES.RUMOR and
+                    "Rumors from Below" or "Consequences from Below",
+                summary = "Word spreads through the City: " .. consequence,
+                generated = true,
+                source = "restock_underworld",
+                basedOnMeatgrinder = generated.meatgrinder,
+            },
+        }
+    end
+
+    return generated
 end
 
 local function hasContract(contracts, contract)
@@ -1224,6 +2139,328 @@ local function contractRewardGold(contract)
         return math.max(0, math.floor(perItem * quantity))
     end
     return math.max(0, math.floor(tonumber(contract.rewardGold or contract.gold or contract.reward) or 0))
+end
+
+local function contractPatronRecord(contract, source, index)
+    local record = nil
+    if type(source) == "table" then
+        record = shallowClone(source)
+    elseif source ~= nil then
+        record = {
+            scene = tostring(source),
+        }
+    else
+        record = {}
+    end
+
+    record.contractId = record.contractId or contractId(contract)
+    record.contractName = record.contractName or contract.name or contract.title
+    record.index = record.index or index
+    record.patron = record.patron or contract.patron or contract.client or contract.issuer or contract.faction
+    record.patronId = record.patronId or contract.patronId or contract.clientId or contract.issuerId or
+        (type(record.patron) == "table" and (record.patron.id or record.patron.key))
+    record.patronName = record.patronName or contract.patronName or contract.clientName or contract.issuerName or
+        (type(record.patron) == "table" and (record.patron.name or record.patron.title)) or
+        (type(record.patron) == "string" and record.patron or nil)
+    record.scene = record.scene or record.roleplay or record.description or record.text or record.notes
+    record.reaction = record.reaction or record.outcome or record.response or contract.patronReaction
+    record.disposition = record.disposition or contract.patronDisposition
+    record.notes = record.notes or record.gmNotes or record.authorNotes
+
+    if not record.patron and not record.patronName and not record.scene and not record.reaction and
+       not record.disposition and not record.notes then
+        return nil
+    end
+
+    if type(record.patron) == "table" then
+        if record.disposition then
+            record.patron.disposition = record.disposition
+        end
+        if record.reaction then
+            record.patron.lastContractReaction = record.reaction
+        end
+        record.patron.lastContractTurnIn = record
+    end
+
+    return record
+end
+
+local function contractPatronSource(sources, contract, index)
+    if type(sources) ~= "table" then
+        return sources
+    end
+
+    local id = contractId(contract)
+    if id and sources[id] ~= nil then
+        return sources[id]
+    end
+    if sources[index] ~= nil then
+        return sources[index]
+    end
+
+    for _, entry in ipairs(sources) do
+        if type(entry) == "table" and (
+            entry.contract == contract or
+            (id and (entry.contractId == id or entry.id == id))
+        ) then
+            return entry
+        end
+    end
+
+    return nil
+end
+
+function M.getTurnInContractsOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.turnInContracts or opts.contractTurnIn or opts
+    local contracts = request.contracts or opts.contracts or {}
+    local selectedRefs = normalizeList(request.selectedContractIds or request.contractIds or request.selectedContracts or
+        request.selectedContractId or request.contractId)
+    local selectedOnly = #selectedRefs > 0
+    local function asRecipientList(value)
+        if not value then
+            return {}
+        end
+        if actorId(value) then
+            return { value }
+        end
+        return value
+    end
+
+    local recipients = asRecipientList(request.recipients or opts.recipients or request.guild or opts.guild)
+    if #recipients == 0 then
+        recipients = activeAdventurers(opts.guild or {})
+    end
+    local xpPerContract = math.max(0, math.floor(tonumber(request.xpPerContract or opts.xpPerContract) or 1))
+    local treasury = request.guildTreasury or opts.guildTreasury or opts.treasury
+    local patronSources = request.patronInteractions or request.patronRoleplay or request.patronScenes or
+        request.patrons or opts.patronInteractions or opts.patronRoleplay or opts.patronScenes or opts.patrons
+
+    local function distributionPreview(total, recipientList)
+        total = math.max(0, math.floor(tonumber(total) or 0))
+        recipientList = asRecipientList(recipientList)
+        if total <= 0 or #recipientList == 0 then
+            return {
+                total = total,
+                perRecipient = 0,
+                remainder = total,
+                recipients = {},
+                projectedTreasuryGold = treasury and ((tonumber(treasury.gold) or 0) + total) or nil,
+            }
+        end
+
+        local perRecipient = math.floor(total / #recipientList)
+        local remainder = total - (perRecipient * #recipientList)
+        local recipientPreviews = {}
+        for _, recipient in ipairs(recipientList) do
+            recipientPreviews[#recipientPreviews + 1] = {
+                actor = recipient,
+                actorId = actorId(recipient),
+                name = recipient and recipient.name or actorId(recipient),
+                gold = perRecipient,
+                currentGold = recipient and currency.getGold(recipient) or nil,
+                projectedGold = recipient and (currency.getGold(recipient) + perRecipient) or nil,
+            }
+        end
+
+        return {
+            total = total,
+            perRecipient = perRecipient,
+            remainder = remainder,
+            recipients = recipientPreviews,
+            projectedTreasuryGold = treasury and ((tonumber(treasury.gold) or 0) + remainder) or nil,
+        }
+    end
+
+    local function patronPreview(contract, source, index)
+        local record = nil
+        if type(source) == "table" then
+            record = shallowClone(source)
+        elseif source ~= nil then
+            record = {
+                scene = tostring(source),
+            }
+        else
+            record = {}
+        end
+
+        record.contractId = record.contractId or contractId(contract)
+        record.contractName = record.contractName or contract.name or contract.title
+        record.index = record.index or index
+        record.patron = record.patron or contract.patron or contract.client or contract.issuer or contract.faction
+        record.patronId = record.patronId or contract.patronId or contract.clientId or contract.issuerId or
+            (type(record.patron) == "table" and (record.patron.id or record.patron.key))
+        record.patronName = record.patronName or contract.patronName or contract.clientName or contract.issuerName or
+            (type(record.patron) == "table" and (record.patron.name or record.patron.title)) or
+            (type(record.patron) == "string" and record.patron or nil)
+        record.scene = record.scene or record.roleplay or record.description or record.text or record.notes
+        record.reaction = record.reaction or record.outcome or record.response or contract.patronReaction
+        record.disposition = record.disposition or contract.patronDisposition
+        record.notes = record.notes or record.gmNotes or record.authorNotes
+
+        if not record.patron and not record.patronName and not record.scene and not record.reaction and
+           not record.disposition and not record.notes then
+            return nil
+        end
+        return record
+    end
+
+    local selectedSet = {}
+    for _, ref in ipairs(selectedRefs) do
+        selectedSet[tostring(type(ref) == "table" and contractId(ref) or ref)] = true
+    end
+
+    local contractOptions = {}
+    for index, contract in ipairs(contracts) do
+        local id = contractId(contract)
+        local complete = isContractComplete(contract)
+        local turnedIn = contract and contract.turnedIn == true
+        local disabled = not complete or turnedIn
+        local reason = nil
+        if not complete then
+            reason = "Selected contract incomplete"
+        elseif turnedIn then
+            reason = "Selected contract already turned in"
+        end
+        local rewardGold = contractRewardGold(contract)
+        local contractRecipients = asRecipientList(contract.recipients or recipients)
+        contractOptions[#contractOptions + 1] = {
+            id = id,
+            contractId = id,
+            contract = contract,
+            name = contract.name or contract.title,
+            completed = complete,
+            turnedIn = turnedIn,
+            rewardGold = rewardGold,
+            quantity = contract.quantity or contract.deliveredCount or contract.count,
+            rewardPerItem = contract.rewardPerItem or contract.goldPerItem or contract.rewardGoldPerItem,
+            selected = selectedSet[tostring(id)] == true,
+            distribution = distributionPreview(rewardGold, contractRecipients),
+            patronInteraction = patronPreview(
+                contract,
+                contractPatronSource(patronSources, contract, index) or
+                    contract.patronInteraction or contract.patronRoleplay or contract.turnInScene,
+                index
+            ),
+            disabled = disabled,
+            unavailableReason = reason,
+        }
+    end
+
+    local selectedContracts = {}
+    local selectedContractIds = {}
+    local invalidSelectedContracts = {}
+    local turnInQueue = {}
+    local disabled = false
+    local unavailableReason = nil
+
+    if request.contractsResolved == true or opts.contractsResolved == true then
+        disabled = true
+        unavailableReason = "Contracts already turned in"
+    elseif selectedOnly then
+        for _, ref in ipairs(selectedRefs) do
+            local refId = type(ref) == "table" and contractId(ref) or ref
+            local contract = refId and findContractById(contracts, refId) or nil
+            if not contract and type(ref) == "table" and hasContract(contracts, ref) then
+                contract = ref
+            end
+            local reason = nil
+            if not contract then
+                reason = "Selected contract not active"
+            elseif not isContractComplete(contract) then
+                reason = "Selected contract incomplete"
+            elseif contract.turnedIn == true then
+                reason = "Selected contract already turned in"
+            end
+            if reason then
+                invalidSelectedContracts[#invalidSelectedContracts + 1] = {
+                    contractId = refId,
+                    contract = contract,
+                    reason = reason,
+                }
+                if not disabled then
+                    disabled = true
+                    unavailableReason = reason
+                end
+            else
+                selectedContracts[#selectedContracts + 1] = contract
+                selectedContractIds[#selectedContractIds + 1] = contractId(contract)
+                turnInQueue[#turnInQueue + 1] = contract
+            end
+        end
+    else
+        for _, contract in ipairs(contracts) do
+            if isContractComplete(contract) and contract.turnedIn ~= true then
+                turnInQueue[#turnInQueue + 1] = contract
+            end
+        end
+    end
+
+    local turnInContracts = {}
+    local patronInteractions = {}
+    local totalGold = 0
+    for index, contract in ipairs(turnInQueue) do
+        local rewardGold = contractRewardGold(contract)
+        local distribution = distributionPreview(rewardGold, contract.recipients or recipients)
+        local patronInteraction = patronPreview(
+            contract,
+            contractPatronSource(patronSources, contract, index) or
+                contract.patronInteraction or contract.patronRoleplay or contract.turnInScene,
+            index
+        )
+        if patronInteraction then
+            patronInteractions[#patronInteractions + 1] = patronInteraction
+        end
+        totalGold = totalGold + rewardGold
+        turnInContracts[#turnInContracts + 1] = {
+            contract = contract,
+            contractId = contractId(contract),
+            name = contract.name or contract.title,
+            rewardGold = rewardGold,
+            distribution = distribution,
+            selected = selectedOnly,
+            patronInteraction = patronInteraction,
+        }
+    end
+
+    local completedCount = #turnInContracts
+    local xpAwarded = completedCount * xpPerContract
+    local xpRecipients = {}
+    if xpAwarded > 0 then
+        for _, recipient in ipairs(recipients) do
+            xpRecipients[#xpRecipients + 1] = {
+                actor = recipient,
+                actorId = actorId(recipient),
+                name = recipient and recipient.name or actorId(recipient),
+                xp = xpAwarded,
+                currentXP = tonumber(recipient and recipient.xp) or 0,
+                projectedXP = (tonumber(recipient and recipient.xp) or 0) + xpAwarded,
+            }
+        end
+    end
+
+    return {
+        step = M.STEPS.TURN_IN_CONTRACTS,
+        contractsResolved = request.contractsResolved == true or opts.contractsResolved == true,
+        contracts = contractOptions,
+        selected = selectedOnly,
+        selectedContracts = selectedContracts,
+        selectedContractIds = selectedContractIds,
+        invalidSelectedContracts = invalidSelectedContracts,
+        turnInContracts = turnInContracts,
+        completedCount = completedCount,
+        totalGold = totalGold,
+        patronInteractions = patronInteractions,
+        xpPerContract = xpPerContract,
+        xpAwarded = xpAwarded,
+        xpRecipients = xpRecipients,
+        recipientCount = #recipients,
+        recipients = recipients,
+        guildTreasury = treasury,
+        resultPreview = completedCount > 0 and "contracts_turned_in" or "no_completed_contracts",
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
 end
 
 function M.generateJobBoard(opts)
@@ -1266,6 +2503,7 @@ function M.generateJobBoard(opts)
         return nil, "Job board should offer four to six contracts"
     end
 
+    local _, tableSource = jobBoardContractTable(opts)
     local offers = {}
     for index, card in ipairs(cards) do
         local offer, err = generateContractOffer(card, index, opts)
@@ -1286,7 +2524,338 @@ function M.generateJobBoard(opts)
         cardCount = #cards,
         drawnFromDeck = drawnFromDeck,
         skippedCards = skippedCards,
+        contractTableSource = tableSource,
         result = "job_board_generated",
+    }
+end
+
+function M.getPlanNextCrawlOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.plan or opts.nextCrawl or opts
+    local roster = request.guildRoster or request.roster or opts.guildRoster or opts.roster or {}
+    local currentContracts = request.contracts or request.currentContracts or opts.contracts or opts.currentContracts or
+        roster.currentContracts or {}
+    local offers = request.jobBoard or request.offers or request.availableContracts or request.contractOffers or
+        opts.jobBoard or opts.offers or opts.availableContracts or opts.contractOffers or {}
+    local cards = normalizeList(request.jobBoardCards or request.contractCards or request.cards or
+        opts.jobBoardCards or opts.contractCards or opts.cards)
+    local wantsGeneratedBoard = request.generateJobBoard == true or opts.generateJobBoard == true or #cards > 0
+    local generatedJobBoard = nil
+    local generationError = nil
+
+    if #cards > 0 then
+        local generated, detail = M.generateJobBoard({
+            jobBoardCards = cards,
+            idPrefix = request.idPrefix or request.boardId or opts.idPrefix or opts.boardId,
+            contractTable = request.contractTable or request.jobBoardTable or request.contractsTable or
+                opts.contractTable or opts.jobBoardTable or opts.contractsTable,
+            contractTableSource = request.contractTableSource or request.tableSource or
+                opts.contractTableSource or opts.tableSource,
+            allowNonStandardCount = request.allowNonStandardCount or opts.allowNonStandardCount,
+            discardDraws = false,
+        })
+        if generated then
+            offers = generated
+            generatedJobBoard = detail
+        else
+            generationError = detail
+        end
+    end
+
+    local selectedRefs = normalizeList(
+        request.selectedContractIds or request.contractIds or request.selectedContracts or request.contractId or
+        opts.selectedContractIds or opts.contractIds or opts.selectedContracts or opts.contractId
+    )
+    local selectedById = {}
+    for _, ref in ipairs(selectedRefs) do
+        local refId = type(ref) == "table" and contractId(ref) or ref
+        if refId then
+            selectedById[tostring(refId)] = true
+        end
+    end
+
+    local jobBoardOptions = {}
+    for index, contract in ipairs(offers or {}) do
+        if type(contract) == "table" then
+            local id = contractId(contract) or tostring(index)
+            local completed = contract.completed == true or contract.turnedIn == true
+            jobBoardOptions[#jobBoardOptions + 1] = {
+                id = id,
+                contractId = id,
+                contract = contract,
+                name = contract.name or contract.title or id,
+                title = contract.title or contract.name,
+                patron = contract.patron or contract.client or contract.issuer or contract.faction,
+                objective = contract.objective or contract.summary or contract.description,
+                rewardGold = contractRewardGold(contract),
+                rewardNote = contract.rewardNote or contract.rewardDescription,
+                contractType = contract.contractType or contract.type,
+                templateId = contract.templateId,
+                source = contract.source,
+                cardValue = contract.cardValue,
+                cardRank = contract.cardRank,
+                cardSuit = contract.cardSuit,
+                status = contract.status,
+                active = hasContract(currentContracts, contract),
+                signed = contract.signed == true or contract.sealed == true,
+                selected = selectedById[tostring(id)] == true,
+                completed = completed,
+                disabled = completed,
+                unavailableReason = completed and "Selected contract already completed" or nil,
+            }
+        end
+    end
+
+    local selectedContracts = {}
+    local selectedContractIds = {}
+    local invalidSelectedContracts = {}
+    local disabled = false
+    local unavailableReason = nil
+    if request.nextCrawlPlanned == true or opts.nextCrawlPlanned == true then
+        disabled = true
+        unavailableReason = "Next Crawl already planned"
+    elseif generationError then
+        disabled = true
+        unavailableReason = generationError
+    elseif request.requireJobBoard ~= false and opts.requireJobBoard ~= false and (#offers < 4 or #offers > 6) then
+        disabled = true
+        unavailableReason = "Job board should offer four to six contracts"
+    else
+        for _, ref in ipairs(selectedRefs) do
+            local contract = type(ref) == "table" and ref or findContractById(offers, ref)
+            local refId = type(ref) == "table" and contractId(ref) or ref
+            if not contract or (type(ref) == "table" and not hasContract(offers, ref)) then
+                disabled = true
+                unavailableReason = "Selected contract not on job board"
+                invalidSelectedContracts[#invalidSelectedContracts + 1] = {
+                    contractId = refId,
+                    contract = type(ref) == "table" and ref or nil,
+                    unavailableReason = unavailableReason,
+                }
+            elseif contract.completed == true or contract.turnedIn == true then
+                disabled = true
+                unavailableReason = "Selected contract already completed"
+                invalidSelectedContracts[#invalidSelectedContracts + 1] = {
+                    contractId = contractId(contract),
+                    contract = contract,
+                    unavailableReason = unavailableReason,
+                }
+            else
+                selectedContracts[#selectedContracts + 1] = contract
+                selectedContractIds[#selectedContractIds + 1] = contractId(contract)
+            end
+            if disabled then
+                break
+            end
+        end
+    end
+
+    local deck = request.deck or request.playerDeck or request.minorDeck or opts.deck or opts.playerDeck or opts.minorDeck
+    local requiresJobBoardDraw = wantsGeneratedBoard and #cards == 0
+    local currentQuest = request.currentQuest or request.quest or roster.currentQuest
+    local destination = request.destination or request.nextDestination or roster.nextDestination
+    local notes = request.notes or request.debrief or request.plan or roster.nextCrawlNotes
+    local continuationPlanned = #selectedRefs == 0 and (currentQuest ~= nil or destination ~= nil or notes ~= nil)
+
+    return {
+        step = M.STEPS.PLAN_NEXT_CRAWL,
+        jobBoard = offers,
+        jobBoardOptions = jobBoardOptions,
+        offeredCount = #offers,
+        currentContracts = currentContracts,
+        currentContractCount = #currentContracts,
+        selectedContracts = selectedContracts,
+        selectedContractIds = selectedContractIds,
+        selectedCount = #selectedContracts,
+        invalidSelectedContracts = invalidSelectedContracts,
+        currentQuest = currentQuest,
+        destination = destination,
+        notes = notes,
+        continuationPlanned = continuationPlanned,
+        continueCurrentQuestOption = {
+            id = "continue_current_quest",
+            label = "Continue current quest",
+            currentQuest = currentQuest,
+            destination = destination,
+            notes = notes,
+            selected = continuationPlanned,
+            disabled = false,
+        },
+        generatedJobBoard = generatedJobBoard,
+        generationCards = generatedJobBoard and generatedJobBoard.cards or nil,
+        generationError = generationError,
+        requiresJobBoardDraw = requiresJobBoardDraw,
+        autoDrawAvailable = requiresJobBoardDraw and deck ~= nil,
+        deck = requiresJobBoardDraw and "minor_arcana" or nil,
+        requireJobBoard = request.requireJobBoard ~= false and opts.requireJobBoard ~= false,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getRestockUnderworldOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.restock or opts.underworldRestock or opts
+    local meatgrinder = request.meatgrinder or opts.meatgrinder
+    local consumedMeatgrinder = normalizeList(request.consumedMeatgrinder or request.consumedMeatgrinderEvents or
+        opts.consumedMeatgrinder or opts.consumedMeatgrinderEvents)
+    if meatgrinder and meatgrinder.getConsumedEvents then
+        consumedMeatgrinder = normalizeList(meatgrinder:getConsumedEvents())
+    end
+    local consumedCityEvents = normalizeList(request.consumedCityEvents or opts.consumedCityEvents)
+    local consumedSignsAndPortents = normalizeList(
+        request.consumedSignsAndPortents or request.consumedSigns or opts.consumedSignsAndPortents or opts.consumedSigns
+    )
+    local mapUpdates = normalizeList(request.mapUpdates or request.changedRooms or request.mapNotes or
+        opts.mapUpdates or opts.changedRooms or opts.mapNotes)
+    local factionUpdates = normalizeList(request.factionUpdates or request.factions or opts.factionUpdates or opts.factions)
+    local generateReplacements = request.generateReplacements or request.autoGenerateReplacements or
+        request.generateRestockEntries or opts.generateReplacements or opts.autoGenerateReplacements or
+        opts.generateRestockEntries
+    local generatedReplacements = nil
+    if generateReplacements then
+        generatedReplacements = generateRestockReplacements({
+            consumedMeatgrinder = consumedMeatgrinder,
+            lastCityEvent = request.lastCityEvent or opts.lastCityEvent,
+            cityEventValue = request.cityEventValue or request.cityEventCardValue or
+                opts.cityEventValue or opts.cityEventCardValue,
+            mapUpdates = mapUpdates,
+            factionUpdates = factionUpdates,
+            notes = request.notes or request.restockNotes or opts.notes or opts.restockNotes,
+        })
+    end
+
+    local meatgrinderReplacementInput = request.meatgrinderReplacements or request.meatgrinderEntries or
+        opts.meatgrinderReplacements or opts.meatgrinderEntries
+    if not meatgrinderReplacementInput and generatedReplacements then
+        meatgrinderReplacementInput = generatedReplacements.meatgrinder
+    end
+    local cityEventReplacementInput = request.cityEventReplacements or request.cityEvents or
+        opts.cityEventReplacements or opts.cityEvents
+    if not cityEventReplacementInput and generatedReplacements then
+        cityEventReplacementInput = generatedReplacements.cityEvents
+    end
+    cityEventReplacementInput = withConsumedReplacementDefaults(cityEventReplacementInput, consumedCityEvents)
+    local signReplacementInput = request.signsAndPortentsReplacements or request.signsAndPortents or
+        opts.signsAndPortentsReplacements or opts.signsAndPortents
+    if not signReplacementInput and generatedReplacements then
+        signReplacementInput = generatedReplacements.signsAndPortents
+    end
+    signReplacementInput = withConsumedReplacementDefaults(signReplacementInput, consumedSignsAndPortents)
+
+    local function previewTableReplacements(tableRef, replacements)
+        local details = {}
+        if type(tableRef) ~= "table" then
+            return details
+        end
+        for _, replacement in ipairs(replacementEntries(replacements)) do
+            local category = type(replacement) == "table" and (replacement.category or replacement.eventCategory) or nil
+            local section = category and MEATGRINDER_RESTOCK_SECTIONS[category]
+            local key = type(replacement) == "table" and
+                (replacement.key or replacement.value or replacement.cardValue or replacement.index or replacement.category) or nil
+            local cardValue = type(replacement) == "table" and
+                tonumber(replacement.cardValue or replacement.value or replacement.key) or nil
+            local newEntry = type(replacement) == "table" and replacementEntry(replacement) or replacement
+            if section and type(tableRef[section.key]) == "table" then
+                if section.singleton then
+                    details[#details + 1] = {
+                        key = cardValue or section.key,
+                        category = category,
+                        tableKey = section.key,
+                        oldEntry = tableRef[section.key],
+                        newEntry = newEntry,
+                    }
+                else
+                    local index = type(replacement) == "table" and tonumber(replacement.index) or nil
+                    if not index and cardValue then
+                        index = cardValue - section.offset
+                    end
+                    if not index then
+                        index = tonumber(key)
+                    end
+                    if index then
+                        details[#details + 1] = {
+                            key = cardValue or key or index,
+                            category = category,
+                            tableKey = section.key,
+                            index = index,
+                            oldEntry = tableRef[section.key][index],
+                            newEntry = newEntry,
+                        }
+                    end
+                end
+            elseif key ~= nil then
+                details[#details + 1] = {
+                    key = key,
+                    oldEntry = tableRef[key],
+                    newEntry = newEntry,
+                }
+            end
+        end
+        return details
+    end
+
+    local state = request.underworldState or opts.underworldState or
+        (request.cityState and request.cityState.underworldState) or (opts.cityState and opts.cityState.underworldState) or {}
+    local mapUpdateOptions = {}
+    for _, update in ipairs(mapUpdates) do
+        if type(update) == "table" then
+            local roomId = update.roomId or update.room or update.locationId or update.id
+            mapUpdateOptions[#mapUpdateOptions + 1] = {
+                roomId = roomId and tostring(roomId) or nil,
+                update = update,
+                currentState = roomId and state.rooms and state.rooms[tostring(roomId)] or nil,
+            }
+        end
+    end
+
+    local factionUpdateOptions = {}
+    for _, update in ipairs(factionUpdates) do
+        if type(update) == "table" then
+            local factionId = update.factionId or update.faction or update.id or update.name
+            local normalizedFactionId = factionId and slugify(factionId) or nil
+            local currentState = normalizedFactionId and state.factions and state.factions[normalizedFactionId] or nil
+            local strengthDelta = tonumber(update.strengthDelta or update.powerDelta or update.influenceDelta)
+            local heatDelta = tonumber(update.heatDelta or update.alertDelta or update.threatDelta)
+            factionUpdateOptions[#factionUpdateOptions + 1] = {
+                factionId = normalizedFactionId,
+                update = update,
+                currentState = currentState,
+                strengthDelta = strengthDelta,
+                projectedStrength = strengthDelta and ((currentState and tonumber(currentState.strength) or 0) + strengthDelta) or nil,
+                heatDelta = heatDelta,
+                projectedHeat = heatDelta and ((currentState and tonumber(currentState.heat) or 0) + heatDelta) or nil,
+            }
+        end
+    end
+
+    local disabled = request.underworldRestocked == true or opts.underworldRestocked == true
+    return {
+        step = M.STEPS.RESTOCK_UNDERWORLD,
+        consumedMeatgrinder = consumedMeatgrinder,
+        consumedCityEvents = consumedCityEvents,
+        consumedSignsAndPortents = consumedSignsAndPortents,
+        meatgrinderReplacementOptions = previewTableReplacements(
+            request.meatgrinderTable or opts.meatgrinderTable,
+            meatgrinderReplacementInput
+        ),
+        cityEventReplacementOptions = previewTableReplacements(
+            request.cityEventsTable or opts.cityEventsTable,
+            cityEventReplacementInput
+        ),
+        signsAndPortentsReplacementOptions = previewTableReplacements(
+            request.signsAndPortentsTable or opts.signsAndPortentsTable,
+            signReplacementInput
+        ),
+        generatedReplacements = generatedReplacements,
+        mapUpdates = mapUpdates,
+        factionUpdates = factionUpdates,
+        mapUpdateOptions = mapUpdateOptions,
+        factionUpdateOptions = factionUpdateOptions,
+        mapsReviewed = request.mapsReviewed ~= false and opts.mapsReviewed ~= false,
+        notes = request.notes or request.restockNotes or opts.notes or opts.restockNotes,
+        disabled = disabled,
+        unavailableReason = disabled and "Underworld already restocked" or nil,
     }
 end
 
@@ -1298,6 +2867,1185 @@ local function normalizeRecipientList(recipients)
         return { recipients }
     end
     return recipients
+end
+
+local appendActorRecord
+
+local function cityEventActorOption(source, actor, index)
+    if source == nil then
+        return nil, false
+    end
+    if type(source) ~= "table" then
+        return source, true
+    end
+
+    local id = actorId(actor)
+    if id and source[id] ~= nil then
+        return source[id], true
+    end
+    if source[index] ~= nil then
+        return source[index], true
+    end
+
+    for _, entry in ipairs(source) do
+        if entry == actor then
+            return true, true
+        end
+        if id and tostring(entry) == tostring(id) then
+            return true, true
+        end
+        if type(entry) == "table" then
+            local entryId = entry.actorId or entry.actor_id or entry.id or actorId(entry.actor)
+            if id and tostring(entryId or "") == tostring(id) then
+                return entry, true
+            end
+        end
+    end
+
+    return nil, false
+end
+
+local function positiveFlag(value)
+    if type(value) == "boolean" then
+        return value
+    end
+    if type(value) == "number" then
+        return value ~= 0
+    end
+
+    local normalized = tostring(value or ""):lower():gsub("%s+", "_")
+    if normalized == "true" or normalized == "yes" or normalized == "success" or
+       normalized == "succeeded" or normalized == "pass" or normalized == "passed" then
+        return true
+    end
+    if normalized == "false" or normalized == "no" or normalized == "failure" or
+       normalized == "failed" or normalized == "fail" or normalized == "lose" or
+       normalized == "lost" then
+        return false
+    end
+
+    return value ~= nil
+end
+
+local function coerceFireEscapeFailure(value, booleanTrueMeansFailure)
+    if value == nil then
+        return nil
+    end
+    if type(value) == "table" then
+        if value.failed ~= nil then
+            return positiveFlag(value.failed)
+        end
+        if value.failure ~= nil then
+            return positiveFlag(value.failure)
+        end
+        if value.success ~= nil then
+            return not positiveFlag(value.success)
+        end
+        if value.passed ~= nil then
+            return not positiveFlag(value.passed)
+        end
+        if value.result ~= nil then
+            return coerceFireEscapeFailure(value.result, booleanTrueMeansFailure)
+        end
+        if value.outcome ~= nil then
+            return coerceFireEscapeFailure(value.outcome, booleanTrueMeansFailure)
+        end
+        return true
+    end
+    if type(value) == "boolean" then
+        return booleanTrueMeansFailure and value or not value
+    end
+    if type(value) == "number" then
+        return booleanTrueMeansFailure and value ~= 0 or value == 0
+    end
+
+    local normalized = tostring(value or ""):lower():gsub("%s+", "_")
+    if normalized == "failure" or normalized == "failed" or normalized == "fail" or
+       normalized == "lose" or normalized == "lost" then
+        return true
+    end
+    if normalized == "success" or normalized == "succeeded" or normalized == "pass" or
+       normalized == "passed" then
+        return false
+    end
+    if normalized == "true" or normalized == "yes" then
+        return booleanTrueMeansFailure
+    end
+    if normalized == "false" or normalized == "no" then
+        return not booleanTrueMeansFailure
+    end
+
+    return booleanTrueMeansFailure
+end
+
+local function fireEscapeFailureForActor(actor, opts, index)
+    opts = opts or {}
+    local failures = firstProvided(
+        opts.fireEscapeFailures,
+        opts.fireFailures,
+        opts.failedFireEscapeActors,
+        opts.cityEventFailures
+    )
+    if failures ~= nil then
+        local value, found = cityEventActorOption(failures, actor, index)
+        if not found then
+            return false
+        end
+        return coerceFireEscapeFailure(value, true)
+    end
+
+    local outcomes = firstProvided(
+        opts.fireEscapeResults,
+        opts.fireEscapeOutcomes,
+        opts.cityEventTestResults,
+        opts.cityEventTests,
+        opts.pentaclesTestResults,
+        opts.testResults
+    )
+    if outcomes ~= nil then
+        local value, found = cityEventActorOption(outcomes, actor, index)
+        if not found then
+            return nil
+        end
+        return coerceFireEscapeFailure(value, false)
+    end
+
+    local single = firstProvided(opts.fireEscapeFailed, opts.cityEventTestFailed)
+    if single ~= nil then
+        return coerceFireEscapeFailure(single, true)
+    end
+
+    return nil
+end
+
+local function taxEvasionRequestForActor(actor, opts, index)
+    opts = opts or {}
+    local request = indexedOpt(firstProvided(
+        opts.taxEvasion,
+        opts.taxEvasions,
+        opts.smuggling,
+        opts.smugglingAttempts,
+        opts.hiddenAssets
+    ), index, actor)
+    if type(request) ~= "table" then
+        request = request ~= nil and { hiddenGold = request } or {}
+    end
+
+    local hiddenGold = firstProvided(
+        request.hiddenGold,
+        request.smuggledGold,
+        request.concealedGold,
+        indexedOpt(opts.hiddenGold, index, actor),
+        indexedOpt(opts.smuggledGold, index, actor),
+        indexedOpt(opts.concealedGold, index, actor)
+    )
+    local bribeGold = firstProvided(
+        request.bribeGold,
+        request.bribe,
+        indexedOpt(opts.bribeGold, index, actor),
+        indexedOpt(opts.bribes, index, actor)
+    )
+
+    local detected = firstProvided(request.detected, request.caught, request.failed)
+    local success = firstProvided(request.success, request.succeeded)
+    if detected == nil and success ~= nil then
+        detected = not positiveFlag(success)
+    elseif detected ~= nil then
+        detected = positiveFlag(detected)
+    else
+        detected = false
+    end
+
+    local bribeAccepted = firstProvided(request.bribeAccepted, request.accepted, request.bribeSucceeded)
+    if bribeAccepted ~= nil then
+        bribeAccepted = positiveFlag(bribeAccepted)
+    else
+        bribeAccepted = not detected
+    end
+
+    return {
+        hiddenGold = math.max(0, math.floor(tonumber(hiddenGold) or 0)),
+        bribeGold = math.max(0, math.floor(tonumber(bribeGold) or 0)),
+        detected = detected,
+        bribeAccepted = bribeAccepted,
+        method = request.method or request.type or request.scheme,
+        notes = request.notes or request.note,
+    }
+end
+
+local function collectDeathAndTaxesForActor(actor, rate, opts, index)
+    local evasion = taxEvasionRequestForActor(actor, opts, index)
+    local startingGold = currency.getGold(actor)
+    local hiddenGold = math.min(startingGold, evasion.hiddenGold or 0)
+    local taxableGold = evasion.detected and startingGold or math.max(0, startingGold - hiddenGold)
+    local taxPaid = math.floor(taxableGold * rate)
+    local bribePaid = 0
+
+    if evasion.bribeGold > 0 and evasion.bribeAccepted then
+        if not currency.spendGold(actor, evasion.bribeGold) then
+            return false, "Not enough gold"
+        end
+        bribePaid = evasion.bribeGold
+    end
+    if taxPaid > 0 and not currency.spendGold(actor, taxPaid) then
+        return false, "Not enough gold"
+    end
+
+    local consequence = nil
+    if evasion.detected then
+        consequence = {
+            id = "tax_evasion_detected",
+            authority = "All-Watch",
+            hiddenGold = hiddenGold,
+            method = evasion.method,
+            notes = evasion.notes,
+        }
+        appendActorRecord(actor, "legalTroubles", consequence)
+    elseif hiddenGold > 0 or evasion.bribeGold > 0 then
+        consequence = {
+            id = hiddenGold > 0 and "tax_evasion_success" or "bribe_paid",
+            authority = "All-Watch",
+            hiddenGold = hiddenGold,
+            bribePaid = bribePaid,
+            method = evasion.method,
+            notes = evasion.notes,
+        }
+        appendActorRecord(actor, "taxEvasions", consequence)
+    end
+
+    return true, {
+        actor = actor,
+        startingGold = startingGold,
+        taxableGold = taxableGold,
+        hiddenGold = hiddenGold,
+        taxPaid = taxPaid,
+        bribePaid = bribePaid,
+        remainingGold = currency.getGold(actor),
+        rate = rate,
+        evasion = hiddenGold > 0 or evasion.bribeGold > 0 or evasion.detected,
+        evasionDetected = evasion.detected,
+        bribeAccepted = evasion.bribeAccepted,
+        consequence = consequence,
+    }
+end
+
+function M.getDeathAndTaxesOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.taxes or opts.deathAndTaxes or opts
+    local guild = request.guild or opts.guild
+    if not guild and request.actor then
+        guild = { request.actor }
+    end
+    guild = guild or {}
+    local rate = M.TAX_RATE
+    local details = {}
+    local totalTax = 0
+    local totalBribes = 0
+    local disabled = request.taxesResolved == true or opts.taxesResolved == true
+    local unavailableReason = disabled and "Death and taxes already resolved" or nil
+
+    for index, actor in ipairs(guild) do
+        local evasion = taxEvasionRequestForActor(actor, request, index)
+        local startingGold = currency.getGold(actor)
+        local hiddenGold = math.min(startingGold, evasion.hiddenGold or 0)
+        local taxableGold = evasion.detected and startingGold or math.max(0, startingGold - hiddenGold)
+        local taxPaid = math.floor(taxableGold * rate)
+        local bribePaid = evasion.bribeGold > 0 and evasion.bribeAccepted and evasion.bribeGold or 0
+        local totalDue = taxPaid + bribePaid
+        local actorDisabled = totalDue > startingGold
+        if actorDisabled and not disabled then
+            disabled = true
+            unavailableReason = "Not enough gold"
+        end
+
+        local liquidItemOptions = {}
+        local exemptTreasureOptions = {}
+        local inv = actor and actor.inventory
+        if inv and inv.getAllItems then
+            for _, entry in ipairs(inv:getAllItems()) do
+                local item = entry.item
+                local props = item and item.properties or {}
+                if currency.isCurrencyItem(item) then
+                    liquidItemOptions[#liquidItemOptions + 1] = {
+                        id = item.id,
+                        itemId = item.id,
+                        item = item,
+                        name = item.name,
+                        location = entry.location,
+                        quantity = item.quantity or 1,
+                        valueEach = tonumber(props.value) or 0,
+                        totalGold = (item.quantity or 1) * (tonumber(props.value) or 0),
+                    }
+                else
+                    local treasure = item and currency.isCurrencyItem(item) ~= true and (
+                        props.treasure == true or
+                        props.jewelry == true or
+                        props.art == true or
+                        props.extravagance == true or
+                        props.saleValue ~= nil or
+                        props.value ~= nil
+                    )
+                    if treasure then
+                        exemptTreasureOptions[#exemptTreasureOptions + 1] = {
+                            id = item.id,
+                            itemId = item.id,
+                            item = item,
+                            name = item.name,
+                            location = entry.location,
+                            saleValue = math.max(0, math.floor(tonumber(props.saleValue or props.value) or 0)),
+                            reason = "non_liquid_treasure",
+                        }
+                    end
+                end
+            end
+        end
+
+        local consequencePreview = nil
+        if evasion.detected then
+            consequencePreview = {
+                id = "tax_evasion_detected",
+                authority = "All-Watch",
+                hiddenGold = hiddenGold,
+                method = evasion.method,
+                notes = evasion.notes,
+            }
+        elseif hiddenGold > 0 or evasion.bribeGold > 0 then
+            consequencePreview = {
+                id = hiddenGold > 0 and "tax_evasion_success" or "bribe_paid",
+                authority = "All-Watch",
+                hiddenGold = hiddenGold,
+                bribePaid = bribePaid,
+                method = evasion.method,
+                notes = evasion.notes,
+            }
+        end
+
+        details[#details + 1] = {
+            actor = actor,
+            actorId = actorId(actor),
+            name = actor and actor.name or actorId(actor),
+            purseGold = tonumber(actor and actor.gold) or 0,
+            carriedLiquidGold = currency.getCarriedGold(actor),
+            startingGold = startingGold,
+            rate = rate,
+            taxableGold = taxableGold,
+            hiddenGold = hiddenGold,
+            taxPaid = taxPaid,
+            bribeGold = evasion.bribeGold,
+            bribePaid = bribePaid,
+            bribeAccepted = evasion.bribeAccepted,
+            evasion = hiddenGold > 0 or evasion.bribeGold > 0 or evasion.detected,
+            evasionDetected = evasion.detected,
+            method = evasion.method,
+            notes = evasion.notes,
+            projectedRemainingGold = math.max(0, startingGold - totalDue),
+            liquidItemOptions = liquidItemOptions,
+            exemptTreasureOptions = exemptTreasureOptions,
+            consequencePreview = consequencePreview,
+            disabled = actorDisabled,
+            unavailableReason = actorDisabled and "Not enough gold" or nil,
+        }
+        totalTax = totalTax + taxPaid
+        totalBribes = totalBribes + bribePaid
+    end
+
+    return {
+        step = M.STEPS.DEATH_AND_TAXES,
+        rate = rate,
+        requestedRate = request.taxRate or opts.taxRate,
+        details = details,
+        totalTax = totalTax,
+        totalBribes = totalBribes,
+        totalDue = totalTax + totalBribes,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+local function removeBottomPackItems(actor, count)
+    local removed = {}
+    local inv = actor and actor.inventory
+    local pack = inv and inv.getItems and inv:getItems(inventory.LOCATIONS.PACK) or inv and inv.pack
+    if type(pack) ~= "table" then
+        return removed
+    end
+
+    for _ = 1, math.max(0, math.floor(tonumber(count) or 0)) do
+        local index = #pack
+        if index <= 0 then
+            break
+        end
+        local item = table.remove(pack, index)
+        removed[#removed + 1] = {
+            actor = actor,
+            item = item,
+            location = inventory.LOCATIONS.PACK,
+            index = index,
+        }
+    end
+
+    return removed
+end
+
+local function cityEventEntryFromDetail(detail)
+    if type(detail) ~= "table" then
+        return nil
+    end
+    return detail.event or detail
+end
+
+local function isDisasterFireCityEvent(eventEntry)
+    if type(eventEntry) ~= "table" then
+        return false
+    end
+    return tonumber(eventEntry.value) == 20 or tostring(eventEntry.title or ""):lower() == "a disaster: fire"
+end
+
+local function resolveFireCityEventConsequences(controller, opts)
+    opts = opts or {}
+    local cityEventDetail = opts.cityEventDetail or opts.cityEvent or controller.lastCityEvent
+    local eventEntry = opts.eventEntry or opts.event or cityEventEntryFromDetail(cityEventDetail)
+    if not isDisasterFireCityEvent(eventEntry) then
+        return nil, false
+    end
+
+    local effects = opts.cityEventEffects or opts.effects or
+        (type(cityEventDetail) == "table" and cityEventDetail.effects) or
+        (eventEntry and eventEntry.effects) or controller.cityEventEffects or {}
+    local participants = normalizeRecipientList(opts.participants or opts.actors or opts.guild or controller.guild)
+    if #participants == 0 then
+        participants = activeAdventurers(controller.guild)
+    end
+
+    local detail = {
+        event = eventEntry,
+        timing = effects.timing or "after_city_actions",
+        testSuit = effects.testSuit or "pentacles",
+        failedActors = {},
+        successfulActors = {},
+        pendingActors = {},
+        lostItems = {},
+        stressedActors = {},
+        consequences = {},
+        complete = false,
+        result = "city_event_fire_pending",
+    }
+    local outcomes = {}
+
+    for index, actor in ipairs(participants) do
+        if isActiveAdventurer(actor) then
+            local failed = fireEscapeFailureForActor(actor, opts, index)
+            if failed == nil then
+                detail.pendingActors[#detail.pendingActors + 1] = {
+                    actor = actor,
+                    testSuit = detail.testSuit,
+                    reason = "test_outcome_required",
+                }
+            else
+                outcomes[#outcomes + 1] = {
+                    actor = actor,
+                    failed = failed,
+                }
+            end
+        end
+    end
+
+    if #detail.pendingActors > 0 then
+        return detail, false
+    end
+
+    for _, outcome in ipairs(outcomes) do
+        local actor = outcome.actor
+        if outcome.failed then
+            actor.conditions = actor.conditions or {}
+            actor.conditions.stressed = true
+            actor.nextCrawlConditions = actor.nextCrawlConditions or {}
+            actor.nextCrawlConditions.stressed = true
+
+            local lostItems = removeBottomPackItems(actor, 2)
+            for _, lost in ipairs(lostItems) do
+                detail.lostItems[#detail.lostItems + 1] = lost
+            end
+            detail.failedActors[#detail.failedActors + 1] = actor
+            detail.stressedActors[#detail.stressedActors + 1] = actor
+            detail.consequences[#detail.consequences + 1] = {
+                actor = actor,
+                outcome = "failed",
+                condition = "stressed",
+                nextCrawlCondition = "stressed",
+                lostItems = lostItems,
+            }
+        else
+            detail.successfulActors[#detail.successfulActors + 1] = actor
+            detail.consequences[#detail.consequences + 1] = {
+                actor = actor,
+                outcome = "succeeded",
+                lostItems = {},
+            }
+        end
+    end
+
+    detail.complete = true
+    detail.result = "city_event_fire_resolved"
+    return detail, true
+end
+
+local function resolveNextCrawlConditionCityEventConsequences(controller, opts)
+    opts = opts or {}
+    local cityEventDetail = opts.cityEventDetail or opts.cityEvent or controller.lastCityEvent
+    local eventEntry = opts.eventEntry or opts.event or cityEventEntryFromDetail(cityEventDetail)
+    local effects = opts.cityEventEffects or opts.effects or
+        (type(cityEventDetail) == "table" and cityEventDetail.effects) or
+        (eventEntry and eventEntry.effects) or controller.cityEventEffects or {}
+    local condition = effects.nextCrawlCondition or effects.nextCrawl_condition
+    if not condition then
+        return nil, false
+    end
+
+    local conditionId = tostring(condition):lower():gsub("%s+", "_")
+    local participants = normalizeRecipientList(opts.participants or opts.actors or opts.guild or controller.guild)
+    if #participants == 0 then
+        participants = activeAdventurers(controller.guild)
+    end
+
+    local detail = {
+        event = eventEntry,
+        sign = type(cityEventDetail) == "table" and cityEventDetail.sign or nil,
+        condition = conditionId,
+        affectedActors = {},
+        consequences = {},
+        complete = true,
+        result = "city_event_next_crawl_condition_resolved",
+    }
+
+    for _, actor in ipairs(participants) do
+        if isActiveAdventurer(actor) then
+            actor.nextCrawlConditions = actor.nextCrawlConditions or {}
+            actor.nextCrawlConditions[conditionId] = true
+            if conditionId == "stressed" then
+                actor.conditions = actor.conditions or {}
+                actor.conditions.stressed = true
+            end
+
+            detail.affectedActors[#detail.affectedActors + 1] = actor
+            detail.consequences[#detail.consequences + 1] = {
+                actor = actor,
+                condition = conditionId,
+                nextCrawlCondition = conditionId,
+            }
+        end
+    end
+
+    return detail, true
+end
+
+local function dreamSecretsOmenFromDetail(cityEventDetail, effects)
+    local sign = type(cityEventDetail) == "table" and cityEventDetail.sign or nil
+    local omen = effects and (effects.cityOmen or effects.city_omen) or nil
+    if type(omen) == "table" and (omen.requiresPlayerSecrets or omen.id == "wandering_dreams") then
+        return omen
+    end
+    if type(sign) == "table" and (tonumber(sign.value) == 6 or sign.title == "Dreams") then
+        return sign.effects and (sign.effects.cityOmen or sign.effects.city_omen) or { id = "wandering_dreams" }
+    end
+    return nil
+end
+
+local function fallbackDreamSecretRecipient(actors, teller, index)
+    if #actors < 2 then
+        return nil
+    end
+    for offset = 1, #actors - 1 do
+        local candidate = actors[((index - 1 + offset) % #actors) + 1]
+        if candidate ~= teller and isActiveAdventurer(candidate) then
+            return candidate
+        end
+    end
+    return nil
+end
+
+local function resolveDreamActorReference(ref, actors)
+    if not ref then
+        return nil
+    end
+    if actorId(ref) then
+        return ref
+    end
+    if type(ref) == "table" and ref.actor then
+        return resolveDreamActorReference(ref.actor, actors)
+    end
+
+    local wanted = tostring(ref)
+    for _, actor in ipairs(actors or {}) do
+        if tostring(actorId(actor) or "") == wanted then
+            return actor
+        end
+    end
+    return nil
+end
+
+local function indexedDreamSecretEntry(secrets, actor, index, actors)
+    if type(secrets) ~= "table" then
+        return nil
+    end
+
+    local id = actorId(actor)
+    if id and secrets[id] ~= nil then
+        return secrets[id]
+    end
+    if secrets[index] ~= nil then
+        local entry = secrets[index]
+        if type(entry) ~= "table" then
+            return entry
+        end
+        local fromRef = entry.teller or entry.fromActor or entry.from or entry.actor or entry.player or entry[1]
+        if fromRef == nil or resolveDreamActorReference(fromRef, actors) == actor or tostring(fromRef) == tostring(id) then
+            return entry
+        end
+    end
+
+    for _, entry in ipairs(secrets) do
+        if type(entry) == "table" then
+            local fromRef = entry.teller or entry.fromActor or entry.from or entry.actor or entry.player or entry[1]
+            if resolveDreamActorReference(fromRef, actors) == actor or tostring(fromRef or "") == tostring(id) then
+                return entry
+            end
+        end
+    end
+
+    return nil
+end
+
+local function normalizeDreamSecretEntry(entry, teller, index, actors)
+    if entry == nil then
+        return nil, nil, "secret_required"
+    end
+
+    local secret = nil
+    local recipientRef = nil
+    if type(entry) == "table" then
+        secret = entry.secret or entry.text or entry.note or entry[3]
+        recipientRef = entry.dreamer or entry.recipient or entry.toActor or entry.to or entry.targetActor or
+            entry.target or entry[2]
+        if secret == nil and type(entry[1]) == "string" and recipientRef == nil then
+            secret = entry[1]
+        end
+    else
+        secret = entry
+    end
+
+    secret = tostring(secret or "")
+    if secret == "" then
+        return nil, nil, "secret_required"
+    end
+
+    local recipient = resolveDreamActorReference(recipientRef, actors) or fallbackDreamSecretRecipient(actors, teller, index)
+    if not recipient or recipient == teller then
+        return nil, nil, "another_dreamer_required"
+    end
+
+    return secret, recipient, nil
+end
+
+local function resolveDreamSecretsCityEventConsequences(controller, opts)
+    opts = opts or {}
+    local cityEventDetail = opts.cityEventDetail or opts.cityEvent or controller.lastCityEvent
+    local eventEntry = opts.eventEntry or opts.event or cityEventEntryFromDetail(cityEventDetail)
+    local effects = opts.cityEventEffects or opts.effects or
+        (type(cityEventDetail) == "table" and cityEventDetail.effects) or
+        (eventEntry and eventEntry.effects) or controller.cityEventEffects or {}
+    local omen = dreamSecretsOmenFromDetail(cityEventDetail, effects)
+    if type(omen) ~= "table" then
+        return nil, false
+    end
+
+    local actors = activeAdventurers(opts.guild or controller.guild)
+    local secrets = opts.dreamSecrets or opts.secrets or opts.playerSecrets or opts.secretExchange
+    local cityState = opts.cityState or opts.worldState or controller.cityState
+    local detail = {
+        event = eventEntry,
+        sign = type(cityEventDetail) == "table" and cityEventDetail.sign or nil,
+        omen = omen,
+        exchanges = {},
+        pendingActors = {},
+        complete = false,
+        result = "city_event_dream_secrets_pending",
+    }
+
+    for index, actor in ipairs(actors) do
+        local entry = indexedDreamSecretEntry(secrets, actor, index, actors)
+        local secret, recipient, reason = normalizeDreamSecretEntry(entry, actor, index, actors)
+        if not secret then
+            detail.pendingActors[#detail.pendingActors + 1] = {
+                actor = actor,
+                actorId = actorId(actor),
+                reason = reason,
+            }
+        else
+            detail.exchanges[#detail.exchanges + 1] = {
+                teller = actor,
+                tellerId = actorId(actor),
+                dreamer = recipient,
+                dreamerId = actorId(recipient),
+                secret = secret,
+            }
+        end
+    end
+
+    if #detail.pendingActors > 0 then
+        cityState.pendingDreamSecrets = #detail.pendingActors
+        return detail, false
+    end
+
+    cityState.pendingDreamSecrets = 0
+    cityState.dreamSecrets = cityState.dreamSecrets or {}
+    for _, exchange in ipairs(detail.exchanges) do
+        local record = {
+            id = "wandering_dream",
+            source = "signs_dreams",
+            eventValue = eventEntry and eventEntry.value,
+            eventTitle = eventEntry and eventEntry.title,
+            signValue = detail.sign and detail.sign.value,
+            signTitle = detail.sign and detail.sign.title,
+            tellerId = exchange.tellerId,
+            dreamerId = exchange.dreamerId,
+            secret = exchange.secret,
+        }
+        appendActorRecord(exchange.teller, "cityDreamSecretsTold", record)
+        appendActorRecord(exchange.dreamer, "cityDreamSecrets", record)
+        cityState.dreamSecrets[#cityState.dreamSecrets + 1] = record
+        exchange.record = record
+    end
+
+    detail.complete = true
+    detail.result = "city_event_dream_secrets_resolved"
+    return detail, true
+end
+
+function M._citySuccessionEffectFromDetail(cityEventDetail, effects)
+    local succession = effects and (effects.citySuccession or effects.city_succession) or nil
+    if type(succession) == "table" then
+        return succession
+    end
+    local eventEntry = cityEventEntryFromDetail(cityEventDetail)
+    if eventEntry and tonumber(eventEntry.value) == 10 then
+        return {
+            id = "king_is_dead",
+            source = "city_event_king_is_dead",
+            recordField = "citySuccessions",
+        }
+    end
+    return nil
+end
+
+function M._normalizeCityRulerRecord(value)
+    if value == nil then
+        return nil
+    end
+    if type(value) == "table" then
+        local record = shallowClone(value)
+        record.name = record.name or record.ruler or record.title or record.id
+        return record
+    end
+    local name = tostring(value or "")
+    if name == "" then
+        return nil
+    end
+    return {
+        name = name,
+    }
+end
+
+function M._citySuccessionRulerFromOpts(opts)
+    return M._normalizeCityRulerRecord(firstProvided(
+        opts.newRuler,
+        opts.new_ruler,
+        opts.successor,
+        opts.ruler,
+        opts.currentRuler,
+        opts.current_ruler,
+        opts.throneHolder,
+        opts.regime
+    ))
+end
+
+function M._citySuccessionGoneReason(opts, effect)
+    return firstProvided(
+        opts.oldRulerGoneReason,
+        opts.goneReason,
+        opts.rulerGoneReason,
+        opts.successionReason,
+        opts.regimeChange,
+        effect and effect.goneReason
+    )
+end
+
+function M._markCitySuccessionPending(controller, eventEntry, sign, effect, opts)
+    opts = opts or {}
+    local cityState = opts.cityState or opts.worldState or controller.cityState
+    local oldRuler = M._normalizeCityRulerRecord(firstProvided(
+        opts.oldRuler,
+        opts.previousRuler,
+        cityState.currentRuler,
+        cityState.ruler
+    ))
+    local pending = {
+        id = effect.id or "king_is_dead",
+        source = effect.source or "city_event_king_is_dead",
+        eventValue = eventEntry and eventEntry.value,
+        eventTitle = eventEntry and eventEntry.title,
+        signValue = sign and sign.value,
+        signTitle = sign and sign.title,
+        oldRuler = oldRuler,
+        goneReason = M._citySuccessionGoneReason(opts, effect),
+        status = "pending",
+    }
+    cityState.pendingSuccession = pending
+    cityState.pendingCitySuccession = pending
+    return pending, cityState
+end
+
+function M._markCityUndeadPlague(controller, eventEntry, sign, effect, opts)
+    opts = opts or {}
+    local cityState = opts.cityState or opts.worldState or controller.cityState
+    local record = {
+        id = effect.id or "what_is_dead_may_never_die",
+        source = effect.source or "signs_what_is_dead_may_never_die",
+        eventValue = eventEntry and eventEntry.value,
+        eventTitle = eventEntry and eventEntry.title,
+        signValue = sign and sign.value,
+        signTitle = sign and sign.title,
+        blocksCityActions = effect.blocksCityActions ~= false,
+        sourceRequired = effect.sourceRequired ~= false,
+        underworldSource = opts.undeadSource or opts.source or effect.underworldSource,
+        active = true,
+        status = "active",
+    }
+    cityState.undeadPlague = record
+    cityState.cityActionsBlockedByUndead = record.blocksCityActions
+    cityState.cityUndeadPlagues = cityState.cityUndeadPlagues or {}
+    cityState.cityUndeadPlagues[#cityState.cityUndeadPlagues + 1] = record
+    return record, cityState
+end
+
+local function resolveCitySuccessionCityEventConsequences(controller, opts)
+    opts = opts or {}
+    local cityEventDetail = opts.cityEventDetail or opts.cityEvent or controller.lastCityEvent
+    local eventEntry = opts.eventEntry or opts.event or cityEventEntryFromDetail(cityEventDetail)
+    local effects = opts.cityEventEffects or opts.effects or
+        (type(cityEventDetail) == "table" and cityEventDetail.effects) or
+        (eventEntry and eventEntry.effects) or controller.cityEventEffects or {}
+    local effect = M._citySuccessionEffectFromDetail(cityEventDetail, effects)
+    if type(effect) ~= "table" then
+        return nil, false
+    end
+
+    local cityState = opts.cityState or opts.worldState or controller.cityState
+    local pending = cityState.pendingSuccession or cityState.pendingCitySuccession
+    if not pending then
+        pending = M._markCitySuccessionPending(controller, eventEntry, type(cityEventDetail) == "table" and
+            cityEventDetail.sign or nil, effect, opts)
+    end
+
+    local newRuler = M._citySuccessionRulerFromOpts(opts)
+    if not newRuler then
+        return {
+            event = eventEntry,
+            effect = effect,
+            pending = pending,
+            cityState = cityState,
+            complete = false,
+            reason = "new_ruler_required",
+            result = "city_event_succession_pending",
+        }, false
+    end
+
+    local record = shallowClone(pending)
+    record.newRuler = newRuler
+    record.currentRuler = newRuler
+    record.status = "resolved"
+    record.resolved = true
+    record.goneReason = M._citySuccessionGoneReason(opts, effect) or record.goneReason
+    record.regimeNotes = opts.regimeNotes or opts.notes or opts.note
+
+    cityState.previousRuler = record.oldRuler
+    cityState.currentRuler = newRuler
+    cityState.ruler = newRuler
+    cityState.citySuccessions = cityState.citySuccessions or {}
+    cityState.citySuccessions[#cityState.citySuccessions + 1] = record
+    cityState.lastCitySuccession = record
+    cityState.pendingSuccession = nil
+    cityState.pendingCitySuccession = nil
+
+    return {
+        event = eventEntry,
+        effect = effect,
+        oldRuler = record.oldRuler,
+        newRuler = newRuler,
+        record = record,
+        cityState = cityState,
+        complete = true,
+        result = "city_event_succession_resolved",
+    }, true
+end
+
+local function suitScore(actor, suit)
+    suit = tostring(suit or ""):lower()
+    if suit == "swords" then
+        return getSwords(actor)
+    elseif suit == "pentacles" or suit == "disks" then
+        return getPentacles(actor)
+    elseif suit == "cups" then
+        return getCups(actor)
+    elseif suit == "wands" or suit == "batons" then
+        return getWands(actor)
+    end
+    return 0
+end
+
+local pathSuitByName = {
+    swords = constants.SUITS.SWORDS,
+    pentacles = constants.SUITS.PENTACLES,
+    disks = constants.SUITS.PENTACLES,
+    cups = constants.SUITS.CUPS,
+    wands = constants.SUITS.WANDS,
+    batons = constants.SUITS.WANDS,
+}
+
+local function actorPathSuit(actor)
+    if not actor then
+        return nil
+    end
+    if actor.pathSuit or actor.path_suit then
+        return actor.pathSuit or actor.path_suit
+    end
+    local path = actor.path or actor.pathName or actor.suit
+    if type(path) == "string" then
+        path = path:lower():gsub("^path of ", "")
+        return pathSuitByName[path]
+    end
+    return nil
+end
+
+local function selectRandomAdventurerFromMinorDiscard(actors, card)
+    local candidates = {}
+    local active = {}
+    for _, actor in ipairs(actors or {}) do
+        if isActiveAdventurer(actor) then
+            active[#active + 1] = actor
+            if card and actorPathSuit(actor) == card.suit then
+                candidates[#candidates + 1] = actor
+            end
+        end
+    end
+
+    if #candidates == 0 then
+        candidates = active
+    end
+    if #candidates == 0 then
+        return nil
+    end
+    if #candidates == 1 then
+        return candidates[1]
+    end
+    return candidates[(tonumber(card and card.value) or 1) % 2 == 1 and 1 or #candidates]
+end
+
+local function resolveActorReference(ref, actors)
+    if not ref then
+        return nil
+    end
+    if actorId(ref) then
+        return ref
+    end
+    if type(ref) == "table" and ref.actor then
+        return resolveActorReference(ref.actor, actors)
+    end
+
+    local wanted = tostring(ref)
+    for _, actor in ipairs(actors or {}) do
+        if tostring(actorId(actor) or "") == wanted then
+            return actor
+        end
+    end
+    return nil
+end
+
+local function lastActiveInOrder(order, actors)
+    local fallback = nil
+    for _, actor in ipairs(actors or {}) do
+        if isActiveAdventurer(actor) then
+            fallback = actor
+        end
+    end
+
+    if type(order) ~= "table" then
+        return fallback
+    end
+
+    local selected = nil
+    for _, ref in ipairs(order) do
+        local actor = resolveActorReference(ref, actors)
+        if isActiveAdventurer(actor) then
+            selected = actor
+        end
+    end
+    return selected or fallback
+end
+
+local function selectSuitTarget(actors, suit, mode)
+    local selected = nil
+    local selectedScore = nil
+    for _, actor in ipairs(actors or {}) do
+        if isActiveAdventurer(actor) then
+            local score = suitScore(actor, suit)
+            if not selected or (mode == "lowest" and score < selectedScore) or
+               (mode ~= "lowest" and score > selectedScore) then
+                selected = actor
+                selectedScore = score
+            end
+        end
+    end
+    return selected, selectedScore
+end
+
+local function selectTravelCityEventTarget(travelEvent, actors, opts)
+    opts = opts or {}
+    local explicit = opts.travelEventTarget or opts.cityEventTarget or opts.targetActor or opts.target
+    local actor = resolveActorReference(explicit, actors)
+    if actor then
+        return actor, {
+            targetRule = "explicit",
+        }
+    end
+
+    local targetRule = travelEvent and travelEvent.target
+    if targetRule == "back_rank" then
+        return lastActiveInOrder(opts.marchingOrder or opts.marching_order or opts.travelOrder, actors), {
+            targetRule = targetRule,
+        }
+    elseif targetRule == "highest_suit" then
+        local selected, score = selectSuitTarget(actors, travelEvent.suit, "highest")
+        return selected, {
+            targetRule = targetRule,
+            suit = travelEvent.suit,
+            suitValue = score,
+        }
+    elseif targetRule == "lowest_suit" then
+        local selected, score = selectSuitTarget(actors, travelEvent.suit, "lowest")
+        return selected, {
+            targetRule = targetRule,
+            suit = travelEvent.suit,
+            suitValue = score,
+        }
+    end
+
+    return actors and actors[1] or nil, {
+        targetRule = targetRule or "first_active",
+    }
+end
+
+local function recordTravelCityEvent(actor, record)
+    if not actor then
+        return
+    end
+    actor.cityTravelEvents = actor.cityTravelEvents or {}
+    actor.cityTravelEvents[#actor.cityTravelEvents + 1] = record
+end
+
+local function applyTravelCityEventProperty(actor, property, record)
+    if not actor or type(property) ~= "table" then
+        return nil
+    end
+
+    local propertyRecord = {}
+    for key, value in pairs(property) do
+        propertyRecord[key] = value
+    end
+    propertyRecord.sourceCityEvent = record
+
+    actor.cityProperties = actor.cityProperties or {}
+    actor.cityProperties[propertyRecord.id or propertyRecord.name or ("city_property_" .. tostring(#actor.cityProperties + 1))] =
+        propertyRecord
+    return propertyRecord
+end
+
+local function resolveTravelCityEventConsequences(controller, opts)
+    opts = opts or {}
+    local cityEventDetail = opts.cityEventDetail or opts.cityEvent or controller.lastCityEvent
+    local eventEntry = opts.eventEntry or opts.event or cityEventEntryFromDetail(cityEventDetail)
+    local effects = opts.cityEventEffects or opts.effects or
+        (type(cityEventDetail) == "table" and cityEventDetail.effects) or
+        (eventEntry and eventEntry.effects) or controller.cityEventEffects or {}
+    local travelEvent = effects.travelEvent or effects.travel_event
+    if type(travelEvent) ~= "table" or eventEntry and eventEntry.category ~= city_events.CATEGORIES.TRAVEL_EVENT then
+        return nil, false
+    end
+
+    local actors = normalizeRecipientList(opts.participants or opts.actors or opts.guild or controller.guild)
+    if #actors == 0 then
+        actors = activeAdventurers(controller.guild)
+    end
+
+    local target, targetDetail = selectTravelCityEventTarget(travelEvent, actors, opts)
+    if not target then
+        return {
+            event = eventEntry,
+            consequence = travelEvent.consequence,
+            targetRule = targetDetail and targetDetail.targetRule,
+            complete = false,
+            result = "city_event_travel_pending",
+            reason = "target_required",
+        }, false
+    end
+
+    local record = {
+        id = travelEvent.consequence or ("city_event_" .. tostring(eventEntry and eventEntry.value or "travel")),
+        eventValue = eventEntry and eventEntry.value,
+        eventTitle = eventEntry and eventEntry.title,
+        category = city_events.CATEGORIES.TRAVEL_EVENT,
+        targetRule = targetDetail.targetRule,
+        suit = targetDetail.suit,
+        suitValue = targetDetail.suitValue,
+        status = "pending",
+    }
+    recordTravelCityEvent(target, record)
+
+    local property = applyTravelCityEventProperty(target, travelEvent.property, record)
+    local detail = {
+        event = eventEntry,
+        target = target,
+        targetRule = targetDetail.targetRule,
+        suit = targetDetail.suit,
+        suitValue = targetDetail.suitValue,
+        consequence = travelEvent.consequence,
+        record = record,
+        property = property,
+        complete = true,
+        result = "city_event_travel_resolved",
+    }
+
+    return detail, true
+end
+
+local function resolvePendingCityEventConsequences(controller, opts)
+    local detail, complete = resolveFireCityEventConsequences(controller, opts)
+    if detail then
+        return detail, complete
+    end
+    detail, complete = resolveNextCrawlConditionCityEventConsequences(controller, opts)
+    if detail then
+        return detail, complete
+    end
+    detail, complete = resolveDreamSecretsCityEventConsequences(controller, opts)
+    if detail then
+        return detail, complete
+    end
+    detail, complete = resolveCitySuccessionCityEventConsequences(controller, opts)
+    if detail then
+        return detail, complete
+    end
+    return resolveTravelCityEventConsequences(controller, opts)
 end
 
 local function distributeGold(total, recipients, guildTreasury)
@@ -1356,6 +4104,13 @@ end
 local function treasureSaleValue(item, explicitValue)
     local props = item and item.properties or {}
     return math.max(0, math.floor(tonumber(explicitValue or props.saleValue or props.value) or 0))
+end
+
+local function saleMetadataValue(source, itemId)
+    if type(source) == "table" then
+        return source[itemId]
+    end
+    return source
 end
 
 local function normalizeDeedId(description)
@@ -1464,6 +4219,110 @@ local function selectActiveDeeds(deeds, opts)
     return selected, dropped
 end
 
+function M.getNoteworthyDeedsOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.noteworthyDeeds or opts.deedsRequest or opts
+    local roster = request.guildRoster or request.roster or opts.guildRoster or opts.roster or {}
+    local currentDeeds = normalizeDeedList(
+        request.currentDeeds or request.activeDeeds or opts.currentDeeds or opts.activeDeeds or
+            roster.noteworthyDeeds or roster.deeds
+    )
+    local previousFame = #currentDeeds
+    local erased = nil
+    if #currentDeeds > 0 then
+        erased = table.remove(currentDeeds, 1)
+    end
+
+    local proposed = normalizeDeedList(
+        request.deeds or request.newDeeds or request.proposedDeeds or request.accomplishments or
+            request.noteworthyDeeds
+    )
+    local added = {}
+    local rejected = {}
+    local proposedOptions = {}
+    for _, deed in ipairs(proposed) do
+        local approved = deed.approved == true
+        proposedOptions[#proposedOptions + 1] = {
+            id = deed.id,
+            deed = deed,
+            title = deed.title,
+            description = deed.description,
+            approved = approved,
+            selected = approved,
+            disabled = not approved,
+            unavailableReason = not approved and "Deed not approved" or nil,
+        }
+        if approved then
+            currentDeeds[#currentDeeds + 1] = deed
+            added[#added + 1] = deed
+        else
+            rejected[#rejected + 1] = deed
+        end
+    end
+
+    local activeDeeds, dropped = selectActiveDeeds(currentDeeds, request)
+    local fame = #activeDeeds
+    local fameReaction = disposition.getFameReaction(fame, {
+        reputation = request.reputation or request.deedTone or request.fameTone or roster.reputation or roster.fameTone,
+        favorable = request.favorable,
+    })
+    local selectedSet = selectedDeedSet(request)
+    local activeSet = {}
+    for _, deed in ipairs(activeDeeds) do
+        activeSet[deed.id] = true
+    end
+
+    local currentDeedOptions = {}
+    if erased then
+        currentDeedOptions[#currentDeedOptions + 1] = {
+            id = erased.id,
+            deed = erased,
+            title = erased.title,
+            description = erased.description,
+            willErase = true,
+            selected = false,
+            disabled = true,
+            unavailableReason = "Oldest deed erased",
+        }
+    end
+    for _, deed in ipairs(currentDeeds) do
+        currentDeedOptions[#currentDeedOptions + 1] = {
+            id = deed.id,
+            deed = deed,
+            title = deed.title,
+            description = deed.description,
+            selected = activeSet[deed.id] == true,
+            explicitlySelected = selectedSet and (selectedSet[deed.id] or selectedSet[deed.description] or selectedSet[deed.title]) or nil,
+            disabled = activeSet[deed.id] ~= true,
+            unavailableReason = activeSet[deed.id] ~= true and "Dropped by Fame cap" or nil,
+        }
+    end
+
+    local resolved = request.noteworthyDeedsResolved == true or opts.noteworthyDeedsResolved == true
+    return {
+        step = M.STEPS.NOTEWORTHY_DEEDS,
+        previousFame = previousFame,
+        maxFame = math.max(0, math.floor(tonumber(request.maxFame) or M.MAX_FAME)),
+        erased = erased,
+        added = added,
+        rejected = rejected,
+        dropped = dropped,
+        activeDeeds = activeDeeds,
+        deeds = activeDeeds,
+        currentDeedOptions = currentDeedOptions,
+        proposedDeedOptions = proposedOptions,
+        curationRequired = #currentDeeds > math.max(0, math.floor(tonumber(request.maxFame) or M.MAX_FAME)),
+        selectedDeedIds = request.selectedDeedIds or request.keepDeedIds or request.selectedDeeds,
+        fame = fame,
+        projectedFame = fame,
+        fameReaction = fameReaction,
+        fameDispositionFrame = fameReaction.dispositionFrame,
+        resultPreview = #added > 0 and "noteworthy_deeds_recorded" or "noteworthy_deeds_aged",
+        disabled = resolved,
+        unavailableReason = resolved and "Noteworthy deeds already resolved" or nil,
+    }
+end
+
 local function normalizeCarouseSpend(request)
     local spend = tostring(request.spend or request.portion or request.level or request.amount or ""):lower()
     local percent = tonumber(request.percent or request.percentage)
@@ -1484,6 +4343,323 @@ local function normalizeCarouseSpend(request)
     end
 
     return nil, nil
+end
+
+local function isFoolMinorDeckCard(card)
+    if type(card) ~= "table" then
+        return false
+    end
+    local name = tostring(card.name or card.id or ""):lower()
+    if name == "the fool" or name == "fool" then
+        return true
+    end
+    local suit = card.suit
+    local suitName = type(suit) == "string" and suit:lower() or nil
+    return tonumber(card.value) == 0 and (card.is_major == true or suit == constants.SUITS.MAJOR or suitName == "major")
+end
+
+local function isMinorDeckCard(card)
+    if type(card) ~= "table" then
+        return false
+    end
+    if isFoolMinorDeckCard(card) then
+        return true
+    end
+
+    local suit = card.suit
+    if suit == constants.SUITS.SWORDS or suit == constants.SUITS.PENTACLES or
+       suit == constants.SUITS.CUPS or suit == constants.SUITS.WANDS then
+        return true
+    end
+
+    if type(suit) == "string" then
+        local normalized = suit:lower():gsub("%s+", "_")
+        return normalized == "swords" or normalized == "pentacles" or normalized == "disks" or
+            normalized == "cups" or normalized == "wands" or normalized == "batons"
+    end
+
+    return false
+end
+
+local function isMajorDeckCard(card)
+    if type(card) ~= "table" or isFoolMinorDeckCard(card) then
+        return false
+    end
+    local value = tonumber(card.value)
+    if not value or value < 1 or value > 21 then
+        return false
+    end
+
+    local suit = card.suit
+    local suitName = type(suit) == "string" and suit:lower() or nil
+    return card.is_major == true or suit == constants.SUITS.MAJOR or suitName == "major"
+end
+
+local function getTopMinorDiscard(controller, opts)
+    opts = opts or {}
+    local minorDeck = opts.playerDeck or opts.minorDeck or controller.playerDeck
+    local card = nil
+    if minorDeck and minorDeck.peekDiscard then
+        card = minorDeck:peekDiscard()
+    end
+    return card or opts.minorDiscardCard or opts.minorDiscard or
+        opts.topMinorDiscardCard or opts.topMinorDiscard
+end
+
+function M.getCityEventOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.cityEvent or opts.cityEvents or opts
+    local explicitCard = request.majorCard or request.card
+    local majorDeck = request.gmDeck or request.majorDeck or opts.gmDeck or opts.majorDeck
+    local cardValid = explicitCard and isMajorDeckCard(explicitCard) or nil
+    local card = cardValid and explicitCard or nil
+    local disabled = false
+    local unavailableReason = nil
+    if request.cityEventResolved == true or opts.cityEventResolved == true then
+        disabled = true
+        unavailableReason = "City Event already resolved"
+    elseif explicitCard and not cardValid then
+        disabled = true
+        unavailableReason = "Requires major arcana draw"
+    elseif not explicitCard and not (majorDeck and majorDeck.draw) then
+        disabled = true
+        unavailableReason = "Requires major arcana draw"
+    end
+
+    local rawEventsTable = request.cityEventsTable or request.city_events_table or opts.cityEventsTable or
+        city_events.DEFAULT_EVENTS
+    local eventsTableMeta = request.cityEventsTableMeta or opts.cityEventsTableMeta
+    local eventsTable = rawEventsTable
+    if rawEventsTable ~= city_events.DEFAULT_EVENTS then
+        eventsTable = M.copyCityPhaseMetadata(rawEventsTable)
+        eventsTable, eventsTableMeta = city_events.normalizeEventTable(eventsTable, {
+            tableName = "city_events",
+            source = request.cityEventsTableSource or request.cityEventTableSource or
+                request.city_events_table_source or opts.cityEventsTableSource or opts.cityEventTableSource or
+                eventsTableMeta and eventsTableMeta.source,
+            requireComplete = request.requireCompleteCityEventsTable == true or
+                request.requireCompleteCityEventTable == true or opts.requireCompleteCityEventsTable == true or
+                opts.requireCompleteCityEventTable == true or eventsTableMeta and eventsTableMeta.requireComplete == true,
+        })
+    elseif not eventsTableMeta then
+        eventsTableMeta = {
+            tableName = "city_events",
+            source = "default",
+            missing = {},
+            invalid = {},
+            count = 21,
+            complete = true,
+            requireComplete = false,
+        }
+    end
+    if not disabled and eventsTableMeta and eventsTableMeta.requireComplete and not eventsTableMeta.complete then
+        disabled = true
+        unavailableReason = "City Event table incomplete"
+    end
+
+    local eventEntry = nil
+    local eventCategory = nil
+    if card and not (eventsTableMeta and eventsTableMeta.requireComplete and not eventsTableMeta.complete) then
+        eventEntry = city_events.getEvent(card.value, eventsTable)
+        if eventEntry then
+            eventEntry = M.copyCityPhaseMetadata(eventEntry)
+            eventCategory = eventEntry.category or cityEventCategoryForValue(eventEntry.value or card.value)
+            eventEntry.category = eventCategory
+        elseif not disabled then
+            disabled = true
+            unavailableReason = "City Event table entry missing"
+        end
+    end
+
+    local minorDeck = request.playerDeck or request.minorDeck or opts.playerDeck or opts.minorDeck
+    local minorDiscard = nil
+    if minorDeck and minorDeck.peekDiscard then
+        minorDiscard = minorDeck:peekDiscard()
+    end
+    minorDiscard = minorDiscard or request.minorDiscardCard or request.minorDiscard or
+        request.topMinorDiscardCard or request.topMinorDiscard
+    local minorDiscardValid = minorDiscard and isMinorDeckCard(minorDiscard) or nil
+    local sign = nil
+    local signsTable = request.signsAndPortentsTable or request.signsTable or opts.signsAndPortentsTable or
+        opts.signsTable or city_events.SIGNS_AND_PORTENTS
+    local signsTableMeta = request.signsAndPortentsTableMeta or request.signsTableMeta or
+        opts.signsAndPortentsTableMeta or opts.signsTableMeta
+    if eventCategory == city_events.CATEGORIES.SIGNS_AND_PORTENTS then
+        if not minorDiscard or not minorDiscardValid then
+            if not disabled then
+                disabled = true
+                unavailableReason = "Requires minor discard for Signs and Portents"
+            end
+        else
+            if signsTable ~= city_events.SIGNS_AND_PORTENTS then
+                signsTable = M.copyCityPhaseMetadata(signsTable)
+                signsTable, signsTableMeta = city_events.normalizeEventTable(signsTable, {
+                    tableName = "signs_and_portents",
+                    source = request.signsAndPortentsTableSource or request.signsTableSource or
+                        opts.signsAndPortentsTableSource or opts.signsTableSource or
+                        signsTableMeta and signsTableMeta.source,
+                    defaultCategory = city_events.CATEGORIES.SIGNS_AND_PORTENTS,
+                    maxValue = 14,
+                    requireComplete = request.requireCompleteSignsAndPortentsTable == true or
+                        request.requireCompleteSignsTable == true or opts.requireCompleteSignsAndPortentsTable == true or
+                        opts.requireCompleteSignsTable == true or
+                        signsTableMeta and signsTableMeta.requireComplete == true,
+                })
+            elseif not signsTableMeta then
+                signsTableMeta = {
+                    tableName = "signs_and_portents",
+                    source = "default",
+                    missing = {},
+                    invalid = {},
+                    count = 14,
+                    complete = true,
+                    requireComplete = false,
+                }
+            end
+            if signsTableMeta and signsTableMeta.requireComplete and not signsTableMeta.complete then
+                if not disabled then
+                    disabled = true
+                    unavailableReason = "Signs and Portents table incomplete"
+                end
+            else
+                sign = city_events.getSign(minorDiscard.value, signsTable)
+                if sign then
+                    sign = M.copyCityPhaseMetadata(sign)
+                    sign.category = sign.category or city_events.CATEGORIES.SIGNS_AND_PORTENTS
+                elseif not disabled then
+                    disabled = true
+                    unavailableReason = "Signs and Portents table entry missing"
+                end
+            end
+        end
+    end
+
+    local effects = nil
+    local effectPreview = nil
+    if eventEntry then
+        effects = mergeCityEventEffects({}, eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local actors = activeAdventurers(request.guild or opts.guild or {})
+        local randomEffect = effects.randomAdventurer or effects.random_adventurer
+        local targetedEffect = effects.targetedAdventurer or effects.targeted_adventurer
+        local randomTarget = nil
+        if type(randomEffect) == "table" and minorDiscardValid then
+            randomTarget = selectRandomAdventurerFromMinorDiscard(actors, minorDiscard)
+        end
+        local targetedTarget, targetedTargetDetail = nil, nil
+        if type(targetedEffect) == "table" then
+            if targetedEffect.target == "highest_suit" then
+                targetedTarget, targetedTargetDetail = selectSuitTarget(actors, targetedEffect.suit, "highest")
+                targetedTargetDetail = {
+                    targetRule = targetedEffect.target,
+                    suit = targetedEffect.suit,
+                    suitValue = targetedTargetDetail,
+                }
+            elseif targetedEffect.target == "lowest_suit" then
+                targetedTarget, targetedTargetDetail = selectSuitTarget(actors, targetedEffect.suit, "lowest")
+                targetedTargetDetail = {
+                    targetRule = targetedEffect.target,
+                    suit = targetedEffect.suit,
+                    suitValue = targetedTargetDetail,
+                }
+            end
+        end
+        local travelTarget, travelTargetDetail = nil, nil
+        if type(effects.travelEvent or effects.travel_event) == "table" then
+            travelTarget, travelTargetDetail = selectTravelCityEventTarget(effects.travelEvent or effects.travel_event, actors, request)
+        end
+        effectPreview = {
+            effects = effects,
+            upkeepCosts = effects.upkeepCosts,
+            allowedCityActions = effects.allowedCityActions,
+            blockedCityActions = effects.blockedCityActions,
+            rationUpkeepTier = effects.rationUpkeepTier,
+            randomAdventurer = type(randomEffect) == "table" and {
+                effect = randomEffect,
+                minorDiscard = minorDiscardValid and minorDiscard or nil,
+                target = randomTarget,
+                targetId = actorId(randomTarget),
+                pending = randomTarget == nil,
+                reason = randomTarget == nil and (minorDiscardValid and "requires_active_adventurer" or "requires_minor_discard") or nil,
+            } or nil,
+            targetedAdventurer = type(targetedEffect) == "table" and {
+                effect = targetedEffect,
+                target = targetedTarget,
+                targetId = actorId(targetedTarget),
+                targetRule = targetedTargetDetail and targetedTargetDetail.targetRule,
+                suit = targetedTargetDetail and targetedTargetDetail.suit,
+                suitValue = targetedTargetDetail and targetedTargetDetail.suitValue,
+                pending = targetedTarget == nil,
+                reason = targetedTarget == nil and "requires_active_adventurer" or nil,
+            } or nil,
+            travelEvent = type(effects.travelEvent or effects.travel_event) == "table" and {
+                effect = effects.travelEvent or effects.travel_event,
+                target = travelTarget,
+                targetId = actorId(travelTarget),
+                targetRule = travelTargetDetail and travelTargetDetail.targetRule,
+                suit = travelTargetDetail and travelTargetDetail.suit,
+                suitValue = travelTargetDetail and travelTargetDetail.suitValue,
+                pending = travelTarget == nil,
+                reason = travelTarget == nil and "target_required" or nil,
+            } or nil,
+            animalCompanionOpportunity = effects.animalCompanionOpportunity or effects.animal_companion_opportunity,
+            animalCompanionCatastrophe = effects.animalCompanionCatastrophe or effects.animal_companion_catastrophe,
+            cityOmen = effects.cityOmen or effects.city_omen,
+            citySuccession = effects.citySuccession or effects.city_succession,
+            undeadPlague = effects.undeadPlague or effects.undead_plague,
+            nextCrawlCondition = effects.nextCrawlCondition or effects.nextCrawl_condition,
+            timing = effects.timing,
+            testSuit = effects.testSuit,
+        }
+    end
+
+    local consumedPreviews = {}
+    if eventEntry then
+        consumedPreviews[#consumedPreviews + 1] = {
+            value = eventEntry.value,
+            title = eventEntry.title,
+            category = eventEntry.category,
+            id = eventEntry.id,
+            source = eventEntry.source,
+            tableSource = eventEntry.tableSource,
+            table = "city_events",
+        }
+    end
+    if sign then
+        consumedPreviews[#consumedPreviews + 1] = {
+            value = sign.value,
+            title = sign.title,
+            category = sign.category,
+            id = sign.id,
+            source = sign.source,
+            tableSource = sign.tableSource,
+            table = "signs_and_portents",
+        }
+    end
+
+    return {
+        step = M.STEPS.CITY_EVENTS,
+        card = explicitCard,
+        cardValid = explicitCard == nil and nil or cardValid == true,
+        requiresDraw = explicitCard == nil,
+        autoDrawAvailable = explicitCard == nil and majorDeck and majorDeck.draw ~= nil or false,
+        event = eventEntry,
+        category = eventCategory,
+        cityEventsTable = eventsTableMeta,
+        cityEventsTableSource = eventsTableMeta and eventsTableMeta.source,
+        signCard = eventCategory == city_events.CATEGORIES.SIGNS_AND_PORTENTS and minorDiscard or nil,
+        signCardValid = eventCategory == city_events.CATEGORIES.SIGNS_AND_PORTENTS and
+            (minorDiscard == nil and nil or minorDiscardValid == true) or nil,
+        sign = sign,
+        signsAndPortentsTable = signsTableMeta,
+        signsAndPortentsTableSource = signsTableMeta and signsTableMeta.source,
+        effects = effects,
+        effectPreview = effectPreview,
+        consumedEntryPreviews = consumedPreviews,
+        resultPreview = eventEntry and not disabled and "city_event_resolved" or nil,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
 end
 
 local function getBank(actor)
@@ -1640,7 +4816,7 @@ local function minorSuitChoice(card, choices)
     return nil
 end
 
-local function appendActorRecord(actor, field, record)
+function appendActorRecord(actor, field, record)
     if not actor then
         return
     end
@@ -1735,6 +4911,794 @@ local function getActorCityUpkeep(controller, actor)
     return (id and controller and controller.upkeepCompleted[id]) or (actor and actor.cityUpkeep)
 end
 
+function M.getUpkeepOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.upkeep or opts.upkeepRequest or opts
+    actor = request.actor or actor
+
+    local selectedTierId = normalizeUpkeepTier(request.tier or request.upkeepTier)
+    local selectedTier = M.UPKEEP_TIERS[selectedTierId]
+    local cityEventEffects = request.cityEventEffects or opts.cityEventEffects or opts.effects or {}
+    local upkeepCosts = cityEventEffects.upkeepCosts or {}
+    local completed = opts.upkeepCompleted or opts.completedUpkeep or request.upkeepCompleted or {}
+    local id = actorId(actor)
+    local gold = actor and currency.getGold(actor) or math.floor(tonumber(opts.gold or request.gold) or 0)
+
+    local function upkeepCost(tier)
+        local override = upkeepCosts[tier.id]
+        if override ~= nil then
+            return math.max(0, math.floor(tonumber(override) or tier.cost))
+        end
+        return tier.cost
+    end
+
+    local tierOrder = { "destitute", "impoverished", "common", "luxurious" }
+    local tierOptions = {}
+    for _, tierId in ipairs(tierOrder) do
+        local tier = M.UPKEEP_TIERS[tierId]
+        local cost = upkeepCost(tier)
+        tierOptions[#tierOptions + 1] = {
+            id = tier.id,
+            tier = tier.id,
+            cost = cost,
+            baseCost = tier.cost,
+            costModified = cost ~= tier.cost,
+            affordable = gold >= cost,
+            refillTier = tier.refillTier,
+            recoveryAllowed = tier.recoveryAllowed,
+            luxurious = tier.luxurious,
+            selected = tier.id == selectedTierId,
+            disabled = gold < cost,
+            unavailableReason = gold < cost and "Not enough gold" or nil,
+            consequencePreview = tier.id == "destitute" and {
+                condition = "stressed",
+                nextCrawlCondition = "stressed",
+                source = "destitute_upkeep",
+            } or nil,
+        }
+    end
+
+    local marketItemOptions = {}
+    for templateId, itemTier in pairs(M.MARKET_TIERS) do
+        local template = item_templates.getTemplate(templateId)
+        if template then
+            local location = template.isArmor and inventory.LOCATIONS.BELT or inventory.LOCATIONS.PACK
+            local covered = selectedTier and selectedTier.refillTier and
+                canBuyMarketTier(selectedTier.refillTier, itemTier) or false
+            marketItemOptions[#marketItemOptions + 1] = {
+                id = templateId,
+                templateId = templateId,
+                name = template.name or templateId,
+                tier = itemTier,
+                size = template.size or inventory.SIZE.NORMAL,
+                stackable = template.stackable == true,
+                stackSize = template.stackSize,
+                defaultQuantity = template.quantity or 1,
+                defaultLocation = location,
+                coveredBySelectedTier = covered,
+                disabled = selectedTier ~= nil and not covered or nil,
+                unavailableReason = selectedTier ~= nil and not covered and "Gear tier not covered by upkeep" or nil,
+            }
+        end
+    end
+    table.sort(marketItemOptions, function(a, b)
+        if a.tier ~= b.tier then
+            return (MARKET_TIER_RANK[a.tier] or 0) < (MARKET_TIER_RANK[b.tier] or 0)
+        end
+        return tostring(a.name or a.templateId) < tostring(b.name or b.templateId)
+    end)
+
+    local selectedRefillItems = {}
+    local plannedGear = {}
+    local gearRequests = normalizeGearRequests(request.refillItems or request.refillGear or request.gear or request.items)
+    local gearError = nil
+    if #gearRequests > 0 then
+        if not selectedTier or not selectedTier.refillTier then
+            gearError = selectedTier and "Upkeep tier cannot refill gear" or "Unknown upkeep tier"
+        elseif not actor or not actor.inventory or not actor.inventory.addItem then
+            gearError = "No inventory for upkeep gear"
+        end
+        if not gearError then
+            for _, refill in ipairs(gearRequests) do
+                local templateId = refill.templateId and tostring(refill.templateId) or nil
+                local itemTier = nil
+                local item = nil
+                local custom = not templateId
+                local reason = nil
+                if templateId then
+                    local template = item_templates.getTemplate(templateId)
+                    if not template then
+                        reason = "Unknown market item"
+                    else
+                        itemTier = M.MARKET_TIERS[templateId]
+                        item = inventory.createItemFromTemplate(templateId, {
+                            quantity = refill.quantity,
+                        })
+                    end
+                else
+                    local itemName = refill.name and tostring(refill.name):gsub("^%s+", ""):gsub("%s+$", "")
+                    if not refill.custom or not itemName or itemName == "" then
+                        reason = "Unknown market item"
+                    else
+                        itemTier = normalizeUpkeepTier(refill.tier)
+                        if not MARKET_TIER_RANK[itemTier] then
+                            reason = "Custom gear tier required"
+                        else
+                            local properties = shallowClone(refill.properties or {})
+                            properties.upkeepCustom = true
+                            properties.marketTier = itemTier
+                            item = inventory.createItem({
+                                id = refill.customId,
+                                name = itemName,
+                                size = refill.size,
+                                oversized = refill.oversized,
+                                stackable = refill.stackable,
+                                stackSize = refill.stackSize,
+                                quantity = refill.quantity,
+                                type = refill.itemType,
+                                properties = properties,
+                            })
+                            item.marketTier = itemTier
+                            item.upkeepCustom = true
+                        end
+                    end
+                end
+                if not reason and not canBuyMarketTier(selectedTier.refillTier, itemTier) then
+                    reason = "Gear tier not covered by upkeep"
+                elseif not reason and not item then
+                    reason = "Unknown market item"
+                end
+
+                local option = {
+                    templateId = templateId,
+                    item = item,
+                    itemId = item and item.id or refill.customId,
+                    name = item and item.name or refill.name or templateId,
+                    tier = itemTier,
+                    quantity = refill.quantity,
+                    location = refill.location or inventory.LOCATIONS.PACK,
+                    custom = custom,
+                    coveredBySelectedTier = reason == nil,
+                    disabled = reason ~= nil,
+                    unavailableReason = reason,
+                }
+                selectedRefillItems[#selectedRefillItems + 1] = option
+                if reason and not gearError then
+                    gearError = reason
+                elseif item then
+                    plannedGear[#plannedGear + 1] = {
+                        item = item,
+                        location = option.location,
+                    }
+                end
+            end
+            if not gearError and #plannedGear > 0 then
+                local canAdd, reason = canAddPlannedItemsToInventory(actor.inventory, plannedGear)
+                if not canAdd then
+                    gearError = reason
+                end
+            end
+        end
+    end
+
+    local repairItemOptions = {}
+    local inv = actor and actor.inventory
+    if inv and inv.getAllItems then
+        for _, entry in ipairs(inv:getAllItems()) do
+            local item = entry.item
+            if item and (item.destroyed == true or (tonumber(item.notches) or 0) > 0) then
+                local repairTier = itemMarketTier(item, {})
+                local covered = selectedTier and selectedTier.refillTier and
+                    canBuyMarketTier(selectedTier.refillTier, repairTier) or false
+                repairItemOptions[#repairItemOptions + 1] = {
+                    id = item.id,
+                    itemId = item.id,
+                    item = item,
+                    name = item.name,
+                    location = entry.location,
+                    tier = repairTier,
+                    notches = item.notches or 0,
+                    destroyed = item.destroyed == true,
+                    coveredBySelectedTier = covered,
+                    disabled = selectedTier ~= nil and not covered or nil,
+                    unavailableReason = selectedTier ~= nil and not covered and "Repair tier not covered by upkeep" or nil,
+                }
+            end
+        end
+    end
+
+    local selectedRepairItems = {}
+    local repairRequests = normalizeRepairRequests(request.repairItems or request.repairGear or request.repairs or request.repairItemIds)
+    local repairError = nil
+    if #repairRequests > 0 then
+        if not selectedTier or not selectedTier.refillTier then
+            repairError = selectedTier and "Upkeep tier cannot repair gear" or "Unknown upkeep tier"
+        elseif not inv or not inv.findItem then
+            repairError = "No inventory for upkeep repair"
+        end
+        if not repairError then
+            for _, repair in ipairs(repairRequests) do
+                local item = inv:findItem(repair.itemId)
+                local repairTier = item and itemMarketTier(item, repair) or nil
+                local reason = nil
+                if not item then
+                    reason = "Repair item not found"
+                elseif not item.destroyed and (not item.notches or item.notches <= 0) then
+                    reason = "Item is not damaged"
+                elseif not canBuyMarketTier(selectedTier.refillTier, repairTier) then
+                    reason = "Repair tier not covered by upkeep"
+                end
+                selectedRepairItems[#selectedRepairItems + 1] = {
+                    item = item,
+                    itemId = repair.itemId,
+                    templateId = repair.templateId or item and item.templateId,
+                    name = item and item.name,
+                    tier = repairTier,
+                    wasDestroyed = item and item.destroyed == true or nil,
+                    previousNotches = item and item.notches or nil,
+                    coveredBySelectedTier = reason == nil,
+                    disabled = reason ~= nil,
+                    unavailableReason = reason,
+                }
+                if reason and not repairError then
+                    repairError = reason
+                end
+            end
+        end
+    end
+
+    local chargedBonds = {}
+    local bondOptions = {}
+    for targetId, bond in pairs(actor and actor.bonds or {}) do
+        bondOptions[#bondOptions + 1] = {
+            targetId = targetId,
+            bond = bond,
+            status = bond.status or bond.type,
+            charged = bond.charged == true,
+            disabled = bond.charged ~= true,
+            unavailableReason = bond.charged ~= true and "Bond is not charged" or nil,
+        }
+        if bond.charged == true then
+            chargedBonds[#chargedBonds + 1] = targetId
+        end
+    end
+    table.sort(bondOptions, function(a, b)
+        return tostring(a.targetId) < tostring(b.targetId)
+    end)
+
+    local recoveryAllowed = selectedTier and selectedTier.recoveryAllowed or false
+    local needsExtraBond = recoveryNeedsExtraBond(actor)
+    local recoverySpendOptions = {}
+    local function addRecoverySpend(idValue, label, result, disabled, reason, bondCost)
+        recoverySpendOptions[#recoverySpendOptions + 1] = {
+            id = idValue,
+            spendType = idValue,
+            label = label,
+            result = result,
+            bondCost = bondCost or 1,
+            disabled = disabled,
+            unavailableReason = reason,
+        }
+    end
+    local noChargedBonds = #chargedBonds == 0
+    addRecoverySpend("clear_stress", "Clear Stressed", "stress_cleared",
+        not recoveryAllowed or noChargedBonds or not (actor and actor.conditions and actor.conditions.stressed),
+        not recoveryAllowed and "Upkeep tier does not allow recovery" or
+            noChargedBonds and "Bond is not charged" or
+            not (actor and actor.conditions and actor.conditions.stressed) and "No stress to clear" or nil)
+    addRecoverySpend("heal_wound", "Heal Wound", nextRecoveryWoundResult(actor),
+        not recoveryAllowed or noChargedBonds or
+            (actor and actor.conditions and actor.conditions.stressed == true) or
+            nextRecoveryWoundResult(actor) == "fully_healed" or
+            (needsExtraBond and #chargedBonds < 2),
+        not recoveryAllowed and "Upkeep tier does not allow recovery" or
+            noChargedBonds and "Bond is not charged" or
+            (actor and actor.conditions and actor.conditions.stressed == true) and "Must clear stress first" or
+            nextRecoveryWoundResult(actor) == "fully_healed" and "No wound to heal" or
+            (needsExtraBond and #chargedBonds < 2) and "Requires two charged Bonds" or nil,
+        needsExtraBond and 2 or 1)
+    addRecoverySpend("regain_resolve", "Regain Resolve", "resolve_regained",
+        not recoveryAllowed or noChargedBonds,
+        not recoveryAllowed and "Upkeep tier does not allow recovery" or
+            noChargedBonds and "Bond is not charged" or nil)
+
+    local resolveMax = type(actor and actor.resolve) == "table" and actor.resolve.max or
+        tonumber(actor and (actor.resolveMax or actor.maxResolve))
+    local resolveCurrent = type(actor and actor.resolve) == "table" and actor.resolve.current or
+        tonumber(actor and actor.resolve)
+    local luxuriousHealingPreview = selectedTier and selectedTier.luxurious and {
+        armorNotches = actor and actor.armorNotches or 0,
+        woundedTalents = actor and actor.woundedTalents or 0,
+        staggered = actor and actor.conditions and actor.conditions.staggered == true or false,
+        injured = actor and actor.conditions and actor.conditions.injured == true or false,
+        deathsDoor = actor and actor.conditions and actor.conditions.deaths_door == true or false,
+        resolveCurrent = resolveCurrent,
+        resolveMax = resolveMax,
+        resolveRefreshed = resolveMax or resolveCurrent,
+    } or nil
+
+    local disabled = false
+    local unavailableReason = nil
+    if not id then
+        disabled = true
+        unavailableReason = "No active adventurer"
+    elseif completed[id] then
+        disabled = true
+        unavailableReason = "Upkeep already paid"
+    elseif selectedTierId ~= "" and not selectedTier then
+        disabled = true
+        unavailableReason = "Unknown upkeep tier"
+    elseif selectedTier and gold < upkeepCost(selectedTier) then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    elseif gearError then
+        disabled = true
+        unavailableReason = gearError
+    elseif repairError then
+        disabled = true
+        unavailableReason = repairError
+    end
+
+    local selectedCost = selectedTier and upkeepCost(selectedTier) or nil
+    return {
+        step = M.STEPS.UPKEEP,
+        actor = actor,
+        actorId = id,
+        name = actor and actor.name or id,
+        gold = gold,
+        selectedTier = selectedTier and {
+            id = selectedTier.id,
+            tier = selectedTier.id,
+            cost = selectedCost,
+            baseCost = selectedTier.cost,
+            costModified = selectedCost ~= selectedTier.cost,
+            refillTier = selectedTier.refillTier,
+            recoveryAllowed = selectedTier.recoveryAllowed,
+            luxurious = selectedTier.luxurious,
+        } or nil,
+        selectionRequired = selectedTierId == "",
+        tierOptions = tierOptions,
+        marketItemOptions = marketItemOptions,
+        selectedRefillItems = selectedRefillItems,
+        repairItemOptions = repairItemOptions,
+        selectedRepairItems = selectedRepairItems,
+        recoveryPreview = {
+            recoveryAllowed = recoveryAllowed,
+            chargedBondCount = #chargedBonds,
+            bonds = bondOptions,
+            spendOptions = recoverySpendOptions,
+            nextWoundResult = nextRecoveryWoundResult(actor),
+            maledictionExtraBondRecoveryCost = needsExtraBond,
+        },
+        luxuriousHealingPreview = luxuriousHealingPreview,
+        destituteConsequencePreview = selectedTier and selectedTier.id == "destitute" and {
+            condition = "stressed",
+            nextCrawlCondition = "stressed",
+            source = "destitute_upkeep",
+        } or nil,
+        projectedGold = selectedCost and math.max(0, gold - selectedCost) or nil,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getNewAdventurerStartingGearOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.startingGearRequest or opts.gearRequest or opts
+    local actor = request.actor or request.adventurer or request.newAdventurer or
+        opts.actor or opts.adventurer or opts.newAdventurer
+    local itemRequests = normalizeGearRequests(request.items or request.gear or request.startingGear or
+        request.marketItems or opts.items or opts.gear or opts.startingGear or opts.marketItems)
+
+    local talentItemSet = {}
+    for _, entry in ipairs(normalizeList(request.talentItems or request.talentGear or request.requiredTalentItems or
+        opts.talentItems or opts.talentGear or opts.requiredTalentItems)) do
+        local templateId = entry
+        if type(entry) == "table" then
+            templateId = entry.templateId or entry.itemTemplate or entry.itemTemplateId or entry.id or entry[1]
+        end
+        if templateId then
+            talentItemSet[tostring(templateId)] = true
+        end
+    end
+
+    local marketItemOptions = {}
+    for templateId, itemTier in pairs(M.MARKET_TIERS) do
+        local template = item_templates.getTemplate(templateId)
+        if template then
+            local location = (template.isArmor or template.oversized) and inventory.LOCATIONS.BELT or
+                inventory.LOCATIONS.PACK
+            marketItemOptions[#marketItemOptions + 1] = {
+                id = templateId,
+                templateId = templateId,
+                name = template.name or templateId,
+                tier = itemTier,
+                size = template.size or inventory.SIZE.NORMAL,
+                stackable = template.stackable == true,
+                stackSize = template.stackSize,
+                defaultQuantity = template.quantity or 1,
+                defaultLocation = location,
+                canCountAsTalentItem = true,
+            }
+        end
+    end
+    table.sort(marketItemOptions, function(a, b)
+        if a.tier ~= b.tier then
+            return (MARKET_TIER_RANK[a.tier] or 0) < (MARKET_TIER_RANK[b.tier] or 0)
+        end
+        return tostring(a.name or a.templateId) < tostring(b.name or b.templateId)
+    end)
+
+    local tierCounts = {
+        impoverished = 0,
+        common = 0,
+        luxurious = 0,
+    }
+    local selectedItems = {}
+    local plannedItems = {}
+    local selectionError = nil
+    for _, gearRequest in ipairs(itemRequests) do
+        local templateId = gearRequest.templateId and tostring(gearRequest.templateId) or nil
+        local template = templateId and item_templates.getTemplate(templateId) or nil
+        local baseTier = templateId and M.MARKET_TIERS[templateId] or nil
+        local itemTier = baseTier
+        local talentRequired = false
+        if templateId and (
+            gearRequest.forTalent == true or gearRequest.talentRequired == true or
+            gearRequest.requiredForTalent == true or gearRequest.talentItem == true or
+            talentItemSet[templateId] == true
+        ) then
+            itemTier = "impoverished"
+            talentRequired = baseTier ~= "impoverished"
+        end
+
+        local reason = nil
+        local item = nil
+        if not templateId then
+            reason = "Unknown market item"
+        elseif not template then
+            reason = "Unknown market item"
+        elseif not MARKET_TIER_RANK[itemTier] then
+            reason = "Unknown market item"
+        else
+            item = inventory.createItemFromTemplate(templateId, {
+                quantity = gearRequest.quantity,
+            })
+            if not item then
+                reason = "Unknown market item"
+            end
+        end
+
+        local location = gearRequest.location or inventory.LOCATIONS.PACK
+        if item and (item.isArmor or item.oversized) then
+            location = inventory.LOCATIONS.BELT
+        end
+
+        local option = {
+            id = templateId,
+            templateId = templateId,
+            name = item and item.name or template and template.name or gearRequest.name or templateId,
+            item = item,
+            itemId = item and item.id,
+            tier = itemTier,
+            marketTier = baseTier,
+            quantity = gearRequest.quantity,
+            requestedLocation = gearRequest.location,
+            location = location,
+            size = item and item.size or template and template.size or gearRequest.size,
+            stackable = item and item.stackable == true or template and template.stackable == true or nil,
+            stackSize = item and item.stackSize or template and template.stackSize,
+            isArmor = item and item.isArmor == true or template and template.isArmor == true or nil,
+            oversized = item and item.oversized == true or template and template.oversized == true or nil,
+            talentRequired = talentRequired or nil,
+            tierReason = talentRequired and "talent_required_gear" or nil,
+            disabled = reason ~= nil,
+            unavailableReason = reason,
+        }
+        selectedItems[#selectedItems + 1] = option
+        if reason and not selectionError then
+            selectionError = reason
+        elseif item then
+            tierCounts[itemTier] = (tierCounts[itemTier] or 0) + gearRequest.quantity
+            plannedItems[#plannedItems + 1] = {
+                templateId = templateId,
+                tier = itemTier,
+                item = item,
+                quantity = gearRequest.quantity,
+                location = location,
+                talentRequired = talentRequired or nil,
+            }
+        end
+    end
+
+    local previewInventory = nil
+    local usesDefaultInventory = false
+    if actor then
+        if actor.inventory ~= nil and actor.inventory ~= false then
+            previewInventory = actor.inventory
+        else
+            previewInventory = inventory.createInventory()
+            usesDefaultInventory = true
+        end
+    end
+
+    local capacityPreview = {
+        usesDefaultInventory = usesDefaultInventory,
+        availableByLocation = {},
+        requiredByLocation = {},
+        fits = nil,
+    }
+    if previewInventory and previewInventory.availableSlots then
+        for _, location in ipairs({ inventory.LOCATIONS.HANDS, inventory.LOCATIONS.BELT, inventory.LOCATIONS.PACK }) do
+            capacityPreview.availableByLocation[location] = previewInventory:availableSlots(location)
+        end
+        for _, planned in ipairs(plannedItems) do
+            local location = planned.location or inventory.LOCATIONS.PACK
+            local slotsNeeded = planned.item.stackable and 1 or planned.item.size
+            capacityPreview.requiredByLocation[location] =
+                (capacityPreview.requiredByLocation[location] or 0) + slotsNeeded
+        end
+    end
+
+    local requireComplete = firstProvided(request.requireComplete, opts.requireComplete)
+    requireComplete = requireComplete ~= false
+    local disabled = false
+    local unavailableReason = nil
+    if not actor then
+        disabled = true
+        unavailableReason = "New adventurer required"
+    elseif not previewInventory or not previewInventory.addItem then
+        disabled = true
+        unavailableReason = "No inventory for starting gear"
+    elseif #itemRequests == 0 then
+        disabled = true
+        unavailableReason = "Starting gear required"
+    elseif selectionError then
+        disabled = true
+        unavailableReason = selectionError
+    elseif tierCounts.luxurious > 1 then
+        disabled = true
+        unavailableReason = "Starting gear allows one luxurious item"
+    elseif tierCounts.common > 5 then
+        disabled = true
+        unavailableReason = "Starting gear allows five common items"
+    elseif requireComplete and tierCounts.luxurious ~= 1 then
+        disabled = true
+        unavailableReason = "Starting gear requires one luxurious item"
+    elseif requireComplete and tierCounts.common ~= 5 then
+        disabled = true
+        unavailableReason = "Starting gear requires five common items"
+    else
+        local canAdd, reason = canAddPlannedItemsToInventory(previewInventory, plannedItems)
+        if not canAdd then
+            disabled = true
+            unavailableReason = reason
+        end
+    end
+    capacityPreview.fits = not disabled or unavailableReason ~= "invalid_location" and
+        unavailableReason ~= "oversized_belt_only" and unavailableReason ~= "armor_belt_only" and
+        unavailableReason ~= "insufficient_slots"
+    capacityPreview.unavailableReason = capacityPreview.fits and nil or unavailableReason
+
+    return {
+        actor = actor,
+        actorId = actorId(actor),
+        actorName = actor and actor.name,
+        rulebookChecklist = {
+            luxurious = 1,
+            common = 5,
+            impoverished = "unlimited",
+            talentItemsCountAs = "impoverished",
+        },
+        requiredLuxurious = 1,
+        requiredCommon = 5,
+        allowedCommon = 5,
+        unlimitedImpoverished = true,
+        requireComplete = requireComplete,
+        selectionRequired = #itemRequests == 0,
+        marketItemOptions = marketItemOptions,
+        selectedItems = selectedItems,
+        items = selectedItems,
+        plannedItems = plannedItems,
+        tierCounts = tierCounts,
+        counts = tierCounts,
+        complete = tierCounts.luxurious == 1 and tierCounts.common == 5,
+        capacityPreview = capacityPreview,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+        resultPreview = not disabled and "starting_gear_selected" or nil,
+    }
+end
+
+function M.getDistrictActionOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.districtActionRequest or opts
+    local actor = request.actor or request.adventurer or opts.actor or opts.adventurer
+    local actorKey = actorId(actor)
+    local actionsCompleted = opts.actionsCompleted or request.actionsCompleted or {}
+    local effects = opts.cityEventEffects or request.cityEventEffects or opts.effects or request.effects or {}
+    local cityState = opts.cityState or request.cityState or {}
+    local ignoreActorGates = opts.ignoreActorGates == true or request.ignoreActorGates == true
+    local actionSource = request.districtActions or request.specialCityActions or opts.districtActions or
+        opts.specialCityActions or request.cityLayout and request.cityLayout.specialCityActions or
+        opts.cityLayout and opts.cityLayout.specialCityActions or {}
+    local selectedActionId = request.districtAction or request.districtActionId or
+        request.specialCityAction or request.specialCityActionId or request.action or request.actionId or
+        request.type or request.id
+    if selectedActionId ~= nil then
+        selectedActionId = tostring(selectedActionId)
+        if selectedActionId == "" then
+            selectedActionId = nil
+        end
+    end
+
+    local options = {}
+    local optionsByDistrictActionId = {}
+    local selectedAction = nil
+    local availableCount = 0
+    local implementedCount = 0
+
+    local function addOption(key, entry)
+        local actionEntry = type(entry) == "table" and entry.action or entry
+        local districtActionId = nil
+        if type(actionEntry) == "table" then
+            districtActionId = actionEntry.id or actionEntry.action or actionEntry.type
+        else
+            districtActionId = actionEntry
+        end
+        if not districtActionId and type(entry) == "table" then
+            districtActionId = entry.districtAction or entry.districtActionId or entry.specialCityAction or
+                entry.id or key
+        end
+        districtActionId = districtActionId and tostring(districtActionId) or nil
+
+        local actionId = districtActionAlias(districtActionId)
+        local districtId = type(entry) == "table" and
+            (entry.districtId or entry.district_id or entry.district and entry.district.id) or nil
+        local districtName = type(entry) == "table" and
+            (entry.districtName or entry.district_name or entry.district and entry.district.name) or nil
+        local actionName = type(actionEntry) == "table" and actionEntry.name or districtActionId
+        local blockedDistricts = effects.blockedDistrictIds or {}
+        local blockedDistrictActions = effects.blockedDistrictActions or {}
+        local disabled = false
+        local unavailableReason = nil
+        local cityActionAllowed = true
+        local cityActionUnavailableReason = nil
+        local districtBlocked = type(entry) == "table" and entry.blockedByCityEvent == true or false
+        if districtId and blockedDistricts[districtId] then
+            districtBlocked = true
+        end
+        if districtActionId and blockedDistrictActions[districtActionId] then
+            districtBlocked = true
+        end
+        if actionId and blockedDistrictActions[actionId] then
+            districtBlocked = true
+        end
+
+        if districtBlocked then
+            disabled = true
+            unavailableReason = "District City Action blocked by City Event"
+        elseif not actionId then
+            disabled = true
+            unavailableReason = "District City Action not implemented"
+        else
+            implementedCount = implementedCount + 1
+            local blocked = effects.blockedCityActions
+            if blocked == "all" then
+                cityActionAllowed = false
+                cityActionUnavailableReason = "City Actions blocked by City Event"
+            elseif cityState.cityActionsBlockedByUndead and
+               (type(cityState.undeadPlague) ~= "table" or cityState.undeadPlague.active ~= false) then
+                cityActionAllowed = false
+                cityActionUnavailableReason = "City Actions blocked by undead plague"
+            elseif effects.allowedCityActions and not effects.allowedCityActions[actionId] then
+                cityActionAllowed = false
+                cityActionUnavailableReason = "City Action not available during this City Event"
+            elseif type(blocked) == "table" and blocked[actionId] then
+                cityActionAllowed = false
+                cityActionUnavailableReason = "City Action blocked by City Event"
+            end
+            if not cityActionAllowed then
+                disabled = true
+                unavailableReason = cityActionUnavailableReason
+            elseif not ignoreActorGates then
+                if not isActiveAdventurer(actor) then
+                    disabled = true
+                    unavailableReason = "No active adventurer"
+                elseif actorKey and actionsCompleted[actorKey] then
+                    disabled = true
+                    unavailableReason = "City Action already taken"
+                end
+            end
+        end
+
+        local option = {
+            key = key,
+            id = districtActionId,
+            districtActionId = districtActionId,
+            actionId = actionId,
+            canonicalAction = actionId,
+            name = actionName,
+            label = actionName,
+            summary = type(actionEntry) == "table" and actionEntry.summary or nil,
+            mechanics = type(actionEntry) == "table" and M.copyCityPhaseMetadata(actionEntry.mechanics) or {},
+            action = type(actionEntry) == "table" and M.copyCityPhaseMetadata(actionEntry) or {
+                id = districtActionId,
+                name = actionName,
+            },
+            districtId = districtId,
+            districtName = districtName,
+            district = type(entry) == "table" and M.copyCityPhaseMetadata(entry.district) or nil,
+            source = type(entry) == "table" and M.copyCityPhaseMetadata(entry) or nil,
+            implemented = actionId ~= nil,
+            cityActionAllowed = cityActionAllowed,
+            cityActionUnavailableReason = cityActionUnavailableReason,
+            blockedByCityEvent = districtBlocked,
+            selected = selectedActionId ~= nil and districtActionId == selectedActionId,
+            disabled = disabled,
+            unavailableReason = unavailableReason,
+            resultPreview = not disabled and "district_action_ready" or nil,
+        }
+        options[#options + 1] = option
+        if districtActionId then
+            optionsByDistrictActionId[districtActionId] = option
+        end
+        if option.selected then
+            selectedAction = option
+        end
+        if not disabled then
+            availableCount = availableCount + 1
+        end
+    end
+
+    for key, entry in ipairs(actionSource) do
+        addOption(key, entry)
+    end
+    for key, entry in pairs(actionSource) do
+        if type(key) ~= "number" then
+            addOption(key, entry)
+        end
+    end
+
+    if selectedActionId and not selectedAction then
+        selectedAction = {
+            id = selectedActionId,
+            districtActionId = selectedActionId,
+            actionId = districtActionAlias(selectedActionId),
+            selected = true,
+            disabled = true,
+            unavailableReason = "District City Action unavailable",
+        }
+    end
+
+    return {
+        actor = actor,
+        actorId = actorKey,
+        actorName = actor and actor.name,
+        districtActions = options,
+        actions = options,
+        actionsByDistrictActionId = optionsByDistrictActionId,
+        selectedAction = selectedAction,
+        selectedActionId = selectedActionId,
+        selectionRequired = selectedActionId == nil,
+        totalCount = #options,
+        availableCount = availableCount,
+        implementedCount = implementedCount,
+        cityEventRestrictions = {
+            allowedCityActions = M.copyCityPhaseMetadata(effects.allowedCityActions),
+            blockedCityActions = M.copyCityPhaseMetadata(effects.blockedCityActions),
+            blockedDistrictIds = M.copyCityPhaseMetadata(effects.blockedDistrictIds),
+            blockedDistrictActions = M.copyCityPhaseMetadata(effects.blockedDistrictActions),
+            cityActionsBlockedByUndead = cityState.cityActionsBlockedByUndead == true,
+            undeadPlague = M.copyCityPhaseMetadata(cityState.undeadPlague),
+        },
+        disabled = selectedAction ~= nil and selectedAction.disabled or false,
+        unavailableReason = selectedAction and selectedAction.unavailableReason or nil,
+        resultPreview = selectedAction and selectedAction.resultPreview or nil,
+    }
+end
+
 local function actorIsDestitute(controller, actor, request)
     if request and request.destitute ~= nil then
         return request.destitute == true
@@ -1796,6 +5760,382 @@ local function findFuneralRecord(funerals, request)
     end
 
     return nil
+end
+
+local function actorsMatch(a, b)
+    local aId = actorId(a)
+    local bId = actorId(b)
+    if aId and bId then
+        return aId == bId
+    end
+    return a == b
+end
+
+local function addActorToList(list, actor)
+    if type(list) ~= "table" or not actor then
+        return false
+    end
+    for _, entry in ipairs(list) do
+        if actorsMatch(entry, actor) then
+            return false
+        end
+    end
+    list[#list + 1] = actor
+    return true
+end
+
+local function removeActorFromList(list, actor)
+    if type(list) ~= "table" or not actor then
+        return false
+    end
+    for index = #list, 1, -1 do
+        if actorsMatch(list[index], actor) then
+            table.remove(list, index)
+            return true
+        end
+    end
+    return false
+end
+
+local function getRosterAdventurers(roster)
+    if type(roster) ~= "table" then
+        return nil
+    end
+    if type(roster.adventurers) == "table" then
+        return roster.adventurers
+    end
+    if type(roster.members) == "table" then
+        roster.adventurers = roster.members
+        return roster.adventurers
+    end
+    roster.adventurers = {}
+    return roster.adventurers
+end
+
+function M.discoveryRumorKey(discovery)
+    if type(discovery) == "table" then
+        return discovery.id or discovery.key or discovery.roomId or discovery.room_id or discovery.featureId or
+            discovery.feature_id or discovery.connectionId or discovery.connection_id or discovery.text or
+            discovery.summary or discovery.description or discovery.name
+    end
+    return discovery
+end
+
+function M.isWithheldFromRumorMill(discovery)
+    if type(discovery) ~= "table" then
+        return false
+    end
+    return discovery.keptSecret == true or discovery.keepSecret == true or discovery.withheld == true or
+        discovery.withheldFromRumorMill == true or discovery.private == true or
+        discovery.rumorMill == false or discovery.commonKnowledge == false or discovery.public == false
+end
+
+function M.appendRumorMillDiscovery(discoveries, seen, discovery)
+    if not discovery or M.isWithheldFromRumorMill(discovery) then
+        return false
+    end
+    if type(discovery) == "table" and discovery.rumorMillDiscoverable == false then
+        return false
+    end
+
+    local key = M.discoveryRumorKey(discovery)
+    if key then
+        key = tostring(key)
+        if seen[key] then
+            return false
+        end
+        seen[key] = true
+    end
+
+    discoveries[#discoveries + 1] = shallowClone(discovery)
+    return true
+end
+
+function M.collectRumorMillDiscoveries(roster, opts)
+    opts = opts or {}
+    local discoveries = {}
+    local seen = {}
+
+    local function ingest(source)
+        if type(source) ~= "table" then
+            M.appendRumorMillDiscovery(discoveries, seen, source)
+            return
+        end
+        for key, entry in pairs(source) do
+            if type(key) == "number" then
+                M.appendRumorMillDiscovery(discoveries, seen, entry)
+            elseif type(entry) == "table" then
+                local record = shallowClone(entry)
+                record.id = record.id or key
+                M.appendRumorMillDiscovery(discoveries, seen, record)
+            elseif entry == true then
+                M.appendRumorMillDiscovery(discoveries, seen, {
+                    id = key,
+                    text = key,
+                })
+            elseif entry then
+                M.appendRumorMillDiscovery(discoveries, seen, {
+                    id = key,
+                    text = entry,
+                })
+            end
+        end
+    end
+
+    local sources = {}
+    local function addSource(source)
+        if source ~= nil then
+            sources[#sources + 1] = source
+        end
+    end
+
+    addSource(opts.rumorMill)
+    addSource(opts.rumorMillDiscoveries)
+    addSource(opts.discoveries)
+    addSource(opts.knownDiscoveries)
+    if type(roster) == "table" then
+        addSource(roster.rumorMill)
+        addSource(roster.rumorMillDiscoveries)
+        addSource(roster.commonKnowledge)
+        addSource(roster.knownDiscoveries)
+        addSource(roster.discoveries)
+        addSource(roster.underworldDiscoveries)
+        addSource(roster.mapDiscoveries)
+    end
+
+    for _, source in ipairs(sources) do
+        ingest(source)
+    end
+
+    return discoveries
+end
+
+local function appendRosterRecords(roster, key, records)
+    if type(roster) ~= "table" or type(key) ~= "string" or key == "" then
+        return {}
+    end
+    local added = {}
+    local list = roster[key]
+    if type(list) ~= "table" then
+        list = {}
+        roster[key] = list
+    end
+
+    local function append(record)
+        local copy = shallowClone(record)
+        list[#list + 1] = copy
+        added[#added + 1] = copy
+    end
+
+    if type(records) == "table" then
+        if records.id or records.name or records.title or records.description then
+            append(records)
+        else
+            for _, record in ipairs(records) do
+                append(record)
+            end
+        end
+    elseif records ~= nil then
+        append({ name = tostring(records) })
+    end
+
+    return added
+end
+
+local function mergeSupportState(target, source)
+    if type(target) ~= "table" or type(source) ~= "table" then
+        return {}
+    end
+
+    local changed = {}
+    for key, value in pairs(source) do
+        if type(value) == "table" and type(target[key]) == "table" and not value[1] then
+            changed[key] = mergeSupportState(target[key], value)
+        else
+            target[key] = shallowClone(value)
+            changed[key] = shallowClone(value)
+        end
+    end
+    return changed
+end
+
+local function normalizeSupportCompletionEffects(project, request)
+    local effects = request.completionEffects or request.completion or request.effects or request.outcomeEffects or
+        project.completionEffects or project.completion or project.effects
+    if type(effects) ~= "table" then
+        effects = {}
+    else
+        effects = shallowClone(effects)
+    end
+
+    local outcome = request.outcome or request.outcomeDescription or request.resultDescription or request.resultNote or
+        effects.outcome or effects.description or effects.note or project.outcome
+    if outcome and not effects.outcome then
+        effects.outcome = outcome
+    end
+    return effects
+end
+
+local function normalizeSupportComplexity(request)
+    local complexity = tonumber(request.complexity or request.stepsRequired or request.totalSteps)
+    if not complexity then
+        return nil, "Project complexity required"
+    end
+    if complexity ~= math.floor(complexity) then
+        return nil, "Project complexity must be a whole number"
+    end
+    if complexity < 2 or complexity > 8 then
+        return nil, "Project complexity must be 2-8"
+    end
+    return complexity
+end
+
+function M.classifySupportContributionImpact(amount)
+    local gold = math.floor(tonumber(amount) or 0)
+    for _, band in ipairs(M.SUPPORT_CONTRIBUTION_IMPACTS) do
+        if gold >= band.minimumGold then
+            return {
+                id = band.id,
+                label = band.label,
+                minimumGold = band.minimumGold,
+                gold = gold,
+            }
+        end
+    end
+
+    return {
+        id = "below_small",
+        label = "below small impact",
+        minimumGold = 1,
+        gold = gold,
+    }
+end
+
+local function applySupportCompletionEffects(controller, project, actor, request)
+    local effects = normalizeSupportCompletionEffects(project, request)
+    local detail = {
+        actor = actor,
+        projectId = project.id,
+        outcome = effects.outcome,
+        cityStateUpdates = {},
+        cityStateFlags = {},
+        rosterUpdates = {},
+        projectFlags = {},
+    }
+
+    if effects.outcome then
+        project.outcome = effects.outcome
+    end
+
+    local stateUpdates = effects.cityState or effects.worldState or effects.state
+    if type(stateUpdates) == "table" then
+        detail.cityStateUpdates = mergeSupportState(controller.cityState, stateUpdates)
+    end
+
+    local flags = normalizeList(effects.flags or effects.cityStateFlags or effects.worldFlags)
+    if #flags > 0 then
+        controller.cityState.flags = controller.cityState.flags or {}
+        for _, flag in ipairs(flags) do
+            local key = tostring(flag or "")
+            if key ~= "" then
+                controller.cityState.flags[key] = true
+                detail.cityStateFlags[#detail.cityStateFlags + 1] = key
+            end
+        end
+    end
+
+    local projectFlags = normalizeList(effects.projectFlags)
+    if #projectFlags > 0 then
+        project.flags = project.flags or {}
+        for _, flag in ipairs(projectFlags) do
+            local key = tostring(flag or "")
+            if key ~= "" then
+                project.flags[key] = true
+                detail.projectFlags[#detail.projectFlags + 1] = key
+            end
+        end
+    end
+
+    local rosterEffects = effects.guildRoster or effects.roster
+    if type(rosterEffects) == "table" then
+        for key, records in pairs(rosterEffects) do
+            local added = appendRosterRecords(controller.guildRoster, key, records)
+            if #added > 0 then
+                detail.rosterUpdates[key] = added
+            end
+        end
+    end
+
+    project.completedBy = actor
+    project.completedById = actorId(actor)
+    project.completionEffects = effects
+    project.completionDetail = detail
+    project.completionEffectsApplied = true
+    return detail
+end
+
+local function applyRestockStateUpdates(controller, mapUpdates, factionUpdates)
+    local state = controller.underworldState or controller.cityState.underworldState or {}
+    controller.underworldState = state
+    controller.cityState.underworldState = state
+    state.rooms = state.rooms or {}
+    state.factions = state.factions or {}
+
+    local detail = {
+        mapStateUpdates = {},
+        factionStateUpdates = {},
+    }
+
+    for _, update in ipairs(mapUpdates or {}) do
+        if type(update) == "table" then
+            local roomId = update.roomId or update.room or update.locationId or update.id
+            if roomId then
+                roomId = tostring(roomId)
+                local roomState = state.rooms[roomId] or {}
+                state.rooms[roomId] = roomState
+                roomState.history = roomState.history or {}
+                roomState.history[#roomState.history + 1] = shallowClone(update)
+                mergeSupportState(roomState, update)
+                detail.mapStateUpdates[#detail.mapStateUpdates + 1] = {
+                    roomId = roomId,
+                    state = roomState,
+                    update = shallowClone(update),
+                }
+            end
+        end
+    end
+
+    for _, update in ipairs(factionUpdates or {}) do
+        if type(update) == "table" then
+            local factionId = update.factionId or update.faction or update.id or update.name
+            if factionId then
+                factionId = slugify(factionId)
+                local factionState = state.factions[factionId] or {}
+                state.factions[factionId] = factionState
+                factionState.id = factionState.id or factionId
+                factionState.history = factionState.history or {}
+                factionState.history[#factionState.history + 1] = shallowClone(update)
+                mergeSupportState(factionState, update)
+
+                local strengthDelta = tonumber(update.strengthDelta or update.powerDelta or update.influenceDelta)
+                if strengthDelta then
+                    factionState.strength = (tonumber(factionState.strength) or 0) + strengthDelta
+                end
+                local heatDelta = tonumber(update.heatDelta or update.alertDelta or update.threatDelta)
+                if heatDelta then
+                    factionState.heat = (tonumber(factionState.heat) or 0) + heatDelta
+                end
+
+                detail.factionStateUpdates[#detail.factionStateUpdates + 1] = {
+                    factionId = factionId,
+                    state = factionState,
+                    update = shallowClone(update),
+                }
+            end
+        end
+    end
+
+    return detail
 end
 
 local function removeCurseFromList(curses, curseId)
@@ -2123,6 +6463,173 @@ local function resolveHangoverOutcome(actor, hangover, minorDiscard)
     return outcome
 end
 
+local function carouseFactionState(cityState, factionId)
+    if not cityState or not factionId then
+        return nil
+    end
+    local id = slugify(factionId)
+    cityState.factions = cityState.factions or {}
+    local faction = cityState.factions[id] or {}
+    cityState.factions[id] = faction
+    faction.id = faction.id or id
+    faction.history = faction.history or {}
+    return faction, id
+end
+
+local function applyCarouseFactionHeat(cityState, record)
+    if not record.factionId or not record.heatDelta then
+        return
+    end
+    local faction = carouseFactionState(cityState, record.factionId)
+    if not faction then
+        return
+    end
+    faction.heat = (tonumber(faction.heat) or 0) + record.heatDelta
+    faction.history[#faction.history + 1] = {
+        source = "carouse",
+        type = record.type,
+        actorId = record.actorId,
+        hangoverId = record.hangoverId,
+        heatDelta = record.heatDelta,
+        notes = record.notes,
+    }
+end
+
+local function carouseConsequenceDrafts(outcome)
+    if not outcome or outcome.applied == false then
+        return {}
+    end
+
+    local id = outcome.id
+    if id == "stocks" then
+        return {
+            { type = "public_humiliation", category = "social", legalHeatDelta = 1, notes = "left in the stocks" },
+        }
+    elseif id == "cowbell" then
+        return {
+            { type = "noisy_reputation", category = "social", stealthDisfavor = true, notes = "cowbell chain" },
+        }
+    elseif id == "marriage_ring" then
+        return {
+            { type = "unknown_spouse", category = "social", relationshipHook = true },
+        }
+    elseif id == "angry_creditors" then
+        return {
+            { type = "angry_creditors", category = "social", factionId = "creditors", heatDelta = 1 },
+        }
+    elseif id == "high_priest" then
+        return {
+            {
+                type = "clergy_scandal",
+                category = "social",
+                factionId = "temple_authorities",
+                heatDelta = 1,
+                figure = outcome.figure,
+            },
+        }
+    elseif id == "tavern_ban" then
+        return {
+            { type = "tavern_ban", category = "social", venue = "favorite_tavern" },
+        }
+    elseif id == "wanted_poster" then
+        return {
+            {
+                type = "wanted_poster",
+                category = "social",
+                factionId = "all_watch",
+                heatDelta = 2,
+                legalHeatDelta = 2,
+                charge = outcome.charge,
+            },
+        }
+    elseif id == "soul_invoice" then
+        return {
+            { type = "infernal_contract", category = "world", factionId = "infernal_powers", heatDelta = 1 },
+        }
+    elseif id == "hogtied_noble" then
+        return {
+            { type = "noble_scandal", category = "social", factionId = "nobility", heatDelta = 1 },
+        }
+    elseif id == "broken_shop" then
+        return {
+            { type = "merchant_restitution", category = "social", factionId = "merchants", heatDelta = 1 },
+        }
+    elseif id == "candle_fire" then
+        return {
+            {
+                type = "district_fire",
+                category = "world",
+                districtsBurned = outcome.districtsBurned,
+                fireSpirit = outcome.fireSpirit,
+                factionId = outcome.fireSpirit and "sorcerers" or nil,
+                heatDelta = outcome.fireSpirit and 1 or nil,
+            },
+        }
+    elseif id == "dark_pact" then
+        return {
+            { type = "dark_pact_obligation", category = "world", factionId = "dark_pact_cult", heatDelta = 1 },
+        }
+    elseif id == "missing_hand" then
+        return {
+            { type = "crawling_missing_hand", category = "world", bodyHorror = true },
+        }
+    elseif id == "puncture_marks" then
+        return {
+            { type = "blood_attention", category = "world", factionId = "blood_drinkers", heatDelta = 1 },
+        }
+    end
+
+    return {}
+end
+
+local function recordCarouseConsequences(controller, actor, hangover, outcome, opts)
+    opts = opts or {}
+    local cityState = opts.cityState or opts.worldState or controller.cityState
+    local drafts = carouseConsequenceDrafts(outcome)
+    local records = {}
+    if #drafts == 0 then
+        return records
+    end
+
+    cityState.carouseConsequences = cityState.carouseConsequences or {}
+    cityState.socialConsequences = cityState.socialConsequences or {}
+    cityState.worldConsequences = cityState.worldConsequences or {}
+    actor.carouseConsequences = actor.carouseConsequences or {}
+
+    for _, draft in ipairs(drafts) do
+        local record = shallowClone(draft)
+        record.source = "carouse"
+        record.actorId = actorId(actor)
+        record.actorName = actor and actor.name
+        record.hangoverId = outcome.id
+        record.hangoverTitle = outcome.title or (hangover and hangover.title)
+        record.result = "carouse_consequence_recorded"
+
+        cityState.carouseConsequences[#cityState.carouseConsequences + 1] = record
+        actor.carouseConsequences[#actor.carouseConsequences + 1] = record
+        if record.category == "social" then
+            cityState.socialConsequences[#cityState.socialConsequences + 1] = record
+        end
+        if record.category == "world" then
+            cityState.worldConsequences[#cityState.worldConsequences + 1] = record
+        end
+        if record.legalHeatDelta then
+            cityState.legalHeat = (tonumber(cityState.legalHeat) or 0) + record.legalHeatDelta
+        end
+        if record.type == "district_fire" then
+            cityState.carouseDistrictsBurned = (tonumber(cityState.carouseDistrictsBurned) or 0) +
+                math.max(0, math.floor(tonumber(record.districtsBurned) or 0))
+            if record.fireSpirit then
+                cityState.roamingFireSpirit = true
+            end
+        end
+        applyCarouseFactionHeat(cityState, record)
+        records[#records + 1] = record
+    end
+
+    return records
+end
+
 local function shallowCopy(value)
     local copy = {}
     for k, v in pairs(value or {}) do
@@ -2140,6 +6647,8 @@ local function cityCampActionContext(controller, actionData)
     context.eventBus = context.eventBus or controller.eventBus
     context.guild = context.guild or controller.guild
     context.actionsCompleted = context.actionsCompleted or controller.actionsCompleted
+    context.cityAction = true
+    context.cityPhase = true
     return context
 end
 
@@ -2176,9 +6685,13 @@ local function estimateSyllables(description)
 end
 
 local function resolveSyllables(request)
-    local syllables = tonumber(request.syllables or request.syllableCount)
+    local rawSyllables = request.syllables or request.syllableCount
+    local syllables = tonumber(rawSyllables)
     if syllables then
-        return math.max(0, math.floor(syllables))
+        if syllables ~= math.floor(syllables) then
+            return nil, "Syllable count must be a whole number"
+        end
+        return math.max(0, syllables)
     end
     return estimateSyllables(request.description or request.name or request.title)
 end
@@ -2216,8 +6729,68 @@ local function resolveComponentTemplateId(ref)
     return nil
 end
 
+function M.getPrepareComponentOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local availablePackSlots = nil
+    if actor and actor.inventory and actor.inventory.availableSlots then
+        availablePackSlots = actor.inventory:availableSlots(inventory.LOCATIONS.PACK)
+    end
+
+    local options = {}
+    for _, spell in ipairs(spell_registry.listSpells()) do
+        local componentId = spell.componentId
+        local template = componentId and item_templates.getTemplate(componentId)
+        local props = template and template.properties or {}
+        if componentId and template and props.spellComponent == true then
+            local size = template.stackable and 1 or template.size or 1
+            local option = {
+                id = componentId,
+                componentId = componentId,
+                componentName = template.name or componentId,
+                spellId = spell.id,
+                spellName = spell.name or spell.id,
+                branch = spell.branch or props.branch,
+                talent = spell.talent,
+                targetMode = spell.targetMode,
+                componentAction = spell.effect and spell.effect.componentAction or nil,
+                slots = size,
+                label = (spell.name or spell.id) .. " - " .. (template.name or componentId),
+            }
+            if availablePackSlots ~= nil and availablePackSlots < size then
+                option.disabled = true
+                option.unavailableReason = "insufficient_pack_slots"
+            end
+            options[#options + 1] = option
+        end
+    end
+
+    table.sort(options, function(a, b)
+        local aBranch = tostring(a.branch or "")
+        local bBranch = tostring(b.branch or "")
+        if aBranch ~= bBranch then
+            return aBranch < bBranch
+        end
+        return tostring(a.spellName or a.spellId) < tostring(b.spellName or b.spellId)
+    end)
+
+    return options
+end
+
 local function normalizeTalentId(talentId)
     return talent_catalog.normalizeId(talentId)
+end
+
+local function requestedTrainingXP(request)
+    local rawAmount = request.xp or request.amount or request.xpInvested
+    local xpAmount = tonumber(rawAmount)
+    if not xpAmount then
+        xpAmount = 1
+    end
+    if xpAmount < 1 or xpAmount ~= math.floor(xpAmount) then
+        return nil, "Training XP must be a positive whole number"
+    end
+    return xpAmount
 end
 
 local function getTalentEntry(actor, talentId)
@@ -2238,6 +6811,107 @@ local function getTalentEntry(actor, talentId)
     return nil, nil
 end
 
+function M.formatTalentLabel(talentId)
+    local text = tostring(talentId or "Talent"):gsub("_", " ")
+    return text:gsub("(%a)([%w']*)", function(first, rest)
+        return first:upper() .. rest:lower()
+    end)
+end
+
+function M.getCityTrainingOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local gold = actor and currency.getGold(actor) or 0
+    local costPerXP = M.TRAINING_COST_PER_XP
+    local maxAffordableXP = math.floor(gold / costPerXP)
+    local actorPath = talent_catalog.getActorPath(actor)
+    local paths = { "swords", "pentacles", "cups", "wands" }
+    local unavailableExperts = opts.unavailableExperts or opts.unavailableTalents or {}
+    local availableExperts = opts.availableExperts or opts.trainersAvailable
+    if type(unavailableExperts) ~= "table" then
+        unavailableExperts = {}
+    end
+
+    local function hasExpert(talentId, path)
+        if opts.trainerAvailable == false then
+            return false
+        end
+        if unavailableExperts[talentId] == true or unavailableExperts[path] == true then
+            return false
+        end
+        if type(availableExperts) == "table" and
+           (availableExperts[talentId] == false or availableExperts[path] == false) then
+            return false
+        end
+        return true
+    end
+
+    local options = {}
+    for _, path in ipairs(paths) do
+        for _, talentId in ipairs(talent_catalog.PATH_TALENTS[path] or {}) do
+            local normalizedTalentId = normalizeTalentId(talentId)
+            local existingTalent = getTalentEntry(actor, normalizedTalentId)
+            local currentXP = type(existingTalent) == "table" and
+                math.max(0, math.floor(tonumber(existingTalent.xp_invested) or 0)) or 0
+            local mastered = type(existingTalent) == "table" and existingTalent.mastered == true
+            local expertAvailable = hasExpert(normalizedTalentId, path)
+            local trainingOk, training = talent_catalog.validateTraining(actor, normalizedTalentId, {
+                cityExpert = true,
+                trainerAvailable = expertAvailable,
+            })
+            training = training or {}
+            local xpNeeded = mastered and 0 or math.max(1, 7 - currentXP)
+            local maxInvestableXP = mastered and 0 or math.min(maxAffordableXP, xpNeeded)
+            local xpOptions = {}
+            for xp = 1, maxInvestableXP do
+                xpOptions[#xpOptions + 1] = {
+                    xp = xp,
+                    cost = xp * costPerXP,
+                    totalXPInvested = currentXP + xp,
+                    mastersTalent = currentXP + xp >= 7,
+                }
+            end
+
+            local disabled = false
+            local unavailableReason = nil
+            if not trainingOk then
+                disabled = true
+                unavailableReason = training.reason
+            elseif mastered then
+                disabled = true
+                unavailableReason = "Talent already mastered"
+            elseif maxAffordableXP < 1 then
+                disabled = true
+                unavailableReason = "Not enough gold"
+            end
+
+            options[#options + 1] = {
+                id = normalizedTalentId,
+                talentId = normalizedTalentId,
+                talentName = M.formatTalentLabel(normalizedTalentId),
+                label = M.formatTalentLabel(normalizedTalentId),
+                path = path,
+                actorPath = actorPath ~= "" and actorPath or nil,
+                ownPath = training.ownPath == true,
+                mentored = training.mentored == true,
+                cityExpert = training.mentored == true,
+                trainerAvailable = expertAvailable,
+                currentXP = currentXP,
+                xpNeededForMastery = xpNeeded,
+                costPerXP = costPerXP,
+                maxAffordableXP = maxAffordableXP,
+                maxInvestableXP = maxInvestableXP,
+                xpOptions = xpOptions,
+                mastered = mastered,
+                disabled = disabled,
+                unavailableReason = unavailableReason,
+            }
+        end
+    end
+
+    return options
+end
+
 local function hasUsableTalent(actor, talentId)
     local talent = getTalentEntry(actor, talentId)
     if type(talent) == "table" then
@@ -2246,8 +6920,1819 @@ local function hasUsableTalent(actor, talentId)
     return talent == true
 end
 
+function M.getGoblinHordeOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.horde or opts
+    local actor = opts.actor or request.actor
+    local active = isActiveAdventurer(actor)
+    local currentXP = math.max(0, tonumber(actor and actor.xp) or 0)
+    local currentWholeXP = math.floor(currentXP)
+    local maxGoblins = 8
+    local baseGoblinRecruitment = 2
+    local horde = nil
+    for _, companion in ipairs(actor and actor.animalCompanions or {}) do
+        if type(companion) == "table" and companion.goblinHorde == true then
+            horde = companion
+            break
+        end
+    end
+
+    local existingCount = math.max(0, math.floor(tonumber(horde and (horde.goblinCount or horde.count)) or 0))
+    local available = math.max(0, maxGoblins - existingCount)
+    local hasJarl = hasUsableTalent(actor, "jarl")
+    local alreadyActed = false
+    if type(opts.actionsCompleted) == "table" then
+        alreadyActed = opts.actionsCompleted[actorId(actor)] ~= nil
+    end
+
+    local selectedXP = firstProvided(request.xp, request.xpSpent, request.amount)
+    local selectedProvided = selectedXP ~= nil
+    selectedXP = tonumber(selectedXP)
+    local function recruitmentPreview(xpSpend)
+        local requested = baseGoblinRecruitment + xpSpend
+        local recruited = math.min(requested, available)
+        return {
+            xp = xpSpend,
+            xpSpent = xpSpend,
+            xpAfter = currentXP - xpSpend,
+            requestedGoblins = requested,
+            recruited = recruited,
+            projectedGoblinCount = existingCount + recruited,
+            projectedPorterSlots = existingCount + recruited,
+            capped = recruited < requested,
+            disabled = not active or not hasJarl or alreadyActed or available <= 0 or currentXP < xpSpend,
+            unavailableReason = not active and "No active adventurer" or
+                (not hasJarl and "Requires Jarl talent") or
+                (alreadyActed and "City Action already taken") or
+                (available <= 0 and "Goblin horde at capacity") or
+                (currentXP < xpSpend and "Not enough XP") or nil,
+        }
+    end
+
+    local xpOptions = {}
+    for xp = 0, currentWholeXP do
+        xpOptions[#xpOptions + 1] = recruitmentPreview(xp)
+    end
+
+    local selectedPreview = nil
+    local disabled = not active or not hasJarl or alreadyActed or available <= 0
+    local unavailableReason = not active and "No active adventurer" or
+        (not hasJarl and "Requires Jarl talent") or
+        (alreadyActed and "City Action already taken") or
+        (available <= 0 and "Goblin horde at capacity") or nil
+    if selectedProvided then
+        if selectedXP == nil then
+            disabled = true
+            unavailableReason = "Jarl XP must be a whole number"
+        elseif selectedXP < 0 then
+            disabled = true
+            unavailableReason = "XP spend cannot be negative"
+        elseif selectedXP ~= math.floor(selectedXP) then
+            disabled = true
+            unavailableReason = "Jarl XP must be a whole number"
+        elseif currentXP < selectedXP then
+            disabled = true
+            unavailableReason = "Not enough XP"
+        else
+            selectedPreview = recruitmentPreview(selectedXP)
+            if selectedPreview.disabled then
+                disabled = true
+                unavailableReason = selectedPreview.unavailableReason
+            end
+        end
+    end
+
+    return {
+        action = M.ACTIONS.ASSEMBLE_GOBLIN_HORDE,
+        actor = actor,
+        actorId = actorId(actor),
+        actorName = actor and actor.name,
+        active = active,
+        hasJarl = hasJarl,
+        alreadyActed = alreadyActed,
+        currentXP = currentXP,
+        maxSpendableXP = currentWholeXP,
+        existingHorde = horde,
+        existingGoblinCount = existingCount,
+        maxGoblins = maxGoblins,
+        availableGoblinSlots = available,
+        baseGoblinRecruitment = baseGoblinRecruitment,
+        countsAsAnimalCompanion = true,
+        countsAsOneCreature = true,
+        suppliesOwnFood = true,
+        oneWordCommandsOnly = true,
+        porterSlotsPerGoblin = 1,
+        xpOptions = xpOptions,
+        selectedXP = selectedXP,
+        selectedPreview = selectedPreview,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+        resultPreview = selectedPreview and not disabled and "goblin_horde_assembled" or nil,
+    }
+end
+
+function M.getRetirementChoiceOptions(opts)
+    opts = opts or {}
+    local request = opts.request or opts.retirement or opts.newQuestDeclaration or opts
+    local adventurer = request.adventurer or request.retiree or request.completedAdventurer or opts.retiree or opts.actor
+    local successor = request.newAdventurer or request.successor or request.nextAdventurer or request.heir or opts.successor
+    local questComplete = request.questCompleted == true or request.questComplete == true or
+        (request.completedQuest ~= nil and request.completedQuest ~= false) or
+        adventurer and (
+            adventurer.questCompleted == true or
+            (adventurer.completedQuest ~= nil and adventurer.completedQuest ~= false) or
+            adventurer.questStatus == "complete" or
+            (type(adventurer.quest) == "table" and adventurer.quest.completed == true)
+        )
+    local living = adventurer ~= nil and not isDeadAdventurer(adventurer) and
+        adventurer.lost ~= true and adventurer.status ~= "lost"
+    local retiredXP = tonumber(request.retiredXP or request.previousXP or adventurer and (adventurer.xp or adventurer.XP)) or 0
+    retiredXP = math.max(0, math.floor(retiredXP))
+    local benefitSlots = math.floor(retiredXP / 10)
+
+    local benefitRequests = {}
+    local function addBenefit(raw)
+        if type(raw) == "table" then
+            local count = math.max(1, math.floor(tonumber(raw.count or raw.amount) or 1))
+            local kind = normalizeTalentId(raw.type or raw.kind or "")
+            if kind == "arete" or kind == "arete_check" or kind == "arete_check_mark" or raw.areteCheck == true then
+                for _ = 1, count do
+                    benefitRequests[#benefitRequests + 1] = {
+                        type = "arete_check",
+                        triggerId = raw.triggerId or raw.trigger or raw.areteTrigger or raw.id or raw.name,
+                    }
+                end
+            else
+                benefitRequests[#benefitRequests + 1] = {
+                    type = "mastered_talent",
+                    talentId = normalizeTalentId(raw.talentId or raw.talent or raw.id or raw.name),
+                }
+            end
+        elseif raw ~= nil then
+            benefitRequests[#benefitRequests + 1] = {
+                type = "mastered_talent",
+                talentId = normalizeTalentId(raw),
+            }
+        end
+    end
+    if type(request.benefits) == "table" then
+        for _, benefit in ipairs(request.benefits) do
+            addBenefit(benefit)
+        end
+    end
+    local masteredTalents = request.masteredTalents or request.masteredTalent
+    if type(masteredTalents) == "table" then
+        for _, talentId in ipairs(masteredTalents) do
+            addBenefit({ type = "talent", talentId = talentId })
+        end
+    else
+        addBenefit(masteredTalents)
+    end
+    if request.talentId or request.talent then
+        addBenefit({ type = "talent", talentId = request.talentId or request.talent })
+    end
+    local areteChecks = math.max(0, math.floor(tonumber(request.areteChecks or request.areteCheckMarks or
+        request.areteMarks) or 0))
+    for _ = 1, areteChecks do
+        addBenefit({ type = "arete_check" })
+    end
+
+    local benefitChoices = {
+        {
+            type = "mastered_talent",
+            label = "1 mastered talent from any path",
+            slots = 1,
+        },
+        {
+            type = "arete_check",
+            label = "1 arete check mark",
+            slots = 1,
+        },
+    }
+    local roster = opts.guildRoster or opts.roster
+    local rosterAdventurers = type(roster) == "table" and (roster.adventurers or roster.members) or nil
+    local function containsActor(list, actor)
+        if type(list) ~= "table" or not actor then
+            return false
+        end
+        for _, entry in ipairs(list) do
+            if actorsMatch(entry, actor) then
+                return true
+            end
+        end
+        return false
+    end
+    local updateRoster = request.updateRoster ~= false
+    local rosterPreview = {
+        updated = updateRoster,
+        removeRetireeFromGuild = (updateRoster and request.removeRetiree ~= false and
+            containsActor(opts.guild, adventurer)) or false,
+        removeRetireeFromRoster = (updateRoster and request.removeRetiree ~= false and
+            containsActor(rosterAdventurers, adventurer)) or false,
+        addSuccessorToGuild = (updateRoster and successor ~= nil and request.addSuccessorToGuild ~= false and
+            not containsActor(opts.guild, successor)) or false,
+        addSuccessorToRoster = (updateRoster and successor ~= nil and request.addSuccessorToGuild ~= false and
+            not containsActor(rosterAdventurers, successor)) or false,
+        markSuccessorActed = successor ~= nil and request.markSuccessorActed ~= false,
+    }
+
+    local retirementDisabled = false
+    local retirementReason = nil
+    if not adventurer then
+        retirementDisabled = true
+        retirementReason = "Retiring adventurer required"
+    elseif not questComplete then
+        retirementDisabled = true
+        retirementReason = "Quest must be complete"
+    elseif not living then
+        retirementDisabled = true
+        retirementReason = "Retirement requires a living adventurer"
+    elseif #benefitRequests > benefitSlots then
+        retirementDisabled = true
+        retirementReason = "Retirement benefits exceed available slots"
+    elseif #benefitRequests > 0 and not successor then
+        retirementDisabled = true
+        retirementReason = "Successor adventurer required"
+    end
+
+    local newQuest = request.newQuest or request.nextQuest or request.questTitle or request.objective or request.quest
+    if type(newQuest) == "string" then
+        newQuest = newQuest:gsub("^%s+", ""):gsub("%s+$", "")
+        if newQuest == "" then
+            newQuest = nil
+        end
+    end
+    local newQuestDisabled = false
+    local newQuestReason = nil
+    if not adventurer then
+        newQuestDisabled = true
+        newQuestReason = "Adventurer required"
+    elseif not questComplete then
+        newQuestDisabled = true
+        newQuestReason = "Quest must be complete"
+    elseif not living then
+        newQuestDisabled = true
+        newQuestReason = "New quest requires a living adventurer"
+    elseif not newQuest then
+        newQuestDisabled = true
+        newQuestReason = "New quest required"
+    end
+
+    local previousQuest = request.completedQuest or request.previousQuest or
+        adventurer and (adventurer.completedQuest or adventurer.quest)
+    return {
+        actor = adventurer,
+        actorId = actorId(adventurer),
+        actorName = adventurer and adventurer.name,
+        previousQuest = previousQuest,
+        questComplete = questComplete == true,
+        living = living == true,
+        retiredXP = retiredXP,
+        benefitSlots = benefitSlots,
+        benefitChoices = benefitChoices,
+        selectedBenefits = benefitRequests,
+        selectedBenefitCount = #benefitRequests,
+        unspentBenefitSlots = math.max(0, benefitSlots - #benefitRequests),
+        successor = successor,
+        successorId = actorId(successor),
+        rosterPreview = rosterPreview,
+        retirement = {
+            action = M.ACTIONS.RETIRE_ADVENTURER,
+            disabled = retirementDisabled,
+            unavailableReason = retirementReason,
+            resultPreview = not retirementDisabled and "adventurer_retired" or nil,
+            benefitSlots = benefitSlots,
+            selectedBenefits = benefitRequests,
+            unspentBenefitSlots = math.max(0, benefitSlots - #benefitRequests),
+            rosterPreview = rosterPreview,
+        },
+        newQuest = {
+            action = M.ACTIONS.DECLARE_NEW_QUEST,
+            quest = newQuest,
+            previousQuest = previousQuest,
+            xpGained = 3,
+            projectedXP = adventurer and (tonumber(adventurer.xp) or 0) + 3 or nil,
+            disabled = newQuestDisabled,
+            unavailableReason = newQuestReason,
+            resultPreview = not newQuestDisabled and "new_quest_declared" or nil,
+        },
+    }
+end
+
 local function normalizeProjectId(projectId)
     return tostring(projectId or ""):lower():gsub("%s+", "_"):gsub("[^%w_]", "")
+end
+
+function M.getSupportContributionOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local gold = opts.gold
+    if gold == nil and actor then
+        gold = currency.getGold(actor)
+    end
+    gold = math.max(0, math.floor(tonumber(gold) or 0))
+
+    local options = {}
+    for i = #M.SUPPORT_CONTRIBUTION_IMPACTS, 1, -1 do
+        local band = M.SUPPORT_CONTRIBUTION_IMPACTS[i]
+        local disabled = gold < band.minimumGold
+        options[#options + 1] = {
+            id = band.id,
+            label = band.label,
+            contribution = band.minimumGold,
+            minimumGold = band.minimumGold,
+            impact = M.classifySupportContributionImpact(band.minimumGold),
+            disabled = disabled,
+            unavailableReason = disabled and "Not enough gold" or nil,
+        }
+    end
+    return options
+end
+
+function M.getSupportProjectOptions(opts)
+    opts = opts or {}
+    local projects = opts.projects or opts.cityProjects or {}
+    local contributionOptions = M.getSupportContributionOptions(opts)
+    local options = {}
+
+    for key, project in pairs(projects) do
+        if type(project) == "table" then
+            local projectId = normalizeProjectId(project.id or project.projectId or key)
+            local complexity = math.max(1, math.floor(tonumber(project.complexity) or 1))
+            local progress = math.max(0, math.floor(tonumber(project.progress) or 0))
+            local complete = project.complete == true or progress >= complexity
+            options[#options + 1] = {
+                id = projectId,
+                projectId = projectId,
+                name = project.name or project.title or projectId,
+                progress = progress,
+                complexity = complexity,
+                remainingSteps = math.max(0, complexity - progress),
+                complete = complete,
+                contributions = project.contributions or {},
+                contributionCount = #(project.contributions or {}),
+                contributionOptions = contributionOptions,
+                disabled = complete,
+                unavailableReason = complete and "Project already complete" or nil,
+            }
+        end
+    end
+
+    table.sort(options, function(a, b)
+        return tostring(a.name or a.projectId) < tostring(b.name or b.projectId)
+    end)
+    return options
+end
+
+function M.getBuildProjectOption(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.build or opts.project or opts
+    local description = tostring(request.description or request.name or request.title or "")
+    local projectId = description ~= "" and normalizeProjectId(request.projectId or request.id or description) or nil
+    local syllables, syllableError = resolveSyllables(request)
+    if syllables and description == "" then
+        syllables = 0
+    end
+
+    local gold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+    local cost = syllables and syllables * M.BUILD_COST_PER_SYLLABLE or nil
+    local buildings = opts.buildings or opts.existingBuildings or {}
+    local cityLayout = request.cityLayout or opts.cityLayout
+    local districtInput = request.district or request.cityDistrict or request.districtRecord
+    local districtId = request.districtId or request.cityDistrictId or request.district_id
+    local districtName = request.districtName or request.cityDistrictName
+    if type(districtInput) == "table" then
+        districtId = districtId or districtInput.id or districtInput.districtId
+        districtName = districtName or districtInput.name or districtInput.title
+    elseif districtInput then
+        districtId = districtId or districtInput
+        districtName = districtName or districtInput
+    end
+
+    local districtPlacement = nil
+    if cityLayout and districtId then
+        districtPlacement = findDistrictPlacement(cityLayout, districtId)
+        if districtPlacement and not districtName then
+            districtName = districtPlacement.district and districtPlacement.district.name or districtPlacement.districtName
+        end
+    end
+
+    local districtOptions = {}
+    for _, placement in ipairs(cityLayout and cityLayout.districts or {}) do
+        local id = cityLayoutDistrictId(placement)
+        districtOptions[#districtOptions + 1] = {
+            id = id,
+            districtId = id,
+            name = placement.district and placement.district.name or placement.districtName or id,
+            selected = districtId ~= nil and tostring(id or "") == tostring(districtId or ""),
+        }
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if request.reasonable == false or request.approved == false then
+        disabled = true
+        unavailableReason = "Building project not approved"
+    elseif description == "" then
+        disabled = true
+        unavailableReason = "Building description required"
+    elseif not syllables then
+        disabled = true
+        unavailableReason = syllableError
+    elseif syllables <= 0 then
+        disabled = true
+        unavailableReason = "Building description required"
+    elseif projectId and buildings[projectId] then
+        disabled = true
+        unavailableReason = "Building project already exists"
+    elseif cityLayout and districtId and not districtPlacement and request.requireDistrict ~= false then
+        disabled = true
+        unavailableReason = "City district not found"
+    elseif cost and gold < cost then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    end
+
+    return {
+        action = M.ACTIONS.BUILD,
+        description = description ~= "" and description or nil,
+        projectId = projectId,
+        name = request.name or request.title or description,
+        syllables = syllables,
+        syllableError = syllableError,
+        costPerSyllable = M.BUILD_COST_PER_SYLLABLE,
+        cost = cost,
+        gold = gold,
+        affordable = cost ~= nil and gold >= cost,
+        requiresGMApproval = true,
+        approved = request.approved ~= false and request.reasonable ~= false,
+        artisan = request.artisan or request.designer,
+        districtId = districtId,
+        districtName = districtName,
+        districtFound = districtId == nil or districtPlacement ~= nil,
+        districtOptions = districtOptions,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getFuneralOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.funeral or opts
+    local deceasedRef = request.deceased or request.deadAdventurer or request.previousAdventurer
+    local deceasedId = request.deceasedId or request.deadAdventurerId or request.previousAdventurerId
+    local heir = request.newAdventurer or request.heir or request.recipient or actor
+    local gold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+
+    local candidates = {}
+    local seen = {}
+    local function addCandidate(candidate)
+        if type(candidate) ~= "table" then
+            return
+        end
+        local id = actorId(candidate) or candidate.name
+        local key = tostring(id or (#candidates + 1))
+        if seen[key] then
+            return
+        end
+        seen[key] = true
+        candidates[#candidates + 1] = candidate
+    end
+
+    for _, candidate in ipairs(normalizeList(opts.deceasedOptions or opts.deceasedAdventurers or opts.deadAdventurers)) do
+        addCandidate(candidate)
+    end
+    addCandidate(deceasedRef)
+    for _, candidate in ipairs(getRosterAdventurers(opts.guildRoster or opts.roster) or {}) do
+        addCandidate(candidate)
+    end
+    for _, candidate in ipairs(opts.guild or {}) do
+        addCandidate(candidate)
+    end
+
+    local selectedDeceased = type(deceasedRef) == "table" and deceasedRef or nil
+    if not selectedDeceased and deceasedId then
+        for _, candidate in ipairs(candidates) do
+            if tostring(actorId(candidate) or "") == tostring(deceasedId) then
+                selectedDeceased = candidate
+                break
+            end
+        end
+    end
+
+    local deceasedOptions = {}
+    for _, candidate in ipairs(candidates) do
+        local candidateXP = math.max(0, math.floor(tonumber(candidate.xp) or 0))
+        local selected = selectedDeceased == candidate or
+            (deceasedId ~= nil and tostring(actorId(candidate) or "") == tostring(deceasedId))
+        local xpOptions = {}
+        for xp = 1, candidateXP do
+            local cost = xp * M.FUNERAL_COST_PER_XP
+            xpOptions[#xpOptions + 1] = {
+                xp = xp,
+                cost = cost,
+                affordable = gold >= cost,
+                disabled = gold < cost,
+                unavailableReason = gold < cost and "Not enough gold" or nil,
+            }
+        end
+        deceasedOptions[#deceasedOptions + 1] = {
+            id = actorId(candidate),
+            actor = candidate,
+            name = candidate.name or actorId(candidate),
+            previousXP = candidateXP,
+            maxReclaimableXP = candidateXP,
+            dead = isDeadAdventurer(candidate),
+            funeralHeld = candidate.funeralHeld == true,
+            selected = selected,
+            disabled = not isDeadAdventurer(candidate),
+            unavailableReason = not isDeadAdventurer(candidate) and "Adventurer must be dead" or nil,
+            xpOptions = xpOptions,
+        }
+    end
+
+    table.sort(deceasedOptions, function(a, b)
+        return tostring(a.name or a.id) < tostring(b.name or b.id)
+    end)
+
+    local previousXP = tonumber(request.previousXP or request.deceasedXP or (selectedDeceased and selectedDeceased.xp))
+    local xpReclaimed = tonumber(request.xpReclaimed or request.xp or request.amount)
+    local cost = xpReclaimed and xpReclaimed * M.FUNERAL_COST_PER_XP or nil
+    local xpOptions = {}
+    if previousXP and previousXP > 0 then
+        for xp = 1, math.floor(previousXP) do
+            local optionCost = xp * M.FUNERAL_COST_PER_XP
+            xpOptions[#xpOptions + 1] = {
+                xp = xp,
+                cost = optionCost,
+                affordable = gold >= optionCost,
+                selected = xpReclaimed == xp,
+                disabled = gold < optionCost,
+                unavailableReason = gold < optionCost and "Not enough gold" or nil,
+            }
+        end
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if not xpReclaimed or xpReclaimed <= 0 then
+        disabled = true
+        unavailableReason = "Funeral XP required"
+    elseif xpReclaimed ~= math.floor(xpReclaimed) then
+        disabled = true
+        unavailableReason = "Funeral XP must be a positive whole number"
+    elseif not previousXP then
+        disabled = true
+        unavailableReason = "Deceased XP required"
+    elseif selectedDeceased and not isDeadAdventurer(selectedDeceased) then
+        disabled = true
+        unavailableReason = "Adventurer must be dead"
+    elseif xpReclaimed > previousXP then
+        disabled = true
+        unavailableReason = "Cannot reclaim more XP than the deceased had"
+    elseif not heir then
+        disabled = true
+        unavailableReason = "Funeral recipient required"
+    elseif cost and gold < cost then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    end
+
+    return {
+        action = M.ACTIONS.HOLD_FUNERAL,
+        actor = actor,
+        payerGold = gold,
+        costPerXP = M.FUNERAL_COST_PER_XP,
+        deceased = selectedDeceased,
+        deceasedId = selectedDeceased and actorId(selectedDeceased) or deceasedId,
+        deceasedName = request.deceasedName or (selectedDeceased and selectedDeceased.name),
+        previousXP = previousXP,
+        xpReclaimed = xpReclaimed,
+        cost = cost,
+        affordable = cost ~= nil and gold >= cost,
+        recipient = heir,
+        recipientId = actorId(heir),
+        recipientName = heir and heir.name,
+        deceasedOptions = deceasedOptions,
+        xpOptions = xpOptions,
+        updateRoster = request.updateRoster ~= false,
+        removeDeceased = request.removeDeceased ~= false,
+        addHeirToGuild = request.addHeirToGuild ~= false,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getBankingOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.banking or opts
+    local mode = tostring(request.mode or request.operation or ""):lower()
+    local withdrawMode = mode == "withdraw" or mode == "withdrawal"
+    local depositGold = math.floor(tonumber(request.depositGold or (not withdrawMode and request.gold) or
+        (not withdrawMode and request.amount)) or 0)
+    local withdrawGold = math.floor(tonumber(request.withdrawGold or request.goldWithdrawal or
+        request.withdrawAmount or request.withdraw) or 0)
+    if withdrawMode and withdrawGold <= 0 then
+        withdrawGold = math.floor(tonumber(request.gold or request.amount) or 0)
+    end
+
+    local depositItemIds = normalizeList(request.depositItemIds or request.depositItems or
+        (not withdrawMode and request.itemIds) or (not withdrawMode and request.items) or
+        (not withdrawMode and request.itemId))
+    local withdrawItemIds = normalizeList(request.withdrawItemIds or request.withdrawItems or request.withdrawItemId)
+    if withdrawMode and #withdrawItemIds == 0 then
+        withdrawItemIds = normalizeList(request.itemIds or request.items or request.itemId)
+    end
+
+    local function hasSelectedId(list, itemId)
+        local wanted = tostring(itemId or "")
+        for _, selectedId in ipairs(list or {}) do
+            if tostring(selectedId or "") == wanted then
+                return true
+            end
+        end
+        return false
+    end
+
+    local inv = actor and actor.inventory
+    local carriedGold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+    local bank = actor and actor.bank or {}
+    local bankedGold = tonumber(bank.gold) or 0
+    local bankedItems = bank.items or {}
+    local withdrawalLocation = request.withdrawLocation or request.location or inventory.LOCATIONS.PACK
+    local carriedItemOptions = {}
+    for _, location in ipairs({ inventory.LOCATIONS.HANDS, inventory.LOCATIONS.BELT, inventory.LOCATIONS.PACK }) do
+        for _, item in ipairs(inv and inv[location] or {}) do
+            carriedItemOptions[#carriedItemOptions + 1] = {
+                id = item.id,
+                item = item,
+                name = item.name,
+                location = location,
+                slots = item.stackable and 1 or item.size,
+                selected = hasSelectedId(depositItemIds, item.id),
+            }
+        end
+    end
+
+    local bankedItemOptions = {}
+    for _, item in ipairs(bankedItems) do
+        local canWithdraw, reason = true, nil
+        if inv and inv.addItem then
+            canWithdraw, reason = canAddBankedItemsToInventory(inv, { item }, withdrawalLocation)
+        elseif #withdrawItemIds > 0 or withdrawMode then
+            canWithdraw, reason = false, "No inventory for banking"
+        end
+        bankedItemOptions[#bankedItemOptions + 1] = {
+            id = item.id,
+            item = item,
+            name = item.name,
+            slots = item.stackable and 1 or item.size,
+            selected = hasSelectedId(withdrawItemIds, item.id),
+            withdrawalLocation = withdrawalLocation,
+            disabled = not canWithdraw,
+            unavailableReason = not canWithdraw and reason or nil,
+        }
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if depositGold <= 0 and #depositItemIds == 0 and withdrawGold <= 0 and #withdrawItemIds == 0 then
+        disabled = true
+        unavailableReason = "Nothing to bank"
+    elseif depositGold > 0 and carriedGold < depositGold then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    elseif withdrawGold > bankedGold then
+        disabled = true
+        unavailableReason = "Not enough banked gold"
+    elseif #depositItemIds > 0 and (not inv or not inv.findItem or not inv.removeItem) then
+        disabled = true
+        unavailableReason = "No inventory for banking"
+    else
+        for _, itemId in ipairs(depositItemIds) do
+            if inv and inv.findItem and not inv:findItem(itemId) then
+                disabled = true
+                unavailableReason = "Banking item not found"
+                break
+            end
+        end
+        if not disabled and #withdrawItemIds > 0 and (not inv or not inv.addItem) then
+            disabled = true
+            unavailableReason = "No inventory for banking"
+        end
+        if not disabled then
+            local requestedWithdrawItems = {}
+            for _, itemId in ipairs(withdrawItemIds) do
+                local item = findBankedItem(bank, itemId)
+                if not item then
+                    disabled = true
+                    unavailableReason = "Banked item not found"
+                    break
+                end
+                requestedWithdrawItems[#requestedWithdrawItems + 1] = item
+            end
+            if not disabled and #requestedWithdrawItems > 0 then
+                local canAdd, reason = canAddBankedItemsToInventory(inv, requestedWithdrawItems, withdrawalLocation)
+                if not canAdd then
+                    disabled = true
+                    unavailableReason = reason
+                end
+            end
+        end
+    end
+
+    local projectedInterest = math.floor(bankedGold * M.BANKING_RETURN_RATE)
+    return {
+        action = M.ACTIONS.BANKING,
+        operation = withdrawMode and "withdraw" or "deposit",
+        carriedGold = carriedGold,
+        bankedGold = bankedGold,
+        returnRate = M.BANKING_RETURN_RATE,
+        projectedInterest = projectedInterest,
+        projectedBankedGoldAfterReturn = bankedGold + projectedInterest,
+        depositGold = depositGold,
+        withdrawGold = withdrawGold,
+        depositItemIds = depositItemIds,
+        withdrawItemIds = withdrawItemIds,
+        carriedItemOptions = carriedItemOptions,
+        bankedItemOptions = bankedItemOptions,
+        withdrawalLocation = withdrawalLocation,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getBegAndBuskOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.begAndBusk or opts.beg_and_busk or opts
+    local explicitCard = request.card or request.drawnCard
+    local deck = request.deck or request.playerDeck or request.minorDeck or opts.playerDeck or opts.minorDeck
+    local wands = getWands(actor)
+    local validCard = explicitCard and isMinorDeckCard(explicitCard) or nil
+    local projectedGold = nil
+    if validCard then
+        projectedGold = math.max(0, (tonumber(explicitCard.value) or 0) + wands)
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if explicitCard and not validCard then
+        disabled = true
+        unavailableReason = "Requires minor arcana draw"
+    elseif not explicitCard and not deck then
+        disabled = true
+        unavailableReason = "Requires minor arcana draw"
+    end
+
+    return {
+        action = M.ACTIONS.BEG_AND_BUSK,
+        attribute = constants.SUITS.WANDS,
+        wands = wands,
+        deck = "minor_arcana",
+        autoDrawAvailable = explicitCard == nil and deck ~= nil,
+        requiresDraw = explicitCard == nil,
+        card = explicitCard,
+        cardValid = explicitCard == nil and nil or validCard == true,
+        projectedGold = projectedGold,
+        formula = "card_value_plus_wands",
+        consumesCityAction = "on_success",
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getCarouseOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.carouse or opts
+    local percent, xpGained = normalizeCarouseSpend(request)
+    local baseGold = math.floor(tonumber(request.goldBroughtBack or request.broughtBackGold or request.earnings) or
+        (actor and currency.getGold(actor) or tonumber(opts.gold) or 0))
+    local carriedGold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+    local spend = percent and math.floor(baseGold * percent) or nil
+    local explicitCard = request.hangoverCard or request.majorCard or request.card
+    local deck = request.gmDeck or request.majorDeck or opts.gmDeck or opts.majorDeck
+    local cardValid = explicitCard and isMajorDeckCard(explicitCard) or nil
+    local hangover = cardValid and (M.HANGOVER_TABLE[explicitCard.value] or {
+        id = "unknown_hangover",
+        title = "Unknown Hangover",
+    }) or nil
+
+    local minorDeck = request.playerDeck or request.minorDeck or opts.playerDeck or opts.minorDeck
+    local minorDiscard = nil
+    if minorDeck and minorDeck.peekDiscard then
+        minorDiscard = minorDeck:peekDiscard()
+    end
+    minorDiscard = minorDiscard or request.minorDiscardCard or request.minorDiscard or
+        request.topMinorDiscardCard or request.topMinorDiscard
+    local invalidMinorDiscard = nil
+    if minorDiscard and not isMinorDeckCard(minorDiscard) then
+        invalidMinorDiscard = minorDiscard
+        minorDiscard = nil
+    end
+
+    local function previewHangoverOutcome(entry, discard)
+        local outcome = {
+            id = entry and entry.id or "unknown_hangover",
+            title = entry and entry.title or "Unknown Hangover",
+            applied = false,
+        }
+        local id = outcome.id
+        local value = minorDiscardValue(discard)
+        if id == "headache_windfall" then
+            outcome.goldGained = value
+            outcome.applied = value > 0
+            outcome.requiresMinorDiscard = value <= 0
+        elseif id == "high_priest" then
+            if value <= 0 then
+                outcome.requiresMinorDiscard = true
+            else
+                outcome.figure = (value % 2 == 0) and "high_priest" or "high_priestess"
+                outcome.applied = true
+            end
+        elseif id == "new_tattoo" then
+            local location = minorSuitChoice(discard, {
+                swords = "arm",
+                pentacles = "leg",
+                cups = "backside",
+                wands = "face",
+            })
+            if not location or value <= 0 then
+                outcome.requiresMinorDiscard = true
+            else
+                local quality = "pretty_sweet"
+                if value <= 2 then
+                    quality = "horribly_offensive"
+                elseif value <= 8 then
+                    quality = "cringe_misspelled"
+                end
+                outcome.location = location
+                outcome.quality = quality
+                outcome.applied = true
+            end
+        elseif id == "duel_invitation" then
+            if value <= 0 then
+                outcome.requiresMinorDiscard = true
+            else
+                outcome.duelInDays = value
+                outcome.applied = true
+            end
+        elseif id == "wanted_poster" then
+            local charge = minorSuitChoice(discard, {
+                swords = "armed_robbery",
+                pentacles = "attempted_pickpocketing",
+                cups = "lewd_acts",
+                wands = "consorting_with_dark_entities",
+            })
+            if not charge then
+                outcome.requiresMinorDiscard = true
+            else
+                outcome.charge = charge
+                outcome.applied = true
+            end
+        elseif id == "candle_fire" then
+            local fire = minorSuitChoice(discard, {
+                swords = { districtsBurned = 1, fireSpirit = false },
+                pentacles = { districtsBurned = 2, fireSpirit = false },
+                cups = { districtsBurned = 3, fireSpirit = false },
+                wands = { districtsBurned = 3, fireSpirit = true },
+            })
+            if not fire then
+                outcome.requiresMinorDiscard = true
+            else
+                outcome.districtsBurned = fire.districtsBurned
+                outcome.fireSpirit = fire.fireSpirit
+                outcome.applied = true
+            end
+        elseif entry then
+            outcome.applied = true
+        else
+            outcome.requiresAdjudication = true
+        end
+        return outcome
+    end
+
+    local spendOptions = {}
+    for _, option in ipairs({
+        { id = "half", percent = 0.5, xp = 1 },
+        { id = "all", percent = 1, xp = 2 },
+    }) do
+        local optionSpend = math.floor(baseGold * option.percent)
+        spendOptions[#spendOptions + 1] = {
+            id = option.id,
+            percent = option.percent,
+            xpGained = option.xp,
+            baseGold = baseGold,
+            goldSpent = optionSpend,
+            affordable = carriedGold >= optionSpend and optionSpend > 0,
+            selected = percent == option.percent,
+            disabled = carriedGold < optionSpend or optionSpend <= 0,
+            unavailableReason = optionSpend <= 0 and "No gold to carouse" or
+                (carriedGold < optionSpend and "Not enough gold" or nil),
+        }
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if not percent then
+        disabled = true
+        unavailableReason = "Choose 50% or 100% carousing spend"
+    elseif spend and spend <= 0 then
+        disabled = true
+        unavailableReason = "No gold to carouse"
+    elseif spend and carriedGold < spend then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    elseif explicitCard and not cardValid then
+        disabled = true
+        unavailableReason = "Requires major arcana draw"
+    elseif not explicitCard and not deck then
+        disabled = true
+        unavailableReason = "Requires major arcana draw"
+    end
+
+    return {
+        action = M.ACTIONS.CAROUSE,
+        percent = percent,
+        xpGained = xpGained,
+        baseGold = baseGold,
+        carriedGold = carriedGold,
+        goldSpent = spend,
+        spendOptions = spendOptions,
+        hangoverDeck = "gm_major_arcana",
+        autoDrawAvailable = explicitCard == nil and deck ~= nil,
+        requiresHangoverDraw = explicitCard == nil,
+        hangoverCard = explicitCard,
+        hangoverCardValid = explicitCard == nil and nil or cardValid == true,
+        hangover = hangover,
+        hangoverOutcomePreview = hangover and previewHangoverOutcome(hangover, minorDiscard) or nil,
+        minorDiscard = minorDiscard,
+        invalidMinorDiscard = invalidMinorDiscard,
+        minorDiscardAvailable = minorDiscard ~= nil,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getCityCampActionOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local guild = opts.guild or {}
+    local context = opts.context or opts.campContext or {}
+    context.guild = context.guild or guild
+    context.cityAction = true
+    context.cityPhase = true
+    local request = opts.request or opts.campActionRequest or opts
+    local selectedCampActionId = normalizeCampActionId(
+        request.campAction or
+        request.campActionId or
+        request.camp_action or
+        request.camp_action_id or
+        request.campType
+    )
+
+    local availableById = {}
+    for _, action in ipairs(camp_actions.getAvailableActions(actor, guild, context)) do
+        availableById[action.id] = true
+    end
+
+    local function hasOtherPC()
+        for _, pc in ipairs(guild or {}) do
+            if pc and pc.isPC == true and actor and pc.id ~= actor.id then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function reasonFor(action)
+        if action.requiresItem then
+            if not actor or not actor.inventory or not actor.inventory.hasItemOfType or
+               not actor.inventory:hasItemOfType(action.requiresItem) then
+                return "Requires " .. tostring(action.requiresItem)
+            end
+        end
+        if action.requiresFletchAmmo and not camp_actions.hasMissileWeapon(actor) then
+            return "Requires a bow or crossbow"
+        end
+        if action.requiresRangedAmmo and not camp_actions.canHunt(actor, context) then
+            return "Requires ranged ammunition or hunting tools"
+        end
+        if action.requiresReadableBook and not camp_actions.hasReadableBook(actor) then
+            return "Requires a readable book"
+        end
+        if action.requiresAlchemy and not camp_actions.canBrewAlchemy(actor) then
+            return "Requires Alchemy, an alchemy kit, and bottled reagents"
+        end
+        if action.requiresCampUsableItem and not camp_actions.hasCampUsableItem(actor) then
+            return "Requires a Camp-usable item"
+        end
+        if action.requiresCampTalent and not camp_actions.hasCampTalent(actor) then
+            return "Requires a Camp talent"
+        end
+        if action.requiresActivePact and not camp_actions.findUnbrokenActivePact(actor, action.requiresActivePact) then
+            return "Requires active pact"
+        end
+        if action.targetType == "pc" and not hasOtherPC() then
+            return "Requires another guild member"
+        end
+        if action.targetType == "companion" and not (actor and actor.animalCompanions and #actor.animalCompanions > 0) then
+            return "Requires animal companion"
+        end
+        return nil
+    end
+
+    local options = {}
+    local selectedOption = nil
+    for _, action in ipairs(camp_actions.ACTIONS) do
+        local available = availableById[action.id] == true
+        local option = {
+            id = action.id,
+            campAction = action.id,
+            name = action.name,
+            category = action.category,
+            description = action.description,
+            requiresTarget = action.requiresTarget,
+            targetType = action.targetType,
+            requiresItem = action.requiresItem,
+            selected = selectedCampActionId == action.id,
+            disabled = not available,
+            unavailableReason = not available and reasonFor(action) or nil,
+        }
+        options[#options + 1] = option
+        if option.selected then
+            selectedOption = option
+        end
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if selectedCampActionId ~= "" then
+        if not camp_actions.getAction(selectedCampActionId) then
+            disabled = true
+            unavailableReason = "Unknown Camp Action"
+        elseif selectedOption and selectedOption.disabled then
+            disabled = true
+            unavailableReason = selectedOption.unavailableReason or "Camp Action unavailable"
+        end
+    end
+
+    return {
+        action = M.ACTIONS.CAMP_ACTION,
+        selectedCampAction = selectedCampActionId ~= "" and selectedCampActionId or nil,
+        selectedOption = selectedOption,
+        options = options,
+        availableCount = #camp_actions.getAvailableActions(actor, guild, context),
+        selectionRequired = selectedCampActionId == "",
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getResearchQuestionOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local cost = M.RESEARCH_COST
+    local gold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+    local engine = opts.bidLoreEngine or opts.loreEngine or bid_lore_engine.createBidLoreEngine({})
+    local subjectId = opts.subjectId or opts.loreSubjectId
+    local subject = subjectId and engine:getSubject(subjectId) or nil
+    local topic = opts.topic or opts.subject or opts.subjectName or subject and subject.name
+    local questions = subjectId and engine:getQuestionTypesForSubject(subjectId) or engine:getQuestionTypes()
+    local questionOptions = {}
+    for _, question in ipairs(questions or {}) do
+        questionOptions[#questionOptions + 1] = {
+            id = question.id,
+            questionType = question.id,
+            name = question.name,
+            prompt = question.prompt,
+            tags = shallowClone(question.tags or {}),
+            answerAvailable = subject and type(subject.answers) == "table" and subject.answers[question.id] ~= nil or nil,
+        }
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if not topic or tostring(topic) == "" then
+        disabled = true
+        unavailableReason = "Research topic required"
+    elseif gold < cost then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    end
+
+    return {
+        action = M.ACTIONS.RESEARCH,
+        topic = topic,
+        subjectId = subjectId,
+        subjectName = subject and subject.name or opts.subjectName,
+        cost = cost,
+        gold = gold,
+        affordable = gold >= cost,
+        questionOptions = questionOptions,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.summarizeResearchResult(detail)
+    detail = detail or {}
+    local summary = {
+        action = M.ACTIONS.RESEARCH,
+        topic = detail.topic,
+        questions = detail.questions or 0,
+        answeredCount = #(detail.answers or {}),
+        pendingCount = #(detail.pendingQuestions or {}),
+        overflowCount = #(detail.overflowQuestions or {}),
+        answers = {},
+        pendingQuestions = {},
+        overflowQuestions = {},
+    }
+
+    for _, answer in ipairs(detail.answers or {}) do
+        local response = answer.response or {}
+        summary.answers[#summary.answers + 1] = {
+            question = answer.question,
+            questionType = answer.questionType,
+            questionName = answer.questionName,
+            subjectId = answer.subjectId,
+            subjectName = answer.subjectName,
+            summary = response.summary,
+            source = answer.source,
+            loreSpend = answer.loreSpend == true,
+        }
+    end
+
+    for _, question in ipairs(detail.pendingQuestions or {}) do
+        summary.pendingQuestions[#summary.pendingQuestions + 1] = {
+            question = question.question,
+            questionType = question.questionType,
+            questionName = question.questionName,
+            subjectId = question.subjectId,
+            subjectName = question.subjectName,
+        }
+    end
+
+    for _, question in ipairs(detail.overflowQuestions or {}) do
+        summary.overflowQuestions[#summary.overflowQuestions + 1] = shallowClone(question)
+    end
+
+    return summary
+end
+
+function M.getMenagerieReagentPurchaseOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.purchase or opts.reagentPurchase or opts
+    local stock = request.stock or request.catalog or opts.stock or opts.menagerieStock or opts.catalog
+    local quantity = math.max(1, tonumber(request.quantity or request.count) or 1)
+    local location = request.location or opts.location or inventory.LOCATIONS.PACK
+    local carriedGold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+
+    local function normalizeAlchemyKey(value)
+        return tostring(value or ""):lower():gsub("%s+", "_")
+    end
+
+    local function templateFor(record)
+        if type(record) ~= "table" then
+            return record
+        end
+        local templateId = record.reagentTemplateId or record.templateId or record.itemTemplateId or record.template
+        if templateId then
+            return templateId
+        end
+        return alchemy.MENAGERIE_REAGENTS[normalizeAlchemyKey(record.source or record.creature or record.monster or record.reagent)]
+    end
+
+    local function isReagentTemplate(templateId)
+        local template = item_templates.getTemplate(templateId)
+        local props = template and template.properties or {}
+        return template ~= nil and (template.type == "reagent" or props.reagent == true or
+            props.alchemicalReagent == true)
+    end
+
+    local function stockQuantity(record)
+        if type(record) ~= "table" then
+            return nil
+        end
+        local value = record.quantityAvailable
+        if value == nil then
+            value = record.available
+        end
+        if value == nil then
+            value = record.stock
+        end
+        if value == nil then
+            value = record.countAvailable
+        end
+        return value ~= nil and math.max(0, math.floor(tonumber(value) or 0)) or nil
+    end
+
+    local stockLookup = request.stockId or request.reagentStockId or request.catalogId or request.source or
+        request.creature or request.monster or request.reagent or request.reagentTemplateId or request.templateId
+    local stockLookupText = tostring(stockLookup or "")
+    local stockLookupKey = normalizeAlchemyKey(stockLookupText)
+    local selectedStock = nil
+    local selectedStockId = nil
+    local stockOptions = {}
+    if type(stock) == "table" then
+        for key, entry in pairs(stock) do
+            local record = type(entry) == "table" and entry or { id = key, reagentTemplateId = entry }
+            local stockId = record.id or record.stockId or record.catalogId or key
+            local templateId = templateFor(record)
+            local template = item_templates.getTemplate(templateId)
+            local available = stockQuantity(record)
+            local costPerReagent = tonumber(record.costPerReagent or record.pricePerReagent or record.price or
+                record.cost) or alchemy.MENAGERIE_REAGENT_COST
+            local candidates = {
+                key,
+                stockId,
+                record.source,
+                record.creature,
+                record.monster,
+                record.reagent,
+                templateId,
+                record.name,
+                record.title,
+            }
+            local selected = false
+            for _, candidate in ipairs(candidates) do
+                if stockLookupText ~= "" and candidate ~= nil then
+                    local text = tostring(candidate)
+                    if text == stockLookupText or normalizeAlchemyKey(text) == stockLookupKey then
+                        selected = true
+                        break
+                    end
+                end
+            end
+            if selected and not selectedStock then
+                selectedStock = record
+                selectedStockId = stockId
+            end
+            stockOptions[#stockOptions + 1] = {
+                id = stockId,
+                stockId = stockId,
+                name = record.name or record.title or (template and template.name) or stockId,
+                reagentTemplateId = templateId,
+                reagentName = template and template.name or templateId,
+                costPerReagent = costPerReagent,
+                quantityAvailable = available,
+                stockRemainingAfterPurchase = available and math.max(0, available - quantity) or nil,
+                locationName = record.locationName or record.location,
+                selected = selected,
+                disabled = available ~= nil and quantity > available,
+                unavailableReason = available ~= nil and quantity > available and "Reagent stock unavailable" or nil,
+            }
+        end
+        table.sort(stockOptions, function(a, b)
+            return tostring(a.name or a.stockId) < tostring(b.name or b.stockId)
+        end)
+    end
+
+    local reagentOptions = {}
+    for source, templateId in pairs(alchemy.MENAGERIE_REAGENTS) do
+        local template = item_templates.getTemplate(templateId)
+        local selected = not selectedStock and (
+            request.source == source or request.creature == source or request.monster == source or
+            request.reagent == source or request.reagentTemplateId == templateId or request.templateId == templateId
+        )
+        reagentOptions[#reagentOptions + 1] = {
+            id = source,
+            source = source,
+            reagentTemplateId = templateId,
+            name = template and template.name or templateId,
+            costPerReagent = alchemy.MENAGERIE_REAGENT_COST,
+            selected = selected,
+        }
+    end
+    table.sort(reagentOptions, function(a, b)
+        return tostring(a.name or a.source) < tostring(b.name or b.source)
+    end)
+
+    local selectedTemplateId = selectedStock and templateFor(selectedStock) or
+        (request.reagentTemplateId or request.templateId or request.itemTemplateId or request.template or
+            alchemy.MENAGERIE_REAGENTS[normalizeAlchemyKey(request.source or request.creature or request.monster or
+                request.reagent)])
+    local selectedTemplate = item_templates.getTemplate(selectedTemplateId)
+    local selectedAvailable = stockQuantity(selectedStock)
+    local costPerReagent = tonumber(opts.costPerReagent or request.costPerReagent or request.pricePerReagent or
+        (selectedStock and (selectedStock.costPerReagent or selectedStock.pricePerReagent or selectedStock.price or
+            selectedStock.cost))) or alchemy.MENAGERIE_REAGENT_COST
+    local cost = quantity * costPerReagent
+    local slotsNeeded = selectedTemplate and (selectedTemplate.stackable and 1 or selectedTemplate.size or 1) * quantity or nil
+    local availableSlots = actor and actor.inventory and actor.inventory.availableSlots and actor.inventory:availableSlots(location) or nil
+
+    local disabled = false
+    local unavailableReason = nil
+    if not selectedTemplateId or not isReagentTemplate(selectedTemplateId) then
+        disabled = true
+        unavailableReason = "Unknown alchemical reagent"
+    elseif selectedAvailable ~= nil and quantity > selectedAvailable then
+        disabled = true
+        unavailableReason = "Reagent stock unavailable"
+    elseif not actor or not actor.inventory or not actor.inventory.addItem then
+        disabled = true
+        unavailableReason = "No inventory for reagent"
+    elseif carriedGold < cost then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    elseif availableSlots ~= nil and slotsNeeded and availableSlots < slotsNeeded then
+        disabled = true
+        unavailableReason = "insufficient_slots"
+    end
+
+    return {
+        action = M.ACTIONS.MENAGERIE_REAGENT_PURCHASE,
+        reagentOptions = reagentOptions,
+        stockOptions = stockOptions,
+        selectedStock = selectedStock,
+        selectedStockId = selectedStockId,
+        selectedTemplateId = selectedTemplateId,
+        selectedReagentName = selectedTemplate and selectedTemplate.name or selectedTemplateId,
+        quantity = quantity,
+        costPerReagent = costPerReagent,
+        cost = cost,
+        carriedGold = carriedGold,
+        affordable = carriedGold >= cost,
+        location = location,
+        slotsNeeded = slotsNeeded,
+        availableSlots = availableSlots,
+        stockRemainingAfterPurchase = selectedAvailable and math.max(0, selectedAvailable - quantity) or nil,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getReagentSaleOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.sale or opts.reagentSale or opts
+    local inv = actor and actor.inventory
+    local explicitValue = request.price or request.value or request.gold or opts.price or opts.value or opts.gold
+    local wantedId = request.reagentId or request.itemId or request.id
+    local wantedTemplate = request.reagentTemplateId or request.templateId
+    local wantedSource = request.source or request.creature or request.monster
+    local selectedReagent = nil
+    local selectedLocation = nil
+    local reagentOptions = {}
+
+    local function normalizeAlchemyKey(value)
+        return tostring(value or ""):lower():gsub("%s+", "_")
+    end
+
+    local function isReagentItem(item)
+        local props = item and item.properties or {}
+        return item ~= nil and (item.type == "reagent" or props.reagent == true or props.alchemicalReagent == true)
+    end
+
+    if inv and inv.getAllItems then
+        for _, entry in ipairs(inv:getAllItems()) do
+            local item = entry.item
+            local props = item and item.properties or {}
+            if isReagentItem(item) then
+                local matches = true
+                if type(request.reagent) == "table" and item.id ~= request.reagent.id then
+                    matches = false
+                end
+                if wantedId and item.id ~= wantedId then
+                    matches = false
+                end
+                if wantedTemplate and item.templateId ~= wantedTemplate then
+                    matches = false
+                end
+                if wantedSource and normalizeAlchemyKey(props.source) ~= normalizeAlchemyKey(wantedSource) then
+                    matches = false
+                end
+                local saleValue = alchemy.calculateReagentSaleValue(item, {
+                    price = explicitValue,
+                    value = explicitValue,
+                    gold = explicitValue,
+                })
+                local selected = matches and selectedReagent == nil
+                if selected and not selectedReagent then
+                    selectedReagent = item
+                    selectedLocation = entry.location
+                end
+                reagentOptions[#reagentOptions + 1] = {
+                    id = item.id,
+                    itemId = item.id,
+                    item = item,
+                    name = item.name,
+                    templateId = item.templateId,
+                    source = props.source,
+                    sourceTotalHD = props.sourceTotalHD or props.totalHD or props.hd,
+                    location = entry.location,
+                    hermeticBottle = props.hermeticBottle == true,
+                    saleValue = saleValue,
+                    explicitValue = explicitValue,
+                    selected = selected,
+                    disabled = props.hermeticBottle ~= true or saleValue == nil,
+                    unavailableReason = props.hermeticBottle ~= true and "Requires bottled reagent" or
+                        (saleValue == nil and "Reagent value unknown" or nil),
+                }
+            end
+        end
+    end
+
+    local selectedValue = selectedReagent and alchemy.calculateReagentSaleValue(selectedReagent, {
+        price = explicitValue,
+        value = explicitValue,
+        gold = explicitValue,
+    }) or nil
+    local selectedProps = selectedReagent and selectedReagent.properties or {}
+    local disabled = false
+    local unavailableReason = nil
+    if not selectedReagent then
+        disabled = true
+        unavailableReason = "Requires bottled reagent"
+    elseif selectedProps.hermeticBottle ~= true then
+        disabled = true
+        unavailableReason = "Requires bottled reagent"
+    elseif selectedValue == nil then
+        disabled = true
+        unavailableReason = "Reagent value unknown"
+    elseif not inv or not inv.removeItem then
+        disabled = true
+        unavailableReason = "No inventory for reagent"
+    end
+
+    return {
+        action = M.ACTIONS.SELL_REAGENT,
+        reagentOptions = reagentOptions,
+        selectedReagent = selectedReagent,
+        selectedItemId = selectedReagent and selectedReagent.id or nil,
+        selectedLocation = selectedLocation,
+        saleValue = selectedValue,
+        explicitValue = explicitValue,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+function M.getSellTreasureOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.sale or opts.treasureSale or opts
+    local inv = actor and actor.inventory
+    local selectedRefs = normalizeList(request.itemIds or request.items or request.itemId or opts.itemIds or opts.items or
+        opts.itemId)
+    local values = request.values or request.prices or opts.values or opts.prices or {}
+    local appraisals = request.appraisals or request.appraisalNotes or request.appraisal or
+        opts.appraisals or opts.appraisalNotes or opts.appraisal
+    local buyers = request.buyers or request.buyerByItem or request.buyer or opts.buyers or opts.buyerByItem or opts.buyer
+    local markets = request.markets or request.marketByItem or request.market or
+        opts.markets or opts.marketByItem or opts.market
+    local appraisers = request.appraisers or request.appraiserByItem or request.appraiser or
+        opts.appraisers or opts.appraiserByItem or opts.appraiser
+    local saleNotes = request.notes or request.saleNotes or opts.notes or opts.saleNotes
+    local selectedById = {}
+    for _, ref in ipairs(selectedRefs) do
+        local itemId = type(ref) == "table" and ref.id or ref
+        if itemId then
+            selectedById[tostring(itemId)] = ref
+        end
+    end
+
+    local itemOptions = {}
+    if inv and inv.getAllItems then
+        for _, entry in ipairs(inv:getAllItems()) do
+            local item = entry.item
+            local props = item and item.properties or {}
+            local selectedRef = item and selectedById[tostring(item.id)]
+            local explicitValue = type(selectedRef) == "table" and
+                (selectedRef.value or selectedRef.price or selectedRef.saleValue or selectedRef.appraisedValue) or
+                (item and values[item.id])
+            local saleValue = treasureSaleValue(item, explicitValue)
+            local treasure = isTreasureItem(item)
+            itemOptions[#itemOptions + 1] = {
+                id = item.id,
+                itemId = item.id,
+                item = item,
+                name = item.name,
+                templateId = item.templateId,
+                location = entry.location,
+                treasure = treasure,
+                liquidCurrency = currency.isCurrencyItem(item) == true,
+                provenance = props.provenance or props.origin or props.source or item.provenance,
+                saleValue = saleValue,
+                explicitValue = explicitValue,
+                appraisal = type(selectedRef) == "table" and
+                    (selectedRef.appraisal or selectedRef.appraisalNotes or selectedRef.notes) or
+                    saleMetadataValue(appraisals, item.id),
+                buyer = type(selectedRef) == "table" and selectedRef.buyer or saleMetadataValue(buyers, item.id),
+                market = type(selectedRef) == "table" and selectedRef.market or saleMetadataValue(markets, item.id),
+                appraiser = type(selectedRef) == "table" and selectedRef.appraiser or
+                    saleMetadataValue(appraisers, item.id),
+                notes = type(selectedRef) == "table" and (selectedRef.saleNotes or selectedRef.notes) or
+                    saleMetadataValue(saleNotes, item.id),
+                selected = selectedRef ~= nil,
+                disabled = not treasure or saleValue <= 0,
+                unavailableReason = not treasure and "Item is not non-liquid treasure" or
+                    (saleValue <= 0 and "Treasure value required" or nil),
+            }
+        end
+    end
+
+    local selectedItems = {}
+    local totalGold = 0
+    local disabled = false
+    local unavailableReason = nil
+    if #selectedRefs == 0 then
+        disabled = true
+        unavailableReason = "Treasure item required"
+    elseif not inv or not inv.findItem or not inv.removeItem then
+        disabled = true
+        unavailableReason = "No inventory for treasure sale"
+    else
+        for _, ref in ipairs(selectedRefs) do
+            local itemId = type(ref) == "table" and ref.id or ref
+            local itemOverrides = type(ref) == "table" and ref or {}
+            local explicitValue = type(ref) == "table" and
+                (ref.value or ref.price or ref.saleValue or ref.appraisedValue) or values[itemId]
+            local item = inv:findItem(itemId)
+            if not item then
+                disabled = true
+                unavailableReason = "Treasure item not found"
+            elseif not isTreasureItem(item) then
+                disabled = true
+                unavailableReason = "Item is not non-liquid treasure"
+            else
+                local value = treasureSaleValue(item, explicitValue)
+                if value <= 0 then
+                    disabled = true
+                    unavailableReason = "Treasure value required"
+                else
+                    local props = item.properties or {}
+                    selectedItems[#selectedItems + 1] = {
+                        item = item,
+                        itemId = item.id,
+                        name = item.name,
+                        value = value,
+                        provenance = itemOverrides.provenance or itemOverrides.origin or props.provenance or
+                            props.origin or props.source or item.provenance,
+                        appraisal = itemOverrides.appraisal or itemOverrides.appraisalNotes or itemOverrides.notes or
+                            saleMetadataValue(appraisals, item.id),
+                        buyer = itemOverrides.buyer or saleMetadataValue(buyers, item.id),
+                        market = itemOverrides.market or saleMetadataValue(markets, item.id),
+                        appraiser = itemOverrides.appraiser or saleMetadataValue(appraisers, item.id),
+                        notes = itemOverrides.saleNotes or itemOverrides.notes or saleMetadataValue(saleNotes, item.id),
+                    }
+                    totalGold = totalGold + value
+                end
+            end
+            if disabled then
+                break
+            end
+        end
+    end
+
+    return {
+        action = "sell_treasure",
+        step = M.STEPS.TURN_IN_CONTRACTS,
+        itemOptions = itemOptions,
+        selectedItems = selectedItems,
+        selectedCount = #selectedItems,
+        totalGold = totalGold,
+        currentGold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0,
+        projectedGold = actor and (currency.getGold(actor) + totalGold) or nil,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+local function merchantRecordMatches(entry, key, wanted, wantedId)
+    local candidates = { key }
+    if type(entry) == "table" then
+        candidates[#candidates + 1] = entry.id
+        candidates[#candidates + 1] = entry.merchantId
+        candidates[#candidates + 1] = entry.name
+        candidates[#candidates + 1] = entry.title
+    else
+        candidates[#candidates + 1] = entry
+    end
+
+    for _, candidate in ipairs(candidates) do
+        if candidate ~= nil then
+            local text = tostring(candidate)
+            if text == wanted or normalizeProjectId(text) == wantedId then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function cloneMerchantRecord(entry, fallbackId)
+    if type(entry) == "table" then
+        local record = shallowClone(entry)
+        record.id = record.id or record.merchantId or fallbackId
+        return record
+    elseif type(entry) == "string" then
+        return {
+            id = fallbackId,
+            name = entry,
+        }
+    end
+    return nil
+end
+
+local function findMerchantRecord(merchants, merchantRef)
+    if type(merchantRef) == "table" then
+        local lookup = merchantRef.id or merchantRef.merchantId or merchantRef.name or merchantRef.title
+        local registryRecord = nil
+        local registryState = nil
+        local registryKey = nil
+        if lookup then
+            registryRecord, registryState, registryKey = findMerchantRecord(merchants, lookup)
+        end
+
+        local record = registryRecord or {}
+        for key, value in pairs(merchantRef) do
+            record[key] = shallowClone(value)
+        end
+        record.id = record.id or record.merchantId
+        return record, registryState, registryKey
+    end
+
+    local wanted = tostring(merchantRef or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if wanted == "" or type(merchants) ~= "table" then
+        return nil
+    end
+
+    local wantedId = normalizeProjectId(wanted)
+    local direct = merchants[wanted] or merchants[wantedId]
+    if direct ~= nil then
+        local record = cloneMerchantRecord(direct, wanted)
+        if record then
+            return record, type(direct) == "table" and direct or nil, wanted
+        end
+    end
+
+    for key, entry in pairs(merchants) do
+        if merchantRecordMatches(entry, key, wanted, wantedId) then
+            local fallbackId = type(key) ~= "number" and key or wanted
+            local record = cloneMerchantRecord(entry, fallbackId)
+            if record then
+                return record, type(entry) == "table" and entry or nil, key
+            end
+        end
+    end
+    return nil
+end
+
+local function merchantDisplayName(merchantInput, merchantRecord)
+    if type(merchantRecord) == "table" then
+        return merchantRecord.name or merchantRecord.title or merchantRecord.id or merchantRecord.merchantId
+    elseif type(merchantInput) == "table" then
+        return merchantInput.name or merchantInput.title or merchantInput.id or merchantInput.merchantId
+    end
+    return merchantInput
+end
+
+function M.getCommissionCraftOptions(opts)
+    opts = opts or {}
+    local actor = opts.actor or opts
+    local request = opts.request or opts.commission or opts.craft or opts
+    local description = tostring(request.description or request.name or request.title or "")
+    local commissionId = description ~= "" and normalizeProjectId(request.commissionId or request.id or description) or nil
+    local syllables, syllableError = resolveSyllables(request)
+    if syllables and description == "" then
+        syllables = 0
+    end
+
+    local gold = actor and currency.getGold(actor) or tonumber(opts.gold) or 0
+    local selectedScale = normalizeCommissionScale(request.scale or request.category or request.tier)
+    local rate = M.COMMISSION_CRAFT_RATES[selectedScale]
+    local selectedCost = rate and syllables and syllables * rate or nil
+    local commissions = opts.commissions or opts.existingCommissions or {}
+    local merchants = opts.merchants or opts.merchantRegistry or {}
+    local merchantInput = request.merchant or request.merchantId or request.artisan or request.artisanId or
+        request.crafter or request.crafterId
+    local merchantRecord, _, merchantKey = findMerchantRecord(merchants, merchantInput)
+    local merchantName = merchantDisplayName(merchantInput, merchantRecord)
+
+    local scaleOptions = {}
+    local scaleOrder = { "farmer", "adventurer", "noble", "novel" }
+    for _, scale in ipairs(scaleOrder) do
+        local scaleRate = M.COMMISSION_CRAFT_RATES[scale]
+        local scaleCost = syllables and syllables * scaleRate or nil
+        local affordable = scaleCost ~= nil and gold >= scaleCost
+        scaleOptions[#scaleOptions + 1] = {
+            id = scale,
+            scale = scale,
+            ratePerSyllable = scaleRate,
+            syllables = syllables,
+            cost = scaleCost,
+            affordable = affordable,
+            selected = scale == selectedScale,
+            disabled = scaleCost ~= nil and not affordable or nil,
+            unavailableReason = scaleCost ~= nil and not affordable and "Not enough gold" or nil,
+        }
+    end
+
+    local merchantOptions = {}
+    for key, merchant in pairs(merchants) do
+        local record = cloneMerchantRecord(merchant, type(key) ~= "number" and key or nil)
+        if record then
+            local id = record.id or record.merchantId or (type(key) ~= "number" and key or nil)
+            merchantOptions[#merchantOptions + 1] = {
+                id = id,
+                merchantId = id,
+                name = record.name or record.title or id,
+                districtId = record.districtId or record.cityDistrictId or record.district_id,
+                districtName = record.districtName or record.cityDistrictName or record.district,
+                specialties = shallowClone(record.specialties or record.craftSpecialties or record.commissionSpecialties or {}),
+                selected = merchantKey ~= nil and tostring(key) == tostring(merchantKey),
+            }
+        end
+    end
+    table.sort(merchantOptions, function(a, b)
+        return tostring(a.name or a.merchantId) < tostring(b.name or b.merchantId)
+    end)
+
+    local wantsDelivery = request.deliver == true or request.addToInventory == true or
+        request.deliverToInventory == true or request.deliverItem ~= nil or request.item ~= nil or
+        request.itemSpec ~= nil or request.rewardItem ~= nil or request.itemTemplateId ~= nil or
+        request.templateId ~= nil
+    local availablePackSlots = nil
+    if actor and actor.inventory and actor.inventory.availableSlots then
+        availablePackSlots = actor.inventory:availableSlots(request.location or request.itemLocation or inventory.LOCATIONS.PACK)
+    end
+
+    local disabled = false
+    local unavailableReason = nil
+    if request.reasonable == false or request.approved == false then
+        disabled = true
+        unavailableReason = "Commission not approved"
+    elseif description == "" then
+        disabled = true
+        unavailableReason = "Commission description required"
+    elseif selectedScale == "" or not rate then
+        disabled = true
+        unavailableReason = "Commission scale required"
+    elseif not syllables then
+        disabled = true
+        unavailableReason = syllableError
+    elseif syllables <= 0 then
+        disabled = true
+        unavailableReason = "Commission description required"
+    elseif commissionId and commissions[commissionId] then
+        disabled = true
+        unavailableReason = "Commission already exists"
+    elseif request.requireMerchant == true and not merchantRecord then
+        disabled = true
+        unavailableReason = "Commission merchant not found"
+    elseif selectedCost and gold < selectedCost then
+        disabled = true
+        unavailableReason = "Not enough gold"
+    end
+
+    return {
+        action = M.ACTIONS.COMMISSION_CRAFT,
+        description = description ~= "" and description or nil,
+        commissionId = commissionId,
+        name = request.name or request.title or description,
+        syllables = syllables,
+        syllableError = syllableError,
+        gold = gold,
+        scale = selectedScale ~= "" and selectedScale or nil,
+        ratePerSyllable = rate,
+        cost = selectedCost,
+        affordable = selectedCost ~= nil and gold >= selectedCost,
+        requiresGMApproval = true,
+        approved = request.approved ~= false and request.reasonable ~= false,
+        requiresMerchant = request.requireMerchant == true,
+        merchant = merchantName,
+        merchantId = merchantRecord and (merchantRecord.id or merchantRecord.merchantId or merchantKey) or nil,
+        merchantRecord = merchantRecord,
+        merchantFound = merchantInput == nil or merchantRecord ~= nil,
+        merchantOptions = merchantOptions,
+        scaleOptions = scaleOptions,
+        deliveryRequested = wantsDelivery,
+        deliveryLocation = request.location or request.itemLocation or inventory.LOCATIONS.PACK,
+        availableDeliverySlots = availablePackSlots,
+        disabled = disabled,
+        unavailableReason = unavailableReason,
+    }
+end
+
+local function appendCommissionToMerchant(merchantRecord, commissionId)
+    if type(merchantRecord) ~= "table" or not commissionId then
+        return nil
+    end
+
+    merchantRecord.commissions = merchantRecord.commissions or {}
+    for _, existingId in ipairs(merchantRecord.commissions) do
+        if existingId == commissionId then
+            return merchantRecord.commissions
+        end
+    end
+    merchantRecord.commissions[#merchantRecord.commissions + 1] = commissionId
+    return merchantRecord.commissions
 end
 
 local function healAllWounds(actor)
@@ -2296,38 +8781,104 @@ end
 function M.createCityPhaseController(config)
     config = config or {}
 
+    local rawCityEventsTable = config.cityEventsTable or config.city_events_table or config.cityEventTable or
+        config.customCityEventsTable or config.customCityEventTable or city_events.DEFAULT_EVENTS
+    local cityEventsTableMeta = {
+        tableName = "city_events",
+        source = "default",
+        missing = {},
+        invalid = {},
+        count = 21,
+        complete = true,
+        requireComplete = false,
+    }
+    if rawCityEventsTable ~= city_events.DEFAULT_EVENTS or config.normalizeCityEventsTable then
+        rawCityEventsTable, cityEventsTableMeta = city_events.normalizeEventTable(rawCityEventsTable, {
+            tableName = "city_events",
+            source = config.cityEventsTableSource or config.cityEventTableSource or config.city_events_table_source,
+            requireComplete = config.requireCompleteCityEventsTable == true or
+                config.requireCompleteCityEventTable == true or
+                config.require_complete_city_events_table == true,
+        })
+    end
+
+    local rawSignsAndPortentsTable = config.signsAndPortentsTable or config.signsTable or
+        config.customSignsAndPortentsTable or config.customSignsTable or city_events.SIGNS_AND_PORTENTS
+    local signsAndPortentsTableMeta = {
+        tableName = "signs_and_portents",
+        source = "default",
+        missing = {},
+        invalid = {},
+        count = 14,
+        complete = true,
+        requireComplete = false,
+    }
+    if rawSignsAndPortentsTable ~= city_events.SIGNS_AND_PORTENTS or config.normalizeSignsAndPortentsTable then
+        rawSignsAndPortentsTable, signsAndPortentsTableMeta = city_events.normalizeEventTable(rawSignsAndPortentsTable, {
+            tableName = "signs_and_portents",
+            source = config.signsAndPortentsTableSource or config.signsTableSource or
+                config.signs_and_portents_table_source,
+            defaultCategory = city_events.CATEGORIES.SIGNS_AND_PORTENTS,
+            maxValue = 14,
+            requireComplete = config.requireCompleteSignsAndPortentsTable == true or
+                config.requireCompleteSignsTable == true,
+        })
+    end
+
     local controller = {
         eventBus = config.eventBus or events.globalBus,
         actionResolver = config.actionResolver,
+        bidLoreEngine = config.bidLoreEngine or config.loreEngine,
         guild = config.guild or {},
         guildRoster = config.guildRoster or config.roster or {},
         playerDeck = config.playerDeck or config.minorDeck,
         gmDeck = config.gmDeck or config.majorDeck,
-        cityEventsTable = config.cityEventsTable or config.city_events_table or city_events.DEFAULT_EVENTS,
-        signsAndPortentsTable = config.signsAndPortentsTable or config.signsTable or city_events.SIGNS_AND_PORTENTS,
+        cityEventsTable = rawCityEventsTable,
+        cityEventsTableMeta = cityEventsTableMeta,
+        signsAndPortentsTable = rawSignsAndPortentsTable,
+        signsAndPortentsTableMeta = signsAndPortentsTableMeta,
+        consumedCityEvents = config.consumedCityEvents or {},
+        consumedSignsAndPortents = config.consumedSignsAndPortents or {},
         cityEventEffects = config.cityEventEffects or {},
         cityLayout = config.cityLayout or config.cityMap,
+        cityState = config.cityState or config.worldState or {},
+        underworldState = config.underworldState or config.dungeonState or config.mapState,
         districtActions = config.districtActions or
             ((config.cityLayout or config.cityMap) and (config.cityLayout or config.cityMap).specialCityActions) or {},
         meatgrinder = config.meatgrinder,
         meatgrinderTable = config.meatgrinderTable or config.meatgrinderEntries,
         contracts = config.contracts or config.cityContracts or {},
         jobBoard = config.jobBoard or config.availableContracts or config.contractOffers or {},
+        contractTable = config.contractTable or config.jobBoardTable or config.contractsTable,
+        menagerieStock = config.menagerieStock or config.menagerieReagents or config.menagerieCatalog,
         guildTreasury = config.guildTreasury or config.treasury or { gold = 0 },
         projects = config.projects or config.cityProjects or {},
+        researchLog = config.researchLog or config.cityResearchLog or {},
         buildings = config.buildings or config.cityBuildings or {},
         commissions = config.commissions or config.cityCommissions or {},
+        merchants = config.merchants or config.cityMerchants or {},
         funerals = config.funerals or config.funeralRecords or {},
+        retirements = config.retirements or config.retirementRecords or {},
+        questDeclarations = config.questDeclarations or config.newQuestDeclarations or {},
+        questCompletions = config.questCompletions or config.completedQuests or {},
+        guildJoins = config.guildJoins or config.newAdventurerJoins or {},
+        newAdventurerReplacementRecords = config.newAdventurerReplacementRecords or
+            config.newAdventurerReplacements or {},
+        startingGearSelections = config.startingGearSelections or config.newAdventurerStartingGear or {},
+        newAdventurerBondRecords = config.newAdventurerBondRecords or config.newAdventurerBonds or {},
+        motifChanges = config.motifChanges or config.cityMotifChanges or {},
         bankReturnsApplied = config.bankReturnsApplied or {},
         actionsCompleted = config.actionsCompleted or {},
         upkeepCompleted = config.upkeepCompleted or {},
         taxesResolved = config.taxesResolved or false,
         noteworthyDeedsResolved = config.noteworthyDeedsResolved or false,
         cityEventResolved = config.cityEventResolved or false,
+        cityEventConsequencesResolved = config.cityEventConsequencesResolved or false,
         contractsResolved = config.contractsResolved or false,
         nextCrawlPlanned = config.nextCrawlPlanned or false,
         underworldRestocked = config.underworldRestocked or false,
         cityPhaseEnded = config.cityPhaseEnded or false,
+        strictCityPhaseOrder = config.strictCityPhaseOrder or config.strictStepOrder or false,
     }
 
     function controller:hasActed(actor)
@@ -2360,6 +8911,23 @@ function M.createCityPhaseController(config)
 
     function controller:getDistrictAction(actionId)
         return findDistrictAction({ specialCityActions = self:getAvailableDistrictActions() }, actionId)
+    end
+
+    function controller:getDistrictActionOptions(actor, opts)
+        if type(actor) == "table" and opts == nil and
+           (actor.actor or actor.adventurer or actor.districtAction or actor.districtActionId or
+            actor.specialCityAction or actor.action or actor.request or actor.districtActions or
+            actor.specialCityActions or actor.ignoreActorGates) then
+            opts = actor
+            actor = opts.actor or opts.adventurer
+        end
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.districtActions = opts.districtActions or self:getAvailableDistrictActions()
+        opts.cityEventEffects = opts.cityEventEffects or self.cityEventEffects
+        opts.cityState = opts.cityState or self.cityState
+        opts.actionsCompleted = opts.actionsCompleted or self.actionsCompleted
+        return M.getDistrictActionOptions(opts)
     end
 
     function controller:canAct(actor)
@@ -2400,10 +8968,307 @@ function M.createCityPhaseController(config)
         return true
     end
 
+    function controller:isCityPhaseStepComplete(step)
+        local stepId = normalizeCityPhaseStep(step)
+        if stepId == M.STEPS.DEATH_AND_TAXES then
+            return self.taxesResolved == true
+        elseif stepId == M.STEPS.NOTEWORTHY_DEEDS then
+            return self.noteworthyDeedsResolved == true
+        elseif stepId == M.STEPS.CITY_EVENTS then
+            return self.cityEventResolved == true
+        elseif stepId == M.STEPS.TURN_IN_CONTRACTS then
+            return self.contractsResolved == true
+        elseif stepId == M.STEPS.UPKEEP then
+            for _, actor in ipairs(self.guild or {}) do
+                if isActiveAdventurer(actor) and not self:hasUpkeep(actor) then
+                    return false
+                end
+            end
+            return true
+        elseif stepId == M.STEPS.CITY_ACTIONS then
+            return self:canAdvance()
+        elseif stepId == M.STEPS.PLAN_NEXT_CRAWL then
+            return self.nextCrawlPlanned == true
+        elseif stepId == M.STEPS.RESTOCK_UNDERWORLD then
+            return self.underworldRestocked == true
+        end
+        return false
+    end
+
+    function controller:getCityPhaseFlowStatus()
+        local steps = {}
+        local nextStep = nil
+        for index, step in ipairs(M.CITY_PHASE_STEP_ORDER) do
+            local complete = self:isCityPhaseStepComplete(step)
+            if not complete and not nextStep then
+                nextStep = step
+            end
+            steps[index] = {
+                index = index,
+                step = step,
+                complete = complete,
+            }
+        end
+
+        for _, entry in ipairs(steps) do
+            entry.current = entry.step == nextStep
+        end
+
+        return {
+            steps = steps,
+            stepOrder = M.getCityPhaseStepOrder(),
+            currentStep = nextStep,
+            nextStep = nextStep,
+            complete = nextStep == nil,
+            readyToEnd = nextStep == nil and self.cityPhaseEnded ~= true,
+            cityPhaseEnded = self.cityPhaseEnded == true,
+            strictOrder = self.strictCityPhaseOrder == true,
+        }
+    end
+
+    function controller:getCityActionTurnOptions(opts)
+        opts = opts or {}
+        local selectedRequest = opts.actionData or opts.cityAction or opts.action
+        local selectedActionId = normalizeActionId(type(selectedRequest) == "table" and
+            (selectedRequest.type or selectedRequest.action or selectedRequest.id) or selectedRequest)
+        if selectedActionId == "" then
+            selectedActionId = nil
+        end
+
+        local selectedActorInput = opts.actor or type(selectedRequest) == "table" and selectedRequest.actor or nil
+        local function matchesActor(actor, wanted)
+            if wanted == nil then
+                return false
+            end
+            if actor == wanted then
+                return true
+            end
+            if type(wanted) == "table" then
+                return actorId(actor) == actorId(wanted)
+            end
+            return tostring(actorId(actor) or "") == tostring(wanted)
+        end
+
+        local activeActors = activeAdventurers(self.guild)
+        local actorOptions = {}
+        local completedActors = {}
+        local pendingActors = {}
+        local selectedActorOption = nil
+        for index, actor in ipairs(activeActors) do
+            local id = actorId(actor)
+            local completed = id and self.actionsCompleted[id] or nil
+            local option = {
+                index = index,
+                actor = actor,
+                actorId = id,
+                actorName = actor and actor.name,
+                active = true,
+                hasActed = completed ~= nil,
+                canAct = completed == nil,
+                action = completed and completed.action or nil,
+                result = completed and completed.result or nil,
+                actionRecord = completed and {
+                    action = completed.action,
+                    result = completed.result,
+                } or nil,
+            }
+            actorOptions[#actorOptions + 1] = option
+            if completed then
+                completedActors[#completedActors + 1] = option
+            else
+                pendingActors[#pendingActors + 1] = option
+            end
+            if matchesActor(actor, selectedActorInput) then
+                selectedActorOption = option
+            end
+        end
+
+        local commonActionChoices = {}
+        for actionId, detail in pairs(M.getCityActionDetails()) do
+            local allowed, reason = self:checkCityActionRestrictions(actionId)
+            detail.allowed = allowed == true
+            detail.disabled = allowed ~= true
+            detail.unavailableReason = allowed ~= true and reason or nil
+            commonActionChoices[actionId] = detail
+        end
+
+        local districtActionOptionData = self:getDistrictActionOptions({
+            ignoreActorGates = true,
+        })
+        local districtActionChoices = {}
+        for _, choice in ipairs(districtActionOptionData.actions or {}) do
+            choice.allowed = not choice.disabled
+            districtActionChoices[choice.key] = choice
+        end
+
+        local gateAvailable, gateReason, gateDetail = self:canResolveCityPhaseStep(M.STEPS.CITY_ACTIONS, opts)
+        local selectedAction = nil
+        if selectedActorInput ~= nil or selectedActionId ~= nil then
+            selectedAction = {
+                actor = selectedActorOption and selectedActorOption.actor or
+                    (type(selectedActorInput) == "table" and selectedActorInput or nil),
+                actorId = selectedActorOption and selectedActorOption.actorId or
+                    (type(selectedActorInput) == "table" and actorId(selectedActorInput) or selectedActorInput),
+                action = selectedActionId,
+                actionDetail = selectedActionId and M.getCityActionDetails(selectedActionId) or nil,
+                available = false,
+                disabled = true,
+            }
+            if not selectedActorOption then
+                selectedAction.unavailableReason = "No active adventurer"
+            elseif not gateAvailable then
+                selectedAction.unavailableReason = gateReason
+                selectedAction.gateDetail = gateDetail
+            elseif selectedActorOption.hasActed then
+                selectedAction.unavailableReason = "City Action already taken"
+            elseif not selectedActionId then
+                selectedAction.unavailableReason = "City Action required"
+            else
+                local allowed, reason = self:checkCityActionRestrictions(selectedActionId)
+                selectedAction.available = allowed == true
+                selectedAction.disabled = allowed ~= true
+                selectedAction.unavailableReason = allowed ~= true and reason or nil
+            end
+        end
+
+        local effects = self.cityEventEffects or {}
+        return {
+            step = M.STEPS.CITY_ACTIONS,
+            stepDetail = M.getCityPhaseStepDetails(M.STEPS.CITY_ACTIONS),
+            actionsPerAdventurer = 1,
+            strictOrder = self.strictCityPhaseOrder == true,
+            stepGate = {
+                available = gateAvailable == true,
+                unavailableReason = gateAvailable ~= true and gateReason or nil,
+                detail = gateDetail,
+            },
+            actors = actorOptions,
+            activeActors = actorOptions,
+            completedActors = completedActors,
+            pendingActors = pendingActors,
+            activeCount = #actorOptions,
+            requiredCount = #actorOptions,
+            completedCount = #completedActors,
+            pendingCount = #pendingActors,
+            allComplete = #pendingActors == 0,
+            canAdvance = #pendingActors == 0,
+            commonActionChoices = commonActionChoices,
+            districtActionChoices = districtActionChoices,
+            districtActionOptionData = districtActionOptionData,
+            selectedAction = selectedAction,
+            cityEventRestrictions = {
+                allowedCityActions = M.copyCityPhaseMetadata(effects.allowedCityActions),
+                blockedCityActions = M.copyCityPhaseMetadata(effects.blockedCityActions),
+                cityActionsBlockedByUndead = self.cityState and self.cityState.cityActionsBlockedByUndead == true or false,
+                undeadPlague = M.copyCityPhaseMetadata(self.cityState and self.cityState.undeadPlague),
+            },
+            resultPreview = #pendingActors == 0 and "city_actions_complete" or "city_actions_pending",
+        }
+    end
+
+    function controller:canResolveCityPhaseStep(step, opts)
+        opts = opts or {}
+        local stepId = normalizeCityPhaseStep(step or opts.step)
+        if not cityPhaseStepIndex(stepId) then
+            return false, "Unknown City Phase step", {
+                step = stepId,
+            }
+        end
+
+        local strictOrder = self.strictCityPhaseOrder == true
+        if opts.strictOrder ~= nil then
+            strictOrder = opts.strictOrder == true
+        elseif opts.strictCityPhaseOrder ~= nil then
+            strictOrder = opts.strictCityPhaseOrder == true
+        end
+
+        if strictOrder then
+            local targetIndex = cityPhaseStepIndex(stepId)
+            for index = 1, targetIndex - 1 do
+                local priorStep = M.CITY_PHASE_STEP_ORDER[index]
+                if not self:isCityPhaseStepComplete(priorStep) then
+                    return false, "Previous City Phase steps incomplete", {
+                        step = stepId,
+                        blockedBy = priorStep,
+                    }
+                end
+            end
+        end
+
+        return true, "city_phase_step_available", {
+            step = stepId,
+        }
+    end
+
+    function controller:resolveCityPhaseStep(step, opts)
+        if opts == nil and type(step) == "table" and (step.step or step.id) then
+            opts = step
+            step = opts.step or opts.id
+        end
+        opts = opts or {}
+        local stepId = normalizeCityPhaseStep(step or opts.step)
+        local available, reason, gateDetail = self:canResolveCityPhaseStep(stepId, opts)
+        if not available then
+            return false, reason, gateDetail
+        end
+
+        if stepId == M.STEPS.DEATH_AND_TAXES then
+            return self:resolveDeathAndTaxes(opts)
+        elseif stepId == M.STEPS.NOTEWORTHY_DEEDS then
+            return self:resolveNoteworthyDeeds(opts)
+        elseif stepId == M.STEPS.CITY_EVENTS then
+            return self:resolveCityEvent(opts)
+        elseif stepId == M.STEPS.TURN_IN_CONTRACTS then
+            return self:resolveTurnInContracts(opts)
+        elseif stepId == M.STEPS.UPKEEP then
+            local request = opts.upkeep or opts.upkeepRequest or opts
+            if type(request) ~= "table" then
+                request = opts
+            end
+            local actor = opts.actor or request.actor
+            if not actor then
+                return false, "Upkeep actor required", {
+                    step = stepId,
+                }
+            end
+            return self:resolveUpkeep(actor, request)
+        elseif stepId == M.STEPS.CITY_ACTIONS then
+            local actionData = opts.actionData or opts.cityAction or opts.action or opts
+            if type(actionData) ~= "table" then
+                actionData = { type = actionData }
+            end
+            local actor = opts.actor or actionData.actor
+            if not actor then
+                return false, "City Action actor required", {
+                    step = stepId,
+                }
+            end
+            return self:resolveAction(actor, actionData)
+        elseif stepId == M.STEPS.PLAN_NEXT_CRAWL then
+            return self:resolvePlanNextCrawl(opts)
+        elseif stepId == M.STEPS.RESTOCK_UNDERWORLD then
+            return self:resolveRestockUnderworld(opts)
+        end
+
+        return false, "Unknown City Phase step", {
+            step = stepId,
+        }
+    end
+
     function controller:resolveEndOfCityPhase(opts)
         opts = opts or {}
         if self.cityPhaseEnded then
             return false, "City Phase already ended"
+        end
+
+        local cityEventConsequences = self.lastCityEventConsequences
+        if opts.resolveCityEventConsequences ~= false and not self.cityEventConsequencesResolved then
+            local consequenceDetail, complete = resolvePendingCityEventConsequences(self, opts)
+            if consequenceDetail then
+                cityEventConsequences = consequenceDetail
+                self.lastCityEventConsequences = consequenceDetail
+                self.cityEventConsequencesResolved = complete == true
+            end
         end
 
         local dogCurseConsequences = {}
@@ -2425,6 +9290,7 @@ function M.createCityPhaseController(config)
         self.cityPhaseEnded = true
         local detail = {
             guild = self.guild,
+            cityEventConsequences = cityEventConsequences,
             dogCurseConsequences = dogCurseConsequences,
             result = "city_phase_ended",
         }
@@ -2435,6 +9301,23 @@ function M.createCityPhaseController(config)
         })
 
         return true, "city_phase_ended", detail
+    end
+
+    function controller:resolveCityEventConsequences(opts)
+        opts = opts or {}
+        if self.cityEventConsequencesResolved then
+            return false, "City Event consequences already resolved"
+        end
+
+        local detail, complete = resolvePendingCityEventConsequences(self, opts)
+        if not detail then
+            return false, "No pending City Event consequence"
+        end
+
+        self.lastCityEventConsequences = detail
+        self.cityEventConsequencesResolved = complete == true
+
+        return true, detail.result, detail
     end
 
     function controller:hasUpkeep(actor)
@@ -2462,11 +9345,689 @@ function M.createCityPhaseController(config)
         return self.cityEventEffects
     end
 
+    function controller:applyCityEventDistrictEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local layout = opts.cityLayout or opts.cityMap or self.cityLayout
+        local detail = {}
+
+        if effects.drawAdditionalDistrict then
+            local card = opts.additionalDistrictCard or opts.ancientQuarterCard or opts.cityEventDistrictCard
+            local added, reason = addDistrictToCityLayout(layout, card, "ancient_quarter")
+            detail.addedDistrict = added and {
+                placement = added,
+                districtId = added.district.id,
+                districtName = added.district.name,
+                card = card,
+            } or nil
+            detail.addDistrictPending = added == nil
+            detail.addDistrictReason = added and nil or reason
+        end
+
+        if effects.removeRandomDistrict then
+            local districtId = opts.removedDistrictId or opts.slimeCatastropheDistrictId or opts.cityEventDistrictId or
+                opts.districtId
+            local removed = removeDistrictFromCityLayout(layout, districtId)
+            detail.removedDistrict = removed and {
+                placement = removed,
+                districtId = cityLayoutDistrictId(removed),
+                districtName = removed.district and removed.district.name or removed.districtName,
+            } or nil
+            detail.removeDistrictPending = removed == nil
+        end
+
+        if effects.blockRandomDistrictAction then
+            local districtId = opts.blockedDistrictId or opts.mushroomForestDistrictId or opts.cityEventDistrictId or
+                opts.districtId
+            local blocked = findDistrictActionEntry(layout, districtId)
+            if blocked then
+                blocked.blockedByCityEvent = true
+                blocked.blockedReason = "mushroom_forest"
+                self.cityEventEffects.blockedDistrictActions = self.cityEventEffects.blockedDistrictActions or {}
+                self.cityEventEffects.blockedDistrictActions[blocked.action and blocked.action.id or ""] = true
+                self.cityEventEffects.blockedDistrictIds = self.cityEventEffects.blockedDistrictIds or {}
+                self.cityEventEffects.blockedDistrictIds[blocked.districtId] = true
+                detail.blockedDistrictAction = {
+                    districtId = blocked.districtId,
+                    districtName = blocked.districtName,
+                    actionId = blocked.action and blocked.action.id,
+                    reason = "mushroom_forest",
+                }
+            else
+                detail.blockedDistrictActionPending = true
+            end
+        end
+
+        if detail.addedDistrict or detail.removedDistrict or detail.blockedDistrictAction or
+           detail.addDistrictPending or detail.removeDistrictPending or detail.blockedDistrictActionPending then
+            self.lastCityEventLayoutEffects = detail
+            return detail
+        end
+        return nil
+    end
+
+    function controller:applyCityEventOmenEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local omen = effects.cityOmen or effects.city_omen
+        if type(omen) ~= "table" then
+            return nil
+        end
+
+        local cityState = opts.cityState or opts.worldState or self.cityState
+        cityState.cityOmens = cityState.cityOmens or {}
+
+        local record = {}
+        for key, value in pairs(omen) do
+            record[key] = value
+        end
+        record.eventValue = eventEntry and eventEntry.value
+        record.eventTitle = eventEntry and eventEntry.title
+        record.signValue = sign and sign.value
+        record.signTitle = sign and sign.title
+
+        cityState.cityOmens[#cityState.cityOmens + 1] = record
+        if record.flag then
+            cityState[record.flag] = true
+        end
+        if record.years then
+            cityState.yearsElapsed = (tonumber(cityState.yearsElapsed) or 0) + math.floor(tonumber(record.years) or 0)
+        end
+        if record.requiresPlayerSecrets then
+            cityState.pendingDreamSecrets = opts.pendingDreamSecrets or #activeAdventurers(self.guild)
+        end
+
+        local detail = {
+            omen = record,
+            cityState = cityState,
+            result = "city_omen_recorded",
+        }
+        self.lastCityEventOmen = detail
+        return detail
+    end
+
+    function controller:applyCityEventSuccessionEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local succession = effects.citySuccession or effects.city_succession
+        if type(succession) ~= "table" then
+            return nil
+        end
+
+        local pending, cityState = M._markCitySuccessionPending(self, eventEntry, sign, succession, opts)
+        local detail = {
+            effect = succession,
+            pending = pending,
+            cityState = cityState,
+            result = "city_event_succession_pending",
+        }
+        self.lastCityEventSuccession = detail
+        return detail
+    end
+
+    function controller:applyCityEventUndeadPlagueEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local plague = effects.undeadPlague or effects.undead_plague
+        if type(plague) ~= "table" then
+            return nil
+        end
+
+        local record, cityState = M._markCityUndeadPlague(self, eventEntry, sign, plague, opts)
+        local detail = {
+            effect = plague,
+            plague = record,
+            cityState = cityState,
+            result = "city_event_undead_plague_active",
+        }
+        self.lastCityEventUndeadPlague = detail
+        return detail
+    end
+
+    function controller:applyCityEventRandomTargetEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local randomEffect = effects.randomAdventurer or effects.random_adventurer
+        if type(randomEffect) ~= "table" then
+            return nil
+        end
+
+        local minorDiscard = getTopMinorDiscard(self, opts)
+        if not minorDiscard or not isMinorDeckCard(minorDiscard) then
+            return {
+                pending = true,
+                reason = "requires_minor_discard",
+                effect = randomEffect,
+            }
+        end
+
+        local actors = activeAdventurers(opts.guild or self.guild)
+        local target = selectRandomAdventurerFromMinorDiscard(actors, minorDiscard)
+        if not target then
+            return {
+                pending = true,
+                reason = "requires_active_adventurer",
+                effect = randomEffect,
+                minorDiscard = minorDiscard,
+            }
+        end
+
+        local record = {
+            id = randomEffect.id or "city_event_random_adventurer",
+            type = randomEffect.type or "city_event_random_adventurer",
+            source = randomEffect.source or "city_event",
+            eventValue = eventEntry and eventEntry.value,
+            eventTitle = eventEntry and eventEntry.title,
+            minorDiscard = minorDiscard,
+        }
+        local recordField = randomEffect.recordField or "cityEventRandomTargets"
+        appendActorRecord(target, recordField, record)
+
+        local detail = {
+            target = target,
+            targetId = actorId(target),
+            effect = randomEffect,
+            record = record,
+            recordField = recordField,
+            minorDiscard = minorDiscard,
+            result = "city_event_random_target_resolved",
+        }
+        self.lastCityEventRandomTarget = detail
+        return detail
+    end
+
+    local function selectTargetedCityEventAdventurer(effect, actors, opts)
+        opts = opts or {}
+        local explicit = opts.targetedAdventurer or opts.cityEventTarget or opts.targetActor or opts.target
+        local actor = resolveActorReference(explicit, actors)
+        if actor then
+            return actor, {
+                targetRule = "explicit",
+            }
+        end
+
+        local targetRule = effect and (effect.target or effect.targetRule)
+        if targetRule == "highest_suit" then
+            local selected, score = selectSuitTarget(actors, effect.suit, "highest")
+            return selected, {
+                targetRule = targetRule,
+                suit = effect.suit,
+                suitValue = score,
+            }
+        elseif targetRule == "lowest_suit" then
+            local selected, score = selectSuitTarget(actors, effect.suit, "lowest")
+            return selected, {
+                targetRule = targetRule,
+                suit = effect.suit,
+                suitValue = score,
+            }
+        end
+
+        return actors and actors[1] or nil, {
+            targetRule = targetRule or "first_active",
+        }
+    end
+
+    function controller:applyCityEventTargetedAdventurerEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local targetedEffect = effects.targetedAdventurer or effects.targeted_adventurer
+        if type(targetedEffect) ~= "table" then
+            return nil
+        end
+
+        local actors = activeAdventurers(opts.guild or self.guild)
+        local target, targetDetail = selectTargetedCityEventAdventurer(targetedEffect, actors, opts)
+        if not target then
+            return {
+                pending = true,
+                reason = "requires_active_adventurer",
+                effect = targetedEffect,
+                targetRule = targetDetail and targetDetail.targetRule,
+            }
+        end
+
+        local record = {
+            id = targetedEffect.id or "city_event_targeted_adventurer",
+            type = targetedEffect.type or "city_event_targeted_adventurer",
+            source = targetedEffect.source or "city_event",
+            eventValue = eventEntry and eventEntry.value,
+            eventTitle = eventEntry and eventEntry.title,
+            targetRule = targetDetail.targetRule,
+            suit = targetDetail.suit,
+            suitValue = targetDetail.suitValue,
+        }
+        local recordField = targetedEffect.recordField or "cityEventTargetedAdventurers"
+        appendActorRecord(target, recordField, record)
+
+        local detail = {
+            target = target,
+            targetId = actorId(target),
+            targetRule = targetDetail.targetRule,
+            suit = targetDetail.suit,
+            suitValue = targetDetail.suitValue,
+            effect = targetedEffect,
+            record = record,
+            recordField = recordField,
+            result = "city_event_targeted_adventurer_resolved",
+        }
+        self.lastCityEventTargetedAdventurer = detail
+        return detail
+    end
+
+    local function normalizeCityCompanionKey(value)
+        return tostring(value or "")
+            :lower()
+            :gsub("[’']", "")
+            :gsub("[^%w]+", "_")
+            :gsub("^_+", "")
+            :gsub("_+$", "")
+    end
+
+    local function addCityCompanionCandidate(candidates, value)
+        if type(value) == "table" then
+            for _, entry in ipairs(value) do
+                addCityCompanionCandidate(candidates, entry)
+            end
+            return
+        end
+        local normalized = normalizeCityCompanionKey(value)
+        if normalized ~= "" then
+            candidates[normalized] = true
+        end
+    end
+
+    local function cityEventCompanionMatchesCriteria(companion, effect)
+        local wanted = {}
+        addCityCompanionCandidate(wanted, effect.targetSpecies or effect.target_species or effect.species or
+            effect.feedFor or effect.feed_for or effect.templateId or effect.companionTemplateId)
+        if next(wanted) == nil then
+            return true
+        end
+
+        local candidates = {}
+        addCityCompanionCandidate(candidates, companion.templateId)
+        addCityCompanionCandidate(candidates, companion.id)
+        addCityCompanionCandidate(candidates, companion.name)
+        addCityCompanionCandidate(candidates, companion.species)
+        addCityCompanionCandidate(candidates, companion.animalType)
+        addCityCompanionCandidate(candidates, companion.feedType)
+        addCityCompanionCandidate(candidates, companion.aliases)
+
+        local template = animal_companions.getTemplate(companion.templateId or companion.species or
+            companion.animalType or companion.feedType or companion.name)
+        if template then
+            addCityCompanionCandidate(candidates, template.id)
+            addCityCompanionCandidate(candidates, template.name)
+            addCityCompanionCandidate(candidates, template.species)
+            addCityCompanionCandidate(candidates, template.animalType)
+            addCityCompanionCandidate(candidates, template.feedType)
+            addCityCompanionCandidate(candidates, template.aliases)
+        end
+
+        for key in pairs(wanted) do
+            if candidates[key] then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function isCityEventRationItem(item)
+        local props = item and item.properties or {}
+        local templateId = item and item.templateId
+        return item and (item.isRation == true or props.isRation == true or props.ration == true or
+            item.type == "ration" or item.itemType == "ration" or props.type == "ration" or
+            templateId == "ration" or templateId == "rations_3" or templateId == "disgusting_ration")
+    end
+
+    local function isCityEventAnimalFeedItem(item)
+        local props = item and item.properties or {}
+        return item and (item.type == "animal_feed" or item.itemType == "animal_feed" or
+            props.isAnimalFeed == true or props.animalFeed == true)
+    end
+
+    local function cityEventAnimalFeedMatches(item, opportunity)
+        if isCityEventRationItem(item) then
+            return opportunity.acceptsRations ~= false
+        end
+        if not isCityEventAnimalFeedItem(item) then
+            return false
+        end
+
+        local props = item.properties or {}
+        local feedFor = normalizeCityCompanionKey(props.feedFor or props.animalType or props.animalKind)
+        if feedFor == "" or feedFor == "any" then
+            return true
+        end
+
+        local candidates = {}
+        local function addCandidate(value)
+            if type(value) == "table" then
+                for _, entry in ipairs(value) do
+                    addCandidate(entry)
+                end
+                return
+            end
+            local normalized = normalizeCityCompanionKey(value)
+            if normalized ~= "" then
+                candidates[normalized] = true
+            end
+        end
+
+        addCandidate(opportunity.feedFor)
+        addCandidate(opportunity.templateId or opportunity.companionTemplateId)
+        addCandidate(opportunity.species or opportunity.animalType or opportunity.kind)
+        local template = animal_companions.getTemplate(opportunity.templateId or opportunity.companionTemplateId or
+            opportunity.species or opportunity.animalType or opportunity.kind)
+        if template then
+            addCandidate(template.id)
+            addCandidate(template.name)
+            addCandidate(template.species)
+            addCandidate(template.animalType)
+            addCandidate(template.feedType)
+            addCandidate(template.aliases)
+        end
+
+        return candidates[feedFor] == true
+    end
+
+    local function findCityEventFeedItem(owner, opportunity, opts)
+        opts = opts or {}
+        local inv = owner and owner.inventory
+        if not inv then
+            return nil, nil
+        end
+
+        local explicitItem = opts.cityEventFeedItem or opts.feedItem or opts.dogFeedItem
+        if type(explicitItem) == "table" and cityEventAnimalFeedMatches(explicitItem, opportunity) then
+            return explicitItem
+        end
+
+        local explicitId = opts.cityEventFeedItemId or opts.feedItemId or opts.dogFeedItemId
+        if explicitId and inv.findItem then
+            local item, location = inv:findItem(explicitId)
+            if item and cityEventAnimalFeedMatches(item, opportunity) then
+                return item, location
+            end
+            return nil, nil
+        end
+
+        if inv.findItemByPredicate then
+            return inv:findItemByPredicate(function(item)
+                return cityEventAnimalFeedMatches(item, opportunity)
+            end)
+        end
+        return nil, nil
+    end
+
+    local function consumeCityEventFeedItem(owner, item)
+        local inv = owner and owner.inventory
+        if not inv or not item then
+            return false, "not_found"
+        end
+        if inv.removeItemQuantity then
+            return inv:removeItemQuantity(item.id, 1)
+        end
+        if inv.removeItem then
+            local removed = inv:removeItem(item.id)
+            return removed ~= nil, removed and "removed" or "not_found"
+        end
+        return false, "not_found"
+    end
+
+    local function cityEventCompanionOwner(controller, opts)
+        local explicit = opts.animalCompanionOwner or opts.cityEventCompanionOwner or opts.dogOwner or
+            opts.owner or opts.targetActor or opts.target
+        if actorId(explicit) then
+            return explicit
+        end
+
+        local actors = activeAdventurers(opts.guild or controller.guild)
+        if explicit ~= nil then
+            local wanted = tostring(explicit)
+            for _, actor in ipairs(actors) do
+                if tostring(actorId(actor) or "") == wanted then
+                    return actor
+                end
+            end
+        end
+        return actors[1]
+    end
+
+    function controller:applyCityEventAnimalCompanionEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local opportunity = effects.animalCompanionOpportunity or effects.animal_companion_opportunity
+        if type(opportunity) ~= "table" then
+            return nil
+        end
+
+        local wantsToFeed = positiveFlag(firstProvided(
+            opts.feedCityEventCompanion,
+            opts.feedAnimalCompanion,
+            opts.feedDog,
+            opts.dogFed,
+            opts.adoptDog,
+            opts.cityEventCompanionFed,
+            opts.animalCompanionOpportunity and opts.animalCompanionOpportunity.feed,
+            opts.doggy and opts.doggy.feed
+        ))
+        local detail = {
+            opportunity = opportunity,
+            eventValue = eventEntry and eventEntry.value,
+            eventTitle = eventEntry and eventEntry.title,
+            pending = not wantsToFeed,
+            result = wantsToFeed and "city_event_animal_companion_feed_pending" or
+                "city_event_animal_companion_opportunity",
+        }
+        if not wantsToFeed then
+            self.lastCityEventAnimalCompanion = detail
+            return detail
+        end
+
+        local owner = cityEventCompanionOwner(self, opts)
+        if not owner then
+            detail.pending = true
+            detail.reason = "requires_active_adventurer"
+            self.lastCityEventAnimalCompanion = detail
+            return detail
+        end
+
+        local feedItem, feedLocation = findCityEventFeedItem(owner, opportunity, opts)
+        if opportunity.feedRequired ~= false and not feedItem and opts.feedProvided ~= true then
+            detail.pending = true
+            detail.owner = owner
+            detail.ownerId = actorId(owner)
+            detail.reason = "requires_matching_food"
+            self.lastCityEventAnimalCompanion = detail
+            return detail
+        end
+
+        local consumed = false
+        local consumeStatus = "provided"
+        if feedItem then
+            consumed, consumeStatus = consumeCityEventFeedItem(owner, feedItem)
+            if not consumed then
+                detail.pending = true
+                detail.owner = owner
+                detail.ownerId = actorId(owner)
+                detail.feedItem = feedItem
+                detail.feedItemId = feedItem.id
+                detail.feedLocation = feedLocation
+                detail.reason = consumeStatus or "feed_not_consumed"
+                self.lastCityEventAnimalCompanion = detail
+                return detail
+            end
+        end
+
+        local companion = animal_companions.createCompanion(opportunity.templateId or
+            opportunity.companionTemplateId or opportunity.species or "hound", {
+                id = opts.companionId or opts.dogCompanionId or
+                    string.format("%s_city_event_%s", slugify(actorId(owner)), slugify(opportunity.id or "companion")),
+                name = opts.companionName or opts.dogName or opportunity.defaultName or "City Event Companion",
+                source = opportunity.source or "city_event",
+                knownCommands = {},
+            })
+        companion.cityEventFollower = true
+        companion.followedBecauseFed = true
+        companion.eventValue = eventEntry and eventEntry.value
+        companion.eventTitle = eventEntry and eventEntry.title
+
+        owner.animalCompanions = owner.animalCompanions or {}
+        owner.animalCompanions[#owner.animalCompanions + 1] = companion
+
+        local record = {
+            id = opportunity.id or "city_event_companion",
+            source = opportunity.source or "city_event",
+            eventValue = eventEntry and eventEntry.value,
+            eventTitle = eventEntry and eventEntry.title,
+            companion = companion,
+            companionId = companion.id,
+            companionName = companion.name,
+            fed = true,
+            feedItem = feedItem,
+            feedItemId = feedItem and feedItem.id,
+            feedLocation = feedLocation,
+            feedConsumed = consumed,
+            feedStatus = consumeStatus,
+        }
+        appendActorRecord(owner, opportunity.recordField or "cityEventAnimalCompanions", record)
+
+        detail.pending = false
+        detail.owner = owner
+        detail.ownerId = actorId(owner)
+        detail.companion = companion
+        detail.companionId = companion.id
+        detail.record = record
+        detail.feedItem = feedItem
+        detail.feedItemId = feedItem and feedItem.id
+        detail.feedLocation = feedLocation
+        detail.feedConsumed = consumed
+        detail.feedStatus = consumeStatus
+        detail.result = "city_event_animal_companion_joined"
+        self.lastCityEventAnimalCompanion = detail
+        return detail
+    end
+
+    function controller:applyCityEventAnimalCompanionCatastropheEffects(eventEntry, sign, opts)
+        opts = opts or {}
+        local effects = mergeCityEventEffects({}, eventEntry and eventEntry.effects)
+        effects = mergeCityEventEffects(effects, sign and sign.effects)
+        local catastrophe = effects.animalCompanionCatastrophe or effects.animal_companion_catastrophe
+        if type(catastrophe) ~= "table" then
+            return nil
+        end
+
+        local condition = catastrophe.condition or "dead"
+        local casualties = {}
+        local owners = activeAdventurers(opts.guild or self.guild)
+        for _, owner in ipairs(owners) do
+            local seen = {}
+            local function visit(companion)
+                if type(companion) ~= "table" or seen[companion] then
+                    return
+                end
+                seen[companion] = true
+                if cityEventCompanionMatchesCriteria(companion, catastrophe) then
+                    companion.conditions = companion.conditions or {}
+                    companion.conditions[condition] = true
+                    if condition == "dead" then
+                        companion.dead = true
+                        companion.status = "dead"
+                    end
+                    companion.cityEventCatastrophe = catastrophe.id or "city_event_animal_catastrophe"
+                    companion.cityEventCatastropheSource = catastrophe.source or "city_event"
+
+                    local record = {
+                        id = catastrophe.id or "city_event_animal_catastrophe",
+                        type = catastrophe.type or "animal_catastrophe",
+                        source = catastrophe.source or "city_event",
+                        eventValue = eventEntry and eventEntry.value,
+                        eventTitle = eventEntry and eventEntry.title,
+                        signValue = sign and sign.value,
+                        signTitle = sign and sign.title,
+                        companion = companion,
+                        companionId = companion.id,
+                        companionName = companion.name,
+                        condition = condition,
+                    }
+                    appendActorRecord(owner, catastrophe.recordField or "cityEventAnimalCompanionCasualties", record)
+                    casualties[#casualties + 1] = {
+                        owner = owner,
+                        ownerId = actorId(owner),
+                        companion = companion,
+                        companionId = companion.id,
+                        condition = condition,
+                        record = record,
+                    }
+                end
+            end
+
+            visit(owner.companion)
+            for _, collection in ipairs({ owner.animalCompanions or false, owner.companions or false }) do
+                if type(collection) == "table" then
+                    for _, companion in pairs(collection) do
+                        visit(companion)
+                    end
+                end
+            end
+        end
+
+        local detail = {
+            effect = catastrophe,
+            casualties = casualties,
+            casualtyCount = #casualties,
+            result = #casualties > 0 and "city_event_animal_companion_catastrophe_resolved" or
+                "city_event_animal_companion_catastrophe_no_targets",
+        }
+        self.lastCityEventAnimalCompanionCatastrophe = detail
+        return detail
+    end
+
+    function controller:recordConsumedCityEventEntries(eventEntry, sign)
+        if eventEntry then
+            self.consumedCityEvents[#self.consumedCityEvents + 1] = {
+                value = eventEntry.value,
+                title = eventEntry.title,
+                category = eventEntry.category,
+                id = eventEntry.id,
+                source = eventEntry.source,
+                tableSource = eventEntry.tableSource,
+                table = "city_events",
+            }
+        end
+        if sign then
+            self.consumedSignsAndPortents[#self.consumedSignsAndPortents + 1] = {
+                value = sign.value,
+                title = sign.title,
+                category = sign.category,
+                id = sign.id,
+                source = sign.source,
+                tableSource = sign.tableSource,
+                table = "signs_and_portents",
+            }
+        end
+    end
+
     function controller:checkCityActionRestrictions(actionId)
         local effects = self.cityEventEffects or {}
         local blocked = effects.blockedCityActions
         if blocked == "all" then
             return false, "City Actions blocked by City Event"
+        end
+
+        local plague = self.cityState and self.cityState.undeadPlague
+        if self.cityState and self.cityState.cityActionsBlockedByUndead and
+           (type(plague) ~= "table" or plague.active ~= false) then
+            return false, "City Actions blocked by undead plague"
         end
 
         local allowed = effects.allowedCityActions
@@ -2481,28 +10042,80 @@ function M.createCityPhaseController(config)
         return true
     end
 
+    function controller:resolveCityUndeadPlague(opts)
+        opts = opts or {}
+        local cityState = opts.cityState or opts.worldState or self.cityState
+        local plague = cityState and cityState.undeadPlague
+        if type(plague) ~= "table" or plague.active == false then
+            return false, "No active undead plague"
+        end
+
+        local source = firstProvided(
+            opts.undeadSource,
+            opts.source,
+            opts.sourceLocation,
+            opts.underworldSource,
+            plague.underworldSource
+        )
+        if source == nil or tostring(source) == "" then
+            return false, "Undead source required"
+        end
+
+        local quelled = positiveFlag(firstProvided(
+            opts.sourceQuelled,
+            opts.quelled,
+            opts.quellSource,
+            opts.resolved,
+            opts.destroyed
+        ))
+        if not quelled then
+            return false, "Undead source not quelled"
+        end
+
+        plague.active = false
+        plague.status = "quelled"
+        plague.underworldSource = source
+        plague.quellNotes = opts.notes or opts.note
+        plague.quellResult = opts.result or "source_quelled"
+        cityState.cityActionsBlockedByUndead = false
+        cityState.undeadPlagueQuelled = true
+        cityState.lastUndeadPlagueResolution = plague
+
+        local detail = {
+            plague = plague,
+            cityState = cityState,
+            source = source,
+            result = "city_undead_plague_quelled",
+        }
+        self.lastCityUndeadPlagueResolution = detail
+        return true, "city_undead_plague_quelled", detail
+    end
+
     function controller:resolveDeathAndTaxes(opts)
         opts = opts or {}
         if self.taxesResolved then
             return false, "Death and taxes already resolved"
         end
 
-        local rate = tonumber(opts.taxRate) or M.TAX_RATE
+        local rate = M.TAX_RATE
         local details = {}
         local totalTax = 0
-        for _, actor in ipairs(opts.guild or self.guild or {}) do
-            local ok, tax = currency.collectPercentTax(actor, rate)
+        local totalBribes = 0
+        for index, actor in ipairs(opts.guild or self.guild or {}) do
+            local ok, tax = collectDeathAndTaxesForActor(actor, rate, opts, index)
             if not ok then
                 return false, tax
             end
             details[#details + 1] = tax
             totalTax = totalTax + (tax.taxPaid or 0)
+            totalBribes = totalBribes + (tax.bribePaid or 0)
         end
 
         local result = {
             step = M.STEPS.DEATH_AND_TAXES,
             rate = rate,
             totalTax = totalTax,
+            totalBribes = totalBribes,
             details = details,
             result = "death_and_taxes_resolved",
         }
@@ -2511,6 +10124,13 @@ function M.createCityPhaseController(config)
         self.eventBus:emit(events.EVENTS.CITY_DEATH_AND_TAXES_RESOLVED, result)
 
         return true, "death_and_taxes_resolved", result
+    end
+
+    function controller:getDeathAndTaxesOptions(opts)
+        opts = opts or {}
+        opts.guild = opts.guild or self.guild
+        opts.taxesResolved = opts.taxesResolved or self.taxesResolved
+        return M.getDeathAndTaxesOptions(opts)
     end
 
     function controller:resolveNoteworthyDeeds(opts)
@@ -2549,12 +10169,18 @@ function M.createCityPhaseController(config)
         roster.deeds = roster.noteworthyDeeds
         roster.fame = #roster.noteworthyDeeds
         roster.Fame = roster.fame
+        roster.fameReaction = disposition.getFameReaction(roster.fame, {
+            reputation = opts.reputation or opts.deedTone or opts.fameTone or roster.reputation or roster.fameTone,
+            favorable = opts.favorable,
+        })
+        roster.fameDispositionFrame = roster.fameReaction.dispositionFrame
 
         local detail = {
             step = M.STEPS.NOTEWORTHY_DEEDS,
             roster = roster,
             previousFame = previousFame,
             fame = roster.fame,
+            fameReaction = roster.fameReaction,
             erased = erased,
             added = added,
             rejected = rejected,
@@ -2569,6 +10195,30 @@ function M.createCityPhaseController(config)
         return true, detail.result, detail
     end
 
+    function controller:getNoteworthyDeedsOptions(opts)
+        opts = opts or {}
+        opts.guildRoster = opts.guildRoster or opts.roster or self.guildRoster
+        if opts.noteworthyDeedsResolved == nil then
+            opts.noteworthyDeedsResolved = self.noteworthyDeedsResolved
+        end
+        return M.getNoteworthyDeedsOptions(opts)
+    end
+
+    function controller:getCityEventOptions(opts)
+        opts = opts or {}
+        opts.guild = opts.guild or self.guild
+        opts.gmDeck = opts.gmDeck or self.gmDeck
+        opts.playerDeck = opts.playerDeck or self.playerDeck
+        opts.cityEventsTable = opts.cityEventsTable or self.cityEventsTable
+        opts.cityEventsTableMeta = opts.cityEventsTableMeta or self.cityEventsTableMeta
+        opts.signsAndPortentsTable = opts.signsAndPortentsTable or self.signsAndPortentsTable
+        opts.signsAndPortentsTableMeta = opts.signsAndPortentsTableMeta or self.signsAndPortentsTableMeta
+        if opts.cityEventResolved == nil then
+            opts.cityEventResolved = self.cityEventResolved
+        end
+        return M.getCityEventOptions(opts)
+    end
+
     function controller:resolveCityEvent(opts)
         opts = opts or {}
         if self.cityEventResolved then
@@ -2580,24 +10230,64 @@ function M.createCityPhaseController(config)
             return false, "Requires major arcana draw"
         end
 
-        local eventEntry = city_events.getEvent(card.value, opts.cityEventsTable or self.cityEventsTable)
+        local cityEventsTable = opts.cityEventsTable or opts.city_events_table or self.cityEventsTable
+        local cityEventsTableMeta = self.cityEventsTableMeta
+        if opts.cityEventsTable or opts.city_events_table then
+            cityEventsTable, cityEventsTableMeta = city_events.normalizeEventTable(cityEventsTable, {
+                tableName = "city_events",
+                source = opts.cityEventsTableSource or opts.cityEventTableSource or opts.city_events_table_source,
+                requireComplete = opts.requireCompleteCityEventsTable == true or
+                    opts.requireCompleteCityEventTable == true,
+            })
+        end
+
+        if cityEventsTableMeta and cityEventsTableMeta.requireComplete and not cityEventsTableMeta.complete then
+            return false, "City Event table incomplete", cityEventsTableMeta
+        end
+
+        local eventEntry = city_events.getEvent(card.value, cityEventsTable)
         if not eventEntry then
             return false, "City Event table entry missing"
         end
+        local eventCategory = eventEntry.category or cityEventCategoryForValue(eventEntry.value or card.value)
+        eventEntry.category = eventEntry.category or eventCategory
 
-        local minorDiscard = opts.minorDiscardCard or opts.minorDiscard
         local minorDeck = opts.playerDeck or opts.minorDeck or self.playerDeck
-        if not minorDiscard and eventEntry.category == city_events.CATEGORIES.SIGNS_AND_PORTENTS and
-            minorDeck and minorDeck.peekDiscard then
-            minorDiscard = minorDeck:peekDiscard()
+        local minorDiscard = nil
+        if eventCategory == city_events.CATEGORIES.SIGNS_AND_PORTENTS then
+            if minorDeck and minorDeck.peekDiscard then
+                minorDiscard = minorDeck:peekDiscard()
+            end
+            minorDiscard = minorDiscard or opts.minorDiscardCard or opts.minorDiscard or
+                opts.topMinorDiscardCard or opts.topMinorDiscard
         end
 
         local sign = nil
-        if eventEntry.category == city_events.CATEGORIES.SIGNS_AND_PORTENTS then
+        local signsAndPortentsTable = opts.signsAndPortentsTable or opts.signsTable or self.signsAndPortentsTable
+        local signsAndPortentsTableMeta = self.signsAndPortentsTableMeta
+        if eventCategory == city_events.CATEGORIES.SIGNS_AND_PORTENTS then
             if not minorDiscard then
                 return false, "Requires minor discard for Signs and Portents"
             end
-            sign = city_events.getSign(minorDiscard.value, opts.signsAndPortentsTable or self.signsAndPortentsTable)
+            if not isMinorDeckCard(minorDiscard) then
+                return false, "Requires minor discard for Signs and Portents"
+            end
+            if opts.signsAndPortentsTable or opts.signsTable then
+                signsAndPortentsTable, signsAndPortentsTableMeta = city_events.normalizeEventTable(signsAndPortentsTable, {
+                    tableName = "signs_and_portents",
+                    source = opts.signsAndPortentsTableSource or opts.signsTableSource or
+                        opts.signs_and_portents_table_source,
+                    defaultCategory = city_events.CATEGORIES.SIGNS_AND_PORTENTS,
+                    maxValue = 14,
+                    requireComplete = opts.requireCompleteSignsAndPortentsTable == true or
+                        opts.requireCompleteSignsTable == true,
+                })
+            end
+            if signsAndPortentsTableMeta and signsAndPortentsTableMeta.requireComplete and
+                not signsAndPortentsTableMeta.complete then
+                return false, "Signs and Portents table incomplete", signsAndPortentsTableMeta
+            end
+            sign = city_events.getSign(minorDiscard.value, signsAndPortentsTable)
             if not sign then
                 return false, "Signs and Portents table entry missing"
             end
@@ -2607,14 +10297,38 @@ function M.createCityPhaseController(config)
             drawnDeck:discard(card)
         end
 
+        local effects = self:applyCityEventEffects(eventEntry, sign)
+        local layoutEffects = self:applyCityEventDistrictEffects(eventEntry, sign, opts)
+        local omenEffects = self:applyCityEventOmenEffects(eventEntry, sign, opts)
+        local successionEffects = self:applyCityEventSuccessionEffects(eventEntry, sign, opts)
+        local undeadPlagueEffects = self:applyCityEventUndeadPlagueEffects(eventEntry, sign, opts)
+        local randomTargetEffects = self:applyCityEventRandomTargetEffects(eventEntry, sign, opts)
+        local targetedAdventurerEffects = self:applyCityEventTargetedAdventurerEffects(eventEntry, sign, opts)
+        local animalCompanionEffects = self:applyCityEventAnimalCompanionEffects(eventEntry, sign, opts)
+        local animalCompanionCatastropheEffects = self:applyCityEventAnimalCompanionCatastropheEffects(
+            eventEntry, sign, opts
+        )
+        self:recordConsumedCityEventEntries(eventEntry, sign)
         local detail = {
             step = M.STEPS.CITY_EVENTS,
             card = card,
             event = eventEntry,
-            category = eventEntry.category,
+            category = eventCategory,
+            cityEventsTable = cityEventsTableMeta,
+            cityEventsTableSource = cityEventsTableMeta and cityEventsTableMeta.source,
             signCard = minorDiscard,
             sign = sign,
-            effects = self:applyCityEventEffects(eventEntry, sign),
+            signsAndPortentsTable = signsAndPortentsTableMeta,
+            signsAndPortentsTableSource = signsAndPortentsTableMeta and signsAndPortentsTableMeta.source,
+            effects = effects,
+            layoutEffects = layoutEffects,
+            omenEffects = omenEffects,
+            successionEffects = successionEffects,
+            undeadPlagueEffects = undeadPlagueEffects,
+            randomTargetEffects = randomTargetEffects,
+            targetedAdventurerEffects = targetedAdventurerEffects,
+            animalCompanionEffects = animalCompanionEffects,
+            animalCompanionCatastropheEffects = animalCompanionCatastropheEffects,
             result = "city_event_resolved",
         }
 
@@ -2632,24 +10346,65 @@ function M.createCityPhaseController(config)
         end
 
         local contracts = opts.contracts or self.contracts or {}
+        local selectedRefs = normalizeList(opts.selectedContractIds or opts.contractIds or opts.selectedContracts or
+            opts.selectedContractId or opts.contractId)
+        local selectedOnly = #selectedRefs > 0
+        local turnInQueue = contracts
+        local selectedContractIds = {}
+        if selectedOnly then
+            turnInQueue = {}
+            for _, ref in ipairs(selectedRefs) do
+                local refId = type(ref) == "table" and contractId(ref) or ref
+                local contract = refId and findContractById(contracts, refId) or nil
+                if not contract and type(ref) == "table" and hasContract(contracts, ref) then
+                    contract = ref
+                end
+                if not contract then
+                    return false, "Selected contract not active"
+                end
+                if not isContractComplete(contract) then
+                    return false, "Selected contract incomplete"
+                end
+                if contract.turnedIn == true then
+                    return false, "Selected contract already turned in"
+                end
+                turnInQueue[#turnInQueue + 1] = contract
+                selectedContractIds[#selectedContractIds + 1] = contractId(contract)
+            end
+        end
+
         local recipients = normalizeRecipientList(opts.recipients or opts.guild or self.guild)
         if #recipients == 0 then
             recipients = activeAdventurers(self.guild)
         end
 
         local details = {}
+        local patronInteractions = {}
+        local patronSources = opts.patronInteractions or opts.patronRoleplay or opts.patronScenes or opts.patrons
         local completedCount = 0
         local totalGold = 0
-        for _, contract in ipairs(contracts) do
+        for index, contract in ipairs(turnInQueue) do
             if isContractComplete(contract) and contract.turnedIn ~= true then
                 completedCount = completedCount + 1
                 local rewardGold = contractRewardGold(contract)
                 local distribution = distributeGold(rewardGold, contract.recipients or recipients, self.guildTreasury)
+                local patronInteraction = contractPatronRecord(
+                    contract,
+                    contractPatronSource(patronSources, contract, index) or
+                        contract.patronInteraction or contract.patronRoleplay or contract.turnInScene,
+                    index
+                )
                 contract.turnedIn = true
                 contract.turnedInResult = {
                     rewardGold = rewardGold,
                     distribution = distribution,
+                    patronInteraction = patronInteraction,
                 }
+                if patronInteraction then
+                    contract.patronHistory = contract.patronHistory or {}
+                    contract.patronHistory[#contract.patronHistory + 1] = patronInteraction
+                    patronInteractions[#patronInteractions + 1] = patronInteraction
+                end
                 totalGold = totalGold + rewardGold
                 details[#details + 1] = {
                     contract = contract,
@@ -2657,6 +10412,8 @@ function M.createCityPhaseController(config)
                     name = contract.name or contract.title,
                     rewardGold = rewardGold,
                     distribution = distribution,
+                    selected = selectedOnly,
+                    patronInteraction = patronInteraction,
                 }
             end
         end
@@ -2678,8 +10435,11 @@ function M.createCityPhaseController(config)
         local result = {
             step = M.STEPS.TURN_IN_CONTRACTS,
             contracts = details,
+            selected = selectedOnly,
+            selectedContractIds = selectedContractIds,
             completedCount = completedCount,
             totalGold = totalGold,
+            patronInteractions = patronInteractions,
             xpPerContract = xpPerContract,
             xpAwarded = xpAwarded,
             xpRecipients = xpRecipients,
@@ -2687,10 +10447,203 @@ function M.createCityPhaseController(config)
             result = completedCount > 0 and "contracts_turned_in" or "no_completed_contracts",
         }
 
+        if #patronInteractions > 0 then
+            self.guildRoster.contractPatronInteractions = self.guildRoster.contractPatronInteractions or {}
+            for _, interaction in ipairs(patronInteractions) do
+                self.guildRoster.contractPatronInteractions[#self.guildRoster.contractPatronInteractions + 1] =
+                    interaction
+            end
+        end
+
         self.contractsResolved = true
         self.eventBus:emit(events.EVENTS.CITY_CONTRACTS_TURNED_IN, result)
 
         return true, result.result, result
+    end
+
+    function controller:getTurnInContractsOptions(opts)
+        opts = opts or {}
+        opts.contracts = opts.contracts or self.contracts
+        opts.guild = opts.guild or self.guild
+        opts.guildTreasury = opts.guildTreasury or self.guildTreasury
+        if opts.contractsResolved == nil then
+            opts.contractsResolved = self.contractsResolved
+        end
+        return M.getTurnInContractsOptions(opts)
+    end
+
+    function controller:resolveDeclareGuildQuest(opts)
+        opts = opts or {}
+        local quest = opts.quest or opts.currentQuest or opts.newQuest or opts.title or opts.objective
+        if type(quest) == "string" then
+            quest = quest:gsub("^%s+", ""):gsub("%s+$", "")
+            if quest == "" then
+                quest = nil
+            end
+        end
+        if not quest then
+            return false, "Quest required"
+        end
+        if opts.requireAgreement ~= false and
+            opts.guildAgrees ~= true and opts.everybodyAgrees ~= true and
+            opts.agreed ~= true and opts.approved ~= true then
+            return false, "Guild agreement required"
+        end
+        if self.guildRoster.currentQuest and not opts.allowReplaceQuest then
+            return false, "Guild already pursuing a quest"
+        end
+        local questReview = opts.questReview
+        if not questReview then
+            local _, _, reviewed = quest_rules.reviewQuest({
+                quest = quest,
+                discrete = opts.discrete,
+                achievable = opts.achievable,
+                afterCompletion = opts.afterCompletion or opts.newQuestAfterCompletion,
+                relatedToPreviousAdventure = opts.relatedToPreviousAdventure,
+            })
+            questReview = reviewed
+        end
+        if opts.validateQuest ~= false and questReview and questReview.valid == false then
+            return false, questReview.message or "Quest should be discrete and achievable", {
+                questReview = questReview,
+                result = questReview.result,
+            }
+        end
+        local questPrep = opts.questPrep
+        if not questPrep and (opts.objectivePlacement or opts.placement or opts.location or opts.roomId or
+            opts.featureId or opts.hints or opts.rumors or opts.associatedCharacters or opts.characters or
+            opts.npcs or opts.challenges or opts.obstacles or opts.pathsToVictory or opts.paths) then
+            local _, _, prepared = quest_rules.prepareQuest({
+                quest = quest,
+                discrete = opts.discrete,
+                achievable = opts.achievable,
+                objectivePlacement = opts.objectivePlacement or opts.placement,
+                location = opts.location,
+                roomId = opts.roomId,
+                featureId = opts.featureId,
+                hints = opts.hints,
+                rumors = opts.rumors,
+                associatedCharacters = opts.associatedCharacters or opts.characters or opts.npcs,
+                challenges = opts.challenges or opts.obstacles,
+                pathsToVictory = opts.pathsToVictory or opts.paths,
+                twists = opts.twists,
+                competition = opts.competition,
+                trouble = opts.trouble,
+            })
+            questPrep = prepared
+        end
+
+        local recipients = normalizeRecipientList(opts.recipients or opts.guild or self.guild)
+        if #recipients == 0 then
+            recipients = activeAdventurers(self.guild)
+        end
+        local xpAwarded = math.max(0, math.floor(tonumber(opts.xpAwarded or opts.xpAward or opts.xp) or
+            M.QUEST_XP_AWARD))
+        local xpRecipients = {}
+        for _, participant in ipairs(recipients) do
+            addXP(participant, xpAwarded)
+            participant.guildQuest = quest
+            appendActorRecord(participant, "questXP", {
+                quest = quest,
+                xp = xpAwarded,
+                reason = "quest_declared",
+            })
+            xpRecipients[#xpRecipients + 1] = {
+                actor = participant,
+                actorId = actorId(participant),
+                xp = xpAwarded,
+            }
+        end
+
+        local declaration = {
+            quest = quest,
+            xpAwarded = xpAwarded,
+            xpRecipients = xpRecipients,
+            declaredBy = opts.declaredBy or opts.actor,
+            declaredById = actorId(opts.declaredBy or opts.actor),
+            agreed = true,
+            questReview = questReview,
+            questPrep = questPrep,
+            notes = opts.notes,
+        }
+        self.guildRoster.currentQuest = quest
+        self.guildRoster.currentQuestRecord = declaration
+        self.guildRoster.currentQuestReview = questReview
+        self.guildRoster.currentQuestPrep = questPrep
+        self.guildRoster.questHistory = self.guildRoster.questHistory or {}
+        self.guildRoster.questHistory[#self.guildRoster.questHistory + 1] = declaration
+        self.questDeclarations[#self.questDeclarations + 1] = declaration
+
+        local detail = {
+            quest = quest,
+            declaration = declaration,
+            xpAwarded = xpAwarded,
+            xpRecipients = xpRecipients,
+            result = "guild_quest_declared",
+        }
+        self.eventBus:emit(events.EVENTS.CITY_QUEST_DECLARED, detail)
+        return true, "guild_quest_declared", detail
+    end
+
+    function controller:resolveCompleteGuildQuest(opts)
+        opts = opts or {}
+        local quest = opts.quest or opts.currentQuest or self.guildRoster.currentQuest
+        if not quest then
+            return false, "Current quest required"
+        end
+        if self.guildRoster.currentQuestCompleted == true and not opts.allowRepeat then
+            return false, "Quest already completed"
+        end
+
+        local recipients = normalizeRecipientList(opts.recipients or opts.guild or self.guild)
+        if #recipients == 0 then
+            recipients = activeAdventurers(self.guild)
+        end
+        local xpAwarded = math.max(0, math.floor(tonumber(opts.xpAwarded or opts.xpAward or opts.xp) or
+            M.QUEST_XP_AWARD))
+        local xpRecipients = {}
+        for _, participant in ipairs(recipients) do
+            addXP(participant, xpAwarded)
+            participant.completedQuest = quest
+            participant.questCompleted = true
+            participant.lastCompletedQuest = quest
+            appendActorRecord(participant, "questXP", {
+                quest = quest,
+                xp = xpAwarded,
+                reason = "quest_completed",
+            })
+            xpRecipients[#xpRecipients + 1] = {
+                actor = participant,
+                actorId = actorId(participant),
+                xp = xpAwarded,
+            }
+        end
+
+        local completion = {
+            quest = quest,
+            xpAwarded = xpAwarded,
+            xpRecipients = xpRecipients,
+            notes = opts.notes,
+        }
+        self.guildRoster.completedQuests = self.guildRoster.completedQuests or {}
+        self.guildRoster.completedQuests[#self.guildRoster.completedQuests + 1] = completion
+        self.guildRoster.lastCompletedQuest = quest
+        self.guildRoster.currentQuestCompleted = true
+        if opts.keepCurrentQuest ~= true then
+            self.guildRoster.currentQuest = nil
+            self.guildRoster.currentQuestRecord = nil
+        end
+        self.questCompletions[#self.questCompletions + 1] = completion
+
+        local detail = {
+            quest = quest,
+            completion = completion,
+            xpAwarded = xpAwarded,
+            xpRecipients = xpRecipients,
+            result = "guild_quest_completed",
+        }
+        self.eventBus:emit(events.EVENTS.CITY_QUEST_COMPLETED, detail)
+        return true, "guild_quest_completed", detail
     end
 
     function controller:resolveSellTreasure(actor, opts)
@@ -2706,11 +10659,18 @@ function M.createCityPhaseController(config)
         end
 
         local values = opts.values or opts.prices or {}
+        local appraisals = opts.appraisals or opts.appraisalNotes or opts.appraisal
+        local buyers = opts.buyers or opts.buyerByItem or opts.buyer
+        local markets = opts.markets or opts.marketByItem or opts.market
+        local appraisers = opts.appraisers or opts.appraiserByItem or opts.appraiser
+        local saleNotes = opts.notes or opts.saleNotes
         local salePlan = {}
         local totalGold = 0
         for _, itemRef in ipairs(itemIds) do
             local itemId = type(itemRef) == "table" and itemRef.id or itemRef
-            local explicitValue = type(itemRef) == "table" and (itemRef.value or itemRef.price) or values[itemId]
+            local itemOverrides = type(itemRef) == "table" and itemRef or {}
+            local explicitValue = type(itemRef) == "table" and
+                (itemRef.value or itemRef.price or itemRef.saleValue or itemRef.appraisedValue) or values[itemId]
             local item = inv:findItem(itemId)
             if not item then
                 return false, "Treasure item not found"
@@ -2722,10 +10682,19 @@ function M.createCityPhaseController(config)
             if value <= 0 then
                 return false, "Treasure value required"
             end
+            local props = item.properties or {}
             salePlan[#salePlan + 1] = {
                 item = item,
                 itemId = item.id,
                 value = value,
+                provenance = itemOverrides.provenance or itemOverrides.origin or props.provenance or props.origin or
+                    props.source or item.provenance,
+                appraisal = itemOverrides.appraisal or itemOverrides.appraisalNotes or itemOverrides.notes or
+                    saleMetadataValue(appraisals, item.id),
+                buyer = itemOverrides.buyer or saleMetadataValue(buyers, item.id),
+                market = itemOverrides.market or saleMetadataValue(markets, item.id),
+                appraiser = itemOverrides.appraiser or saleMetadataValue(appraisers, item.id),
+                notes = itemOverrides.saleNotes or itemOverrides.notes or saleMetadataValue(saleNotes, item.id),
             }
             totalGold = totalGold + value
         end
@@ -2739,22 +10708,45 @@ function M.createCityPhaseController(config)
                     itemId = removed.id,
                     name = removed.name,
                     value = sale.value,
+                    provenance = shallowClone(sale.provenance),
+                    appraisal = shallowClone(sale.appraisal),
+                    buyer = sale.buyer,
+                    market = sale.market,
+                    appraiser = sale.appraiser,
+                    notes = shallowClone(sale.notes),
                 }
             end
         end
 
         currency.addGold(actor, totalGold)
+        local saleRecord = {
+            actorId = actorId(actor),
+            items = sold,
+            totalGold = totalGold,
+            buyer = opts.buyer,
+            market = opts.market,
+            appraiser = opts.appraiser,
+            notes = opts.notes,
+        }
+        appendActorRecord(actor, "treasureSales", saleRecord)
 
         local result = {
             step = M.STEPS.TURN_IN_CONTRACTS,
             actor = actor,
             items = sold,
+            sale = saleRecord,
             totalGold = totalGold,
             result = "treasure_sold",
         }
         self.eventBus:emit(events.EVENTS.CITY_TREASURE_SOLD, result)
 
         return true, "treasure_sold", result
+    end
+
+    function controller:getSellTreasureOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        return M.getSellTreasureOptions(opts)
     end
 
     function controller:resolvePlanNextCrawl(opts)
@@ -2772,6 +10764,8 @@ function M.createCityPhaseController(config)
                 deck = opts.deck,
                 count = opts.count or opts.cardCount,
                 idPrefix = opts.idPrefix or opts.boardId,
+                contractTable = opts.contractTable or opts.jobBoardTable or opts.contractsTable or self.contractTable,
+                contractTableSource = opts.contractTableSource or opts.tableSource,
                 allowNonStandardCount = opts.allowNonStandardCount,
                 discardDraws = opts.discardDraws,
             })
@@ -2846,6 +10840,430 @@ function M.createCityPhaseController(config)
         return true, "next_crawl_planned", detail
     end
 
+    function controller:getPlanNextCrawlOptions(opts)
+        opts = opts or {}
+        opts.guildRoster = opts.guildRoster or self.guildRoster
+        opts.contracts = opts.contracts or self.contracts
+        opts.jobBoard = opts.jobBoard or self.jobBoard
+        opts.contractTable = opts.contractTable or self.contractTable
+        opts.playerDeck = opts.playerDeck or self.playerDeck
+        opts.nextCrawlPlanned = opts.nextCrawlPlanned or self.nextCrawlPlanned
+        return M.getPlanNextCrawlOptions(opts)
+    end
+
+    function controller:resolveNewAdventurerJoinGuild(opts)
+        opts = opts or {}
+        local adventurer = opts.adventurer or opts.newAdventurer or opts.actor
+        if not adventurer then
+            return false, "New adventurer required"
+        end
+
+        local currentQuest = opts.currentQuest or opts.quest or self.guildRoster.currentQuest
+        if not currentQuest and opts.allowNoCurrentQuest ~= true then
+            return false, "Current quest required"
+        end
+        if opts.requireCompleteBonds ~= false and adventurer.newAdventurerBondComplete ~= true then
+            return false, "Complete guild Bonds required"
+        end
+        local role = opts.role or opts.guildRole or adventurer.guildRole
+        local marchingOrder = opts.marchingOrder or opts.marchingRank or adventurer.marchingOrder
+        if opts.requireRosterDetails ~= false then
+            if role == nil or tostring(role):gsub("^%s+", ""):gsub("%s+$", "") == "" then
+                return false, "Guild role required"
+            end
+            if marchingOrder == nil or tostring(marchingOrder):gsub("^%s+", ""):gsub("%s+$", "") == "" then
+                return false, "Marching order required"
+            end
+        end
+
+        local rosterAdventurers = getRosterAdventurers(self.guildRoster)
+        local rosterChange = {
+            addedToGuild = addActorToList(self.guild, adventurer),
+            addedToRoster = addActorToList(rosterAdventurers, adventurer),
+        }
+
+        local xpAwarded = 0
+        if currentQuest and opts.awardXP ~= false then
+            xpAwarded = math.max(0, math.floor(tonumber(opts.xpAwarded or opts.xpAward or opts.xp) or
+                M.QUEST_XP_AWARD))
+            addXP(adventurer, xpAwarded)
+        end
+
+        adventurer.joinedGuild = true
+        adventurer.guildRole = role
+        adventurer.marchingOrder = marchingOrder
+        adventurer.guildQuest = currentQuest or adventurer.guildQuest
+        local inheritedDiscoveries = {}
+        if opts.applyRumorMill ~= false then
+            local rumorMillDiscoveries = M.collectRumorMillDiscoveries(self.guildRoster, opts)
+            if #rumorMillDiscoveries > 0 then
+                local actorDiscoveries = adventurer.rumorMillDiscoveries or adventurer.knownDiscoveries or {}
+                local seen = {}
+                for _, discovery in ipairs(actorDiscoveries) do
+                    local key = M.discoveryRumorKey(discovery)
+                    if key then
+                        seen[tostring(key)] = true
+                    end
+                end
+                for _, discovery in ipairs(rumorMillDiscoveries) do
+                    if M.appendRumorMillDiscovery(actorDiscoveries, seen, discovery) then
+                        inheritedDiscoveries[#inheritedDiscoveries + 1] = shallowClone(discovery)
+                    end
+                end
+                adventurer.rumorMillDiscoveries = actorDiscoveries
+                adventurer.knownDiscoveries = actorDiscoveries
+            end
+        end
+        appendActorRecord(adventurer, "guildJoins", {
+            currentQuest = currentQuest,
+            role = adventurer.guildRole,
+            marchingOrder = adventurer.marchingOrder,
+            xpAwarded = xpAwarded,
+            rumorMillDiscoveries = inheritedDiscoveries,
+        })
+
+        local join = {
+            adventurer = adventurer,
+            adventurerId = actorId(adventurer),
+            currentQuest = currentQuest,
+            role = adventurer.guildRole,
+            marchingOrder = adventurer.marchingOrder,
+            xpAwarded = xpAwarded,
+            rumorMillDiscoveries = inheritedDiscoveries,
+            rumorMillDiscoveryCount = #inheritedDiscoveries,
+            rosterChange = rosterChange,
+        }
+        self.guildJoins[#self.guildJoins + 1] = join
+
+        local detail = {
+            adventurer = adventurer,
+            currentQuest = currentQuest,
+            xpAwarded = xpAwarded,
+            rumorMillDiscoveries = inheritedDiscoveries,
+            rumorMillDiscoveryCount = #inheritedDiscoveries,
+            rosterChange = rosterChange,
+            join = join,
+            result = "new_adventurer_joined_guild",
+        }
+        self.eventBus:emit(events.EVENTS.CITY_GUILD_JOINED, detail)
+        return true, "new_adventurer_joined_guild", detail
+    end
+
+    function controller:resolveNewAdventurerDeclineGuild(opts)
+        opts = opts or {}
+        local adventurer = opts.adventurer or opts.newAdventurer or opts.actor
+        if not adventurer then
+            return false, "New adventurer required"
+        end
+        if opts.requireCompleteBonds ~= false and adventurer.newAdventurerBondComplete ~= true then
+            return false, "Complete guild Bonds required"
+        end
+
+        local rosterAdventurers = getRosterAdventurers(self.guildRoster)
+        local rosterChange = {
+            removedFromGuild = removeActorFromList(self.guild, adventurer),
+            removedFromRoster = removeActorFromList(rosterAdventurers, adventurer),
+        }
+        adventurer.joinedGuild = false
+        adventurer.newAdventurerDeclinedGuild = true
+        adventurer.electedReplacementAdventurer = true
+
+        local replacement = {
+            adventurer = adventurer,
+            adventurerId = actorId(adventurer),
+            reason = opts.reason or opts.notes,
+            replacementAdventurer = opts.replacementAdventurer or opts.replacement or opts.nextAdventurer,
+            replacementName = opts.replacementName,
+            rosterChange = rosterChange,
+            result = "new_adventurer_replacement_elected",
+        }
+        appendActorRecord(adventurer, "newAdventurerReplacements", replacement)
+        self.newAdventurerReplacementRecords[#self.newAdventurerReplacementRecords + 1] = replacement
+        self.guildRoster.newAdventurerReplacements = self.guildRoster.newAdventurerReplacements or {}
+        self.guildRoster.newAdventurerReplacements[#self.guildRoster.newAdventurerReplacements + 1] = replacement
+
+        local detail = {
+            adventurer = adventurer,
+            replacement = replacement,
+            rosterChange = rosterChange,
+            result = "new_adventurer_replacement_elected",
+        }
+        self.eventBus:emit(events.EVENTS.CITY_GUILD_JOIN_DECLINED, detail)
+        return true, "new_adventurer_replacement_elected", detail
+    end
+
+    function controller:resolveNewAdventurerBonds(actor, opts)
+        opts = opts or {}
+        actor = actor or opts.actor or opts.adventurer or opts.newAdventurer
+        if not actor then
+            return false, "New adventurer required"
+        end
+
+        local actorKey = actorId(actor)
+        if not actorKey then
+            return false, "New adventurer id required"
+        end
+
+        local requireAllGuildMembers = opts.requireAllGuildMembers == true or opts.completeGuildBonds == true or
+            opts.secondSession == true
+        local targetRefs = normalizeList(opts.targets or opts.players or opts.guildMembers or opts.bondTargets or opts.bonds)
+        if #targetRefs == 0 and requireAllGuildMembers then
+            targetRefs = activeAdventurers(opts.guild or self.guild)
+        end
+
+        local selected = {}
+        local targetSeen = {}
+        local guildById = {}
+        for _, member in ipairs(activeAdventurers(opts.guild or self.guild)) do
+            local id = actorId(member)
+            if id then
+                guildById[id] = member
+            end
+        end
+
+        for _, ref in ipairs(targetRefs) do
+            local entry = type(ref) == "table" and ref or {}
+            local explicitTarget = entry.target or entry.player or entry.guildMember or entry.adventurer or entry.actor
+            local target = type(ref) == "table" and (explicitTarget or ref) or guildById[ref]
+            if type(target) ~= "table" then
+                target = guildById[tostring(ref)]
+            end
+            local targetId = actorId(target)
+            if target and targetId and targetId ~= actorKey and not targetSeen[targetId] then
+                local status = opts.defaultStatus or "friendship"
+                if explicitTarget or entry.bondStatus or entry.bond or entry.relationship or entry.reciprocalStatus then
+                    status = entry.status or entry.bondStatus or entry.bond or entry.relationship or status
+                end
+                local bondInfo = adventurer_module.getBondInfo(status)
+                if opts.strictBondTypes == true and not bondInfo then
+                    return false, "Unknown Bond type"
+                end
+                local reciprocalStatus = entry.reciprocalStatus or entry.targetStatus or entry.returnStatus
+                selected[#selected + 1] = {
+                    target = target,
+                    targetId = targetId,
+                    status = status,
+                    bondInfo = bondInfo,
+                    reciprocalStatus = reciprocalStatus,
+                }
+                targetSeen[targetId] = true
+            end
+        end
+
+        if requireAllGuildMembers then
+            for _, member in ipairs(activeAdventurers(opts.guild or self.guild)) do
+                local id = actorId(member)
+                if id and id ~= actorKey and not targetSeen[id] then
+                    return false, "Bond with every guild member required"
+                end
+            end
+        else
+            if #selected < 2 then
+                return false, "Choose two Bond targets"
+            end
+            if #selected > 2 and opts.allowExtraBonds ~= true then
+                return false, "Choose exactly two Bond targets"
+            end
+        end
+
+        actor.bonds = actor.bonds or {}
+        local bonds = {}
+        for _, selection in ipairs(selected) do
+            actor.bonds[selection.targetId] = actor.bonds[selection.targetId] or {}
+            actor.bonds[selection.targetId].status = selection.status
+            actor.bonds[selection.targetId].charged = actor.bonds[selection.targetId].charged or false
+            actor.bonds[selection.targetId].name = selection.target.name
+            adventurer_module.applyBondMetadata(actor.bonds[selection.targetId], selection.status)
+            bonds[#bonds + 1] = {
+                from = actorKey,
+                to = selection.targetId,
+                status = selection.status,
+                bondType = selection.bondInfo and selection.bondInfo.id or nil,
+                rulebookName = selection.bondInfo and selection.bondInfo.name or nil,
+                chargeTrigger = selection.bondInfo and selection.bondInfo.chargeTrigger or nil,
+            }
+
+            if selection.reciprocalStatus then
+                local reciprocalInfo = adventurer_module.getBondInfo(selection.reciprocalStatus)
+                if opts.strictBondTypes == true and not reciprocalInfo then
+                    return false, "Unknown Bond type"
+                end
+                selection.target.bonds = selection.target.bonds or {}
+                selection.target.bonds[actorKey] = selection.target.bonds[actorKey] or {}
+                selection.target.bonds[actorKey].status = selection.reciprocalStatus
+                selection.target.bonds[actorKey].charged = selection.target.bonds[actorKey].charged or false
+                selection.target.bonds[actorKey].name = actor.name
+                adventurer_module.applyBondMetadata(selection.target.bonds[actorKey], selection.reciprocalStatus)
+            end
+        end
+
+        local record = {
+            actor = actor,
+            actorId = actorKey,
+            stage = requireAllGuildMembers and "second_session" or "first_session",
+            bonds = bonds,
+            completeGuildBonds = requireAllGuildMembers,
+        }
+        actor.newAdventurerBondStage = record.stage
+        actor.newAdventurerBondComplete = requireAllGuildMembers
+        appendActorRecord(actor, "newAdventurerBonds", record)
+        self.newAdventurerBondRecords[#self.newAdventurerBondRecords + 1] = record
+        self.guildRoster.newAdventurerBonds = self.guildRoster.newAdventurerBonds or {}
+        self.guildRoster.newAdventurerBonds[#self.guildRoster.newAdventurerBonds + 1] = record
+
+        local detail = {
+            actor = actor,
+            stage = record.stage,
+            bonds = bonds,
+            record = record,
+            result = "new_adventurer_bonds_selected",
+        }
+        self.eventBus:emit(events.EVENTS.CITY_NEW_ADVENTURER_BONDS_SELECTED, detail)
+        return true, "new_adventurer_bonds_selected", detail
+    end
+
+    function controller:getNewAdventurerStartingGearOptions(actor, opts)
+        if type(actor) == "table" and opts == nil and
+           (actor.actor or actor.adventurer or actor.newAdventurer or actor.items or actor.gear or
+            actor.startingGear or actor.marketItems or actor.request) then
+            opts = actor
+            actor = opts.actor or opts.adventurer or opts.newAdventurer
+        end
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        return M.getNewAdventurerStartingGearOptions(opts)
+    end
+
+    function controller:getStartingGearOptions(actor, opts)
+        return self:getNewAdventurerStartingGearOptions(actor, opts)
+    end
+
+    function controller:resolveNewAdventurerStartingGear(actor, opts)
+        opts = opts or {}
+        actor = actor or opts.actor or opts.adventurer or opts.newAdventurer
+        if not actor then
+            return false, "New adventurer required"
+        end
+        actor.inventory = actor.inventory or inventory.createInventory()
+        if not actor.inventory or not actor.inventory.addItem then
+            return false, "No inventory for starting gear"
+        end
+
+        local talentItemSet = {}
+        for _, entry in ipairs(normalizeList(opts.talentItems or opts.talentGear or opts.requiredTalentItems)) do
+            local templateId = entry
+            if type(entry) == "table" then
+                templateId = entry.templateId or entry.itemTemplate or entry.itemTemplateId or entry.id or entry[1]
+            end
+            if templateId then
+                talentItemSet[tostring(templateId)] = true
+            end
+        end
+
+        local requests = normalizeGearRequests(opts.items or opts.gear or opts.startingGear or opts.marketItems)
+        if #requests == 0 then
+            return false, "Starting gear required"
+        end
+
+        local tierCounts = {
+            impoverished = 0,
+            common = 0,
+            luxurious = 0,
+        }
+        local planned = {}
+        for _, request in ipairs(requests) do
+            local templateId = request.templateId and tostring(request.templateId) or nil
+            if not templateId then
+                return false, "Unknown market item"
+            end
+            if not item_templates.getTemplate(templateId) then
+                return false, "Unknown market item"
+            end
+
+            local itemTier = M.MARKET_TIERS[templateId]
+            if request.forTalent == true or request.talentRequired == true or request.requiredForTalent == true or
+                request.talentItem == true or talentItemSet[templateId] == true then
+                itemTier = "impoverished"
+            end
+            if not MARKET_TIER_RANK[itemTier] then
+                return false, "Unknown market item"
+            end
+
+            local item = inventory.createItemFromTemplate(templateId, {
+                quantity = request.quantity,
+            })
+            if not item then
+                return false, "Unknown market item"
+            end
+            local location = request.location or inventory.LOCATIONS.PACK
+            if item.isArmor or item.oversized then
+                location = inventory.LOCATIONS.BELT
+            end
+            planned[#planned + 1] = {
+                templateId = templateId,
+                tier = itemTier,
+                item = item,
+                quantity = request.quantity,
+                location = location,
+                talentRequired = itemTier == "impoverished" and M.MARKET_TIERS[templateId] ~= "impoverished" or nil,
+            }
+            tierCounts[itemTier] = (tierCounts[itemTier] or 0) + request.quantity
+        end
+
+        if tierCounts.luxurious > 1 then
+            return false, "Starting gear allows one luxurious item"
+        end
+        if tierCounts.common > 5 then
+            return false, "Starting gear allows five common items"
+        end
+        if opts.requireComplete ~= false then
+            if tierCounts.luxurious ~= 1 then
+                return false, "Starting gear requires one luxurious item"
+            end
+            if tierCounts.common ~= 5 then
+                return false, "Starting gear requires five common items"
+            end
+        end
+
+        local canAdd, reason = canAddPlannedItemsToInventory(actor.inventory, planned)
+        if not canAdd then
+            return false, reason
+        end
+
+        local added = {}
+        for _, itemPlan in ipairs(planned) do
+            local ok = actor.inventory:addItem(itemPlan.item, itemPlan.location)
+            if ok then
+                added[#added + 1] = itemPlan
+            end
+        end
+
+        local selection = {
+            actor = actor,
+            actorId = actorId(actor),
+            tierCounts = tierCounts,
+            counts = tierCounts,
+            items = added,
+            complete = tierCounts.luxurious == 1 and tierCounts.common == 5,
+        }
+        actor.startingGearSelected = true
+        actor.startingGearSelection = selection
+        actor.startingGear = selection
+        appendActorRecord(actor, "startingGearSelections", selection)
+        self.startingGearSelections[#self.startingGearSelections + 1] = selection
+
+        local detail = {
+            actor = actor,
+            tierCounts = tierCounts,
+            counts = tierCounts,
+            items = added,
+            selection = selection,
+            result = "starting_gear_selected",
+        }
+        self.eventBus:emit(events.EVENTS.CITY_STARTING_GEAR_SELECTED, detail)
+        return true, "starting_gear_selected", detail
+    end
+
     function controller:resolveRestockUnderworld(opts)
         opts = opts or {}
         if self.underworldRestocked then
@@ -2857,26 +11275,62 @@ function M.createCityPhaseController(config)
         if meatgrinder and meatgrinder.getConsumedEvents then
             consumedMeatgrinder = meatgrinder:getConsumedEvents()
         end
+        local consumedCityEvents = normalizeList(opts.consumedCityEvents or self.consumedCityEvents)
+        local consumedSignsAndPortents = normalizeList(
+            opts.consumedSignsAndPortents or opts.consumedSigns or self.consumedSignsAndPortents
+        )
+
+        local mapUpdates = normalizeList(opts.mapUpdates or opts.changedRooms or opts.mapNotes)
+        local factionUpdates = normalizeList(opts.factionUpdates or opts.factions)
+        local generateReplacements = opts.generateReplacements or opts.autoGenerateReplacements or
+            opts.generateRestockEntries
+        local generatedReplacements = nil
+        if generateReplacements then
+            generatedReplacements = generateRestockReplacements({
+                consumedMeatgrinder = consumedMeatgrinder,
+                lastCityEvent = opts.lastCityEvent or self.lastCityEvent,
+                cityEventValue = opts.cityEventValue or opts.cityEventCardValue,
+                mapUpdates = mapUpdates,
+                factionUpdates = factionUpdates,
+                notes = opts.notes or opts.restockNotes,
+            })
+        end
+
+        local meatgrinderReplacementInput = opts.meatgrinderReplacements or opts.meatgrinderEntries
+        if not meatgrinderReplacementInput and generatedReplacements then
+            meatgrinderReplacementInput = generatedReplacements.meatgrinder
+        end
+        local cityEventReplacementInput = opts.cityEventReplacements or opts.cityEvents
+        if not cityEventReplacementInput and generatedReplacements then
+            cityEventReplacementInput = generatedReplacements.cityEvents
+        end
+        cityEventReplacementInput = withConsumedReplacementDefaults(cityEventReplacementInput, consumedCityEvents)
+        local signReplacementInput = opts.signsAndPortentsReplacements or opts.signsAndPortents
+        if not signReplacementInput and generatedReplacements then
+            signReplacementInput = generatedReplacements.signsAndPortents
+        end
+        signReplacementInput = withConsumedReplacementDefaults(signReplacementInput, consumedSignsAndPortents)
 
         local meatgrinderReplacements = applyTableReplacements(
             opts.meatgrinderTable or self.meatgrinderTable,
-            opts.meatgrinderReplacements or opts.meatgrinderEntries
+            meatgrinderReplacementInput
         )
         local cityEventReplacements = applyTableReplacements(
             opts.cityEventsTable or self.cityEventsTable,
-            opts.cityEventReplacements or opts.cityEvents
+            cityEventReplacementInput
         )
         local signReplacements = applyTableReplacements(
             opts.signsAndPortentsTable or self.signsAndPortentsTable,
-            opts.signsAndPortentsReplacements or opts.signsAndPortents
+            signReplacementInput
         )
+        local restockStateUpdates = applyRestockStateUpdates(self, mapUpdates, factionUpdates)
 
         if meatgrinder and meatgrinder.resetConsumed then
             meatgrinder:resetConsumed()
         end
+        self.consumedCityEvents = {}
+        self.consumedSignsAndPortents = {}
 
-        local mapUpdates = normalizeList(opts.mapUpdates or opts.changedRooms or opts.mapNotes)
-        local factionUpdates = normalizeList(opts.factionUpdates or opts.factions)
         self.guildRoster.restockNotes = self.guildRoster.restockNotes or {}
         local note = {
             mapUpdates = mapUpdates,
@@ -2889,11 +11343,15 @@ function M.createCityPhaseController(config)
         local detail = {
             step = M.STEPS.RESTOCK_UNDERWORLD,
             consumedMeatgrinder = consumedMeatgrinder,
+            consumedCityEvents = consumedCityEvents,
+            consumedSignsAndPortents = consumedSignsAndPortents,
             meatgrinderReplacements = meatgrinderReplacements,
             cityEventReplacements = cityEventReplacements,
             signsAndPortentsReplacements = signReplacements,
+            generatedReplacements = generatedReplacements,
             mapUpdates = mapUpdates,
             factionUpdates = factionUpdates,
+            stateUpdates = restockStateUpdates,
             mapsReviewed = self.guildRoster.mapsReviewed,
             notes = note.notes,
             result = "underworld_restocked",
@@ -2903,6 +11361,29 @@ function M.createCityPhaseController(config)
         self.eventBus:emit(events.EVENTS.CITY_UNDERWORLD_RESTOCKED, detail)
 
         return true, "underworld_restocked", detail
+    end
+
+    function controller:getRestockUnderworldOptions(opts)
+        opts = opts or {}
+        opts.meatgrinder = opts.meatgrinder or self.meatgrinder
+        opts.meatgrinderTable = opts.meatgrinderTable or self.meatgrinderTable
+        opts.cityEventsTable = opts.cityEventsTable or self.cityEventsTable
+        opts.signsAndPortentsTable = opts.signsAndPortentsTable or self.signsAndPortentsTable
+        opts.consumedCityEvents = opts.consumedCityEvents or self.consumedCityEvents
+        opts.consumedSignsAndPortents = opts.consumedSignsAndPortents or self.consumedSignsAndPortents
+        opts.underworldState = opts.underworldState or self.underworldState
+        opts.cityState = opts.cityState or self.cityState
+        opts.lastCityEvent = opts.lastCityEvent or self.lastCityEvent
+        opts.underworldRestocked = opts.underworldRestocked or self.underworldRestocked
+        return M.getRestockUnderworldOptions(opts)
+    end
+
+    function controller:getUpkeepOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.cityEventEffects = opts.cityEventEffects or self.cityEventEffects
+        opts.upkeepCompleted = opts.upkeepCompleted or self.upkeepCompleted
+        return M.getUpkeepOptions(opts)
     end
 
     function controller:resolveUpkeep(actor, opts)
@@ -2937,17 +11418,47 @@ function M.createCityPhaseController(config)
                 return false, "No inventory for upkeep gear"
             end
             for _, request in ipairs(gearRequests) do
-                local templateId = tostring(request.templateId or "")
-                if not item_templates.getTemplate(templateId) then
-                    return false, "Unknown market item"
+                local templateId = request.templateId and tostring(request.templateId) or nil
+                local itemTier
+                local item
+                local custom = not templateId
+                if templateId then
+                    if not item_templates.getTemplate(templateId) then
+                        return false, "Unknown market item"
+                    end
+                    itemTier = M.MARKET_TIERS[templateId]
+                    item = inventory.createItemFromTemplate(templateId, {
+                        quantity = request.quantity,
+                    })
+                else
+                    local itemName = request.name and tostring(request.name):gsub("^%s+", ""):gsub("%s+$", "")
+                    if not request.custom or not itemName or itemName == "" then
+                        return false, "Unknown market item"
+                    end
+                    itemTier = normalizeUpkeepTier(request.tier)
+                    if not MARKET_TIER_RANK[itemTier] then
+                        return false, "Custom gear tier required"
+                    end
+                    local properties = shallowClone(request.properties or {})
+                    properties.upkeepCustom = true
+                    properties.marketTier = itemTier
+                    item = inventory.createItem({
+                        id = request.customId,
+                        name = itemName,
+                        size = request.size,
+                        oversized = request.oversized,
+                        stackable = request.stackable,
+                        stackSize = request.stackSize,
+                        quantity = request.quantity,
+                        type = request.itemType,
+                        properties = properties,
+                    })
+                    item.marketTier = itemTier
+                    item.upkeepCustom = true
                 end
-                local itemTier = M.MARKET_TIERS[templateId]
                 if not canBuyMarketTier(tier.refillTier, itemTier) then
                     return false, "Gear tier not covered by upkeep"
                 end
-                local item = inventory.createItemFromTemplate(templateId, {
-                    quantity = request.quantity,
-                })
                 if not item then
                     return false, "Unknown market item"
                 end
@@ -2956,6 +11467,7 @@ function M.createCityPhaseController(config)
                     tier = itemTier,
                     item = item,
                     location = request.location or inventory.LOCATIONS.PACK,
+                    custom = custom,
                 }
             end
 
@@ -3020,6 +11532,20 @@ function M.createCityPhaseController(config)
         local healing = nil
         local resolveRefreshed = nil
         local pactBreaks = nil
+        local nextCrawlConditions = nil
+        local upkeepConsequences = {}
+        if tier.id == "destitute" then
+            actor.conditions = actor.conditions or {}
+            actor.conditions.stressed = true
+            actor.nextCrawlConditions = actor.nextCrawlConditions or {}
+            actor.nextCrawlConditions.stressed = true
+            nextCrawlConditions = actor.nextCrawlConditions
+            upkeepConsequences[#upkeepConsequences + 1] = {
+                condition = "stressed",
+                nextCrawlCondition = "stressed",
+                source = "destitute_upkeep",
+            }
+        end
         if tier.luxurious then
             healing = healAllWounds(actor)
             pactBreaks = self:breakPactsForRecoveryResult(actor, "all_wounds_healed")
@@ -3040,6 +11566,8 @@ function M.createCityPhaseController(config)
             healing = healing,
             pactBreaks = pactBreaks,
             resolveRefreshed = resolveRefreshed,
+            nextCrawlConditions = nextCrawlConditions,
+            consequences = upkeepConsequences,
             remainingGold = currency.getGold(actor),
             result = "upkeep_resolved",
         }
@@ -3163,13 +11691,21 @@ function M.createCityPhaseController(config)
 
     function controller:drawMinorCard(actionData)
         actionData = actionData or {}
-        if actionData.card or actionData.drawnCard then
-            return actionData.card or actionData.drawnCard, false
+        local explicitCard = actionData.card or actionData.drawnCard
+        if explicitCard then
+            if not isMinorDeckCard(explicitCard) then
+                return nil, false
+            end
+            return explicitCard, false
         end
 
         local deck = actionData.deck or actionData.playerDeck or actionData.minorDeck or self.playerDeck
         if deck and deck.draw then
-            return deck:draw(), true, deck
+            local card = deck:draw()
+            if not isMinorDeckCard(card) then
+                return nil, false, deck
+            end
+            return card, true, deck
         end
 
         return nil, false, deck
@@ -3177,13 +11713,21 @@ function M.createCityPhaseController(config)
 
     function controller:drawMajorCard(actionData)
         actionData = actionData or {}
-        if actionData.hangoverCard or actionData.majorCard or actionData.card then
-            return actionData.hangoverCard or actionData.majorCard or actionData.card, false
+        local explicitCard = actionData.hangoverCard or actionData.majorCard or actionData.card
+        if explicitCard then
+            if not isMajorDeckCard(explicitCard) then
+                return nil, false
+            end
+            return explicitCard, false
         end
 
         local deck = actionData.gmDeck or actionData.majorDeck or self.gmDeck
         if deck and deck.draw then
-            return deck:draw(), true, deck
+            local card = deck:draw()
+            if not isMajorDeckCard(card) then
+                return nil, false, deck
+            end
+            return card, true, deck
         end
 
         return nil, false, deck
@@ -3196,7 +11740,7 @@ function M.createCityPhaseController(config)
             actors = { actors }
         end
 
-        local rate = tonumber(opts.rate) or 0.02
+        local rate = M.BANKING_RETURN_RATE
         local details = {}
         for _, actor in ipairs(actors or {}) do
             local id = actorId(actor)
@@ -3328,6 +11872,19 @@ function M.createCityPhaseController(config)
         }
     end
 
+    function controller:getBankingOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        return M.getBankingOptions(opts)
+    end
+
+    function controller:getBegAndBuskOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.playerDeck = opts.playerDeck or self.playerDeck
+        return M.getBegAndBuskOptions(opts)
+    end
+
     function controller:resolveBegAndBusk(actor, actionData)
         local card, shouldDiscard, drawnDeck = self:drawMinorCard(actionData)
         if not card then
@@ -3364,7 +11921,10 @@ function M.createCityPhaseController(config)
             return false, "Building description required"
         end
 
-        local syllables = resolveSyllables(request)
+        local syllables, syllableError = resolveSyllables(request)
+        if not syllables then
+            return false, syllableError
+        end
         if syllables <= 0 then
             return false, "Building description required"
         end
@@ -3372,6 +11932,36 @@ function M.createCityPhaseController(config)
         local projectId = normalizeProjectId(request.projectId or request.id or description)
         if self.buildings[projectId] then
             return false, "Building project already exists"
+        end
+
+        local artisanInput = request.artisan or request.designer
+        local artisanRecord = type(artisanInput) == "table" and shallowClone(artisanInput) or nil
+        local artisanName = artisanRecord and (artisanRecord.name or artisanRecord.id) or artisanInput
+        local districtInput = request.district or request.cityDistrict or request.districtRecord
+        local districtId = request.districtId or request.cityDistrictId or request.district_id
+        local districtName = request.districtName or request.cityDistrictName
+        if type(districtInput) == "table" then
+            districtId = districtId or districtInput.id or districtInput.districtId
+            districtName = districtName or districtInput.name or districtInput.title
+        elseif districtInput then
+            districtId = districtId or districtInput
+            districtName = districtName or districtInput
+        end
+        if artisanRecord then
+            districtId = districtId or artisanRecord.districtId or artisanRecord.cityDistrictId
+            districtName = districtName or artisanRecord.districtName or artisanRecord.cityDistrictName
+        end
+
+        local cityLayout = request.cityLayout or self.cityLayout
+        local districtPlacement = nil
+        if cityLayout and districtId then
+            districtPlacement = findDistrictPlacement(cityLayout, districtId)
+            if not districtPlacement and request.requireDistrict ~= false then
+                return false, "City district not found"
+            end
+            if districtPlacement and not districtName then
+                districtName = districtPlacement.district and districtPlacement.district.name or districtPlacement.districtName
+            end
         end
 
         local cost = syllables * M.BUILD_COST_PER_SYLLABLE
@@ -3386,7 +11976,10 @@ function M.createCityPhaseController(config)
             id = projectId,
             name = request.name or request.title or description,
             description = description,
-            artisan = request.artisan or request.designer,
+            artisan = artisanName,
+            artisanRecord = artisanRecord,
+            districtId = districtId,
+            districtName = districtName,
             syllables = syllables,
             cost = cost,
             builtBy = actor,
@@ -3395,15 +11988,43 @@ function M.createCityPhaseController(config)
         }
         self.buildings[projectId] = building
 
+        local cityLayoutEntry = nil
+        if cityLayout then
+            cityLayout.buildings = cityLayout.buildings or {}
+            cityLayoutEntry = {
+                buildingId = projectId,
+                name = building.name,
+                districtId = districtId,
+                districtName = districtName,
+                builtById = building.builtById,
+                artisan = artisanName,
+            }
+            cityLayout.buildings[#cityLayout.buildings + 1] = cityLayoutEntry
+            if districtPlacement then
+                districtPlacement.buildings = districtPlacement.buildings or {}
+                districtPlacement.buildings[#districtPlacement.buildings + 1] = cityLayoutEntry
+            end
+            building.cityLayoutEntry = cityLayoutEntry
+        end
+
         return true, "building_complete", {
             actor = actor,
             action = M.ACTIONS.BUILD,
             building = building,
             projectId = projectId,
+            cityLayoutEntry = cityLayoutEntry,
             syllables = syllables,
             cost = cost,
             result = "building_complete",
         }
+    end
+
+    function controller:getBuildProjectOption(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.buildings = opts.buildings or self.buildings
+        opts.cityLayout = opts.cityLayout or self.cityLayout
+        return M.getBuildProjectOption(opts)
     end
 
     function controller:resolveCampAction(actor, actionData)
@@ -3464,6 +12085,14 @@ function M.createCityPhaseController(config)
         }
     end
 
+    function controller:getCityCampActionOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.guild = opts.guild or self.guild
+        opts.context = opts.context or opts.campContext or cityCampActionContext(self, opts)
+        return M.getCityCampActionOptions(opts)
+    end
+
     function controller:resolveCommissionCraft(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.commission or actionData.craft or actionData
@@ -3482,7 +12111,10 @@ function M.createCityPhaseController(config)
             return false, "Commission scale required"
         end
 
-        local syllables = resolveSyllables(request)
+        local syllables, syllableError = resolveSyllables(request)
+        if not syllables then
+            return false, syllableError
+        end
         if syllables <= 0 then
             return false, "Commission description required"
         end
@@ -3492,7 +12124,75 @@ function M.createCityPhaseController(config)
             return false, "Commission already exists"
         end
 
+        local merchantInput = request.merchant or request.merchantId or request.artisan or request.artisanId or
+            request.crafter or request.crafterId
+        local merchantRecord, merchantState, merchantKey = findMerchantRecord(self.merchants, merchantInput)
+        if request.requireMerchant == true and not merchantRecord then
+            return false, "Commission merchant not found"
+        end
+        local merchantName = merchantDisplayName(merchantInput, merchantRecord)
+        local merchantId = merchantRecord and (merchantRecord.id or merchantRecord.merchantId or merchantKey) or nil
+        local merchantDistrictId = merchantRecord and
+            (merchantRecord.districtId or merchantRecord.cityDistrictId or merchantRecord.district_id) or nil
+        local merchantDistrictName = merchantRecord and
+            (merchantRecord.districtName or merchantRecord.cityDistrictName or merchantRecord.district) or nil
+        local merchantSpecialties = merchantRecord and
+            (merchantRecord.specialties or merchantRecord.craftSpecialties or merchantRecord.commissionSpecialties) or nil
+
         local cost = syllables * rate
+        local deliveryRequest = request.deliverItem or request.item or request.itemSpec or request.rewardItem
+        local wantsDelivery = request.deliver == true or request.addToInventory == true or
+            request.deliverToInventory == true or deliveryRequest ~= nil or
+            request.itemTemplateId ~= nil or request.templateId ~= nil
+        local deliveryPlan = nil
+        if wantsDelivery then
+            if not actor or not actor.inventory or not actor.inventory.addItem then
+                return false, "No inventory for commissioned item"
+            end
+
+            local templateId = request.itemTemplateId or request.templateId
+            if not templateId and type(deliveryRequest) == "string" then
+                templateId = deliveryRequest
+            end
+
+            local item = nil
+            if templateId then
+                item = inventory.createItemFromTemplate(templateId, request.itemOverrides or request.overrides)
+                if not item then
+                    return false, "Unknown commissioned item"
+                end
+            elseif type(deliveryRequest) == "table" then
+                item = inventory.createItem(shallowClone(deliveryRequest))
+            else
+                item = inventory.createItem({
+                    id = request.itemId or (commissionId .. "_item"),
+                    name = request.itemName or request.name or request.title or description,
+                    type = request.itemType or "commissioned_craft",
+                    size = request.size,
+                    oversized = request.oversized,
+                    properties = shallowClone(request.itemProperties or request.properties or {}),
+                })
+            end
+
+            item.name = request.itemName or item.name or request.name or request.title or description
+            item.properties = item.properties or {}
+            item.properties.commissioned = true
+            item.properties.commissionId = commissionId
+            item.properties.commissionScale = scale
+            item.properties.commissionMerchant = merchantName
+            item.properties.commissionMerchantId = merchantId
+            item.properties.commissionMerchantDistrictId = merchantDistrictId
+            deliveryPlan = {
+                item = item,
+                location = request.location or request.itemLocation or inventory.LOCATIONS.PACK,
+            }
+
+            local canAdd, reason = canAddPlannedItemsToInventory(actor.inventory, { deliveryPlan })
+            if not canAdd then
+                return false, reason
+            end
+        end
+
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -3500,11 +12200,31 @@ function M.createCityPhaseController(config)
             return false, "Not enough gold"
         end
 
+        local deliveredItem = nil
+        if deliveryPlan then
+            local added, reason = addPlannedItems(actor.inventory, { deliveryPlan })
+            if not added then
+                return false, reason or "insufficient_slots"
+            end
+            deliveredItem = added[1]
+        end
+
+        appendCommissionToMerchant(merchantState, commissionId)
+        if merchantRecord then
+            appendCommissionToMerchant(merchantRecord, commissionId)
+        end
+
         local commission = {
             id = commissionId,
             name = request.name or request.title or description,
             description = description,
-            merchant = request.merchant or request.artisan or request.crafter,
+            merchant = merchantName,
+            merchantId = merchantId,
+            merchantRecord = merchantRecord,
+            merchantRegistryKey = merchantKey,
+            merchantDistrictId = merchantDistrictId,
+            merchantDistrictName = merchantDistrictName,
+            merchantSpecialties = merchantSpecialties and shallowClone(merchantSpecialties) or nil,
             scale = scale,
             ratePerSyllable = rate,
             syllables = syllables,
@@ -3512,6 +12232,10 @@ function M.createCityPhaseController(config)
             commissionedBy = actor,
             commissionedById = actorId(actor),
             complete = true,
+            delivered = deliveredItem ~= nil,
+            deliveredItem = deliveredItem,
+            deliveredItemId = deliveredItem and deliveredItem.id or nil,
+            deliveredLocation = deliveryPlan and deliveryPlan.location or nil,
         }
         self.commissions[commissionId] = commission
 
@@ -3520,12 +12244,25 @@ function M.createCityPhaseController(config)
             action = M.ACTIONS.COMMISSION_CRAFT,
             commission = commission,
             commissionId = commissionId,
+            deliveredItem = deliveredItem,
+            deliveredLocation = deliveryPlan and deliveryPlan.location or nil,
             scale = scale,
+            merchant = merchantName,
+            merchantId = merchantId,
+            merchantRecord = merchantRecord,
             ratePerSyllable = rate,
             syllables = syllables,
             cost = cost,
             result = "commission_complete",
         }
+    end
+
+    function controller:getCommissionCraftOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.commissions = opts.commissions or self.commissions
+        opts.merchants = opts.merchants or self.merchants
+        return M.getCommissionCraftOptions(opts)
     end
 
     function controller:resolveHoldFuneral(actor, actionData)
@@ -3534,13 +12271,19 @@ function M.createCityPhaseController(config)
         local deceased = request.deceased or request.deadAdventurer or request.previousAdventurer
         local heir = request.newAdventurer or request.heir or request.recipient or actor
         local previousXP = tonumber(request.previousXP or request.deceasedXP or (deceased and deceased.xp))
-        local xpReclaimed = math.floor(tonumber(request.xpReclaimed or request.xp or request.amount) or 0)
+        local xpReclaimed = tonumber(request.xpReclaimed or request.xp or request.amount)
 
-        if xpReclaimed <= 0 then
+        if not xpReclaimed or xpReclaimed <= 0 then
             return false, "Funeral XP required"
+        end
+        if xpReclaimed ~= math.floor(xpReclaimed) then
+            return false, "Funeral XP must be a positive whole number"
         end
         if not previousXP then
             return false, "Deceased XP required"
+        end
+        if deceased and not isDeadAdventurer(deceased) then
+            return false, "Adventurer must be dead"
         end
         if xpReclaimed > previousXP then
             return false, "Cannot reclaim more XP than the deceased had"
@@ -3559,6 +12302,28 @@ function M.createCityPhaseController(config)
 
         addXP(heir, xpReclaimed)
         heir.inheritedXP = (tonumber(heir.inheritedXP) or 0) + xpReclaimed
+        heir.replacesAdventurerId = actorId(deceased)
+
+        local rosterChange = {
+            updated = request.updateRoster ~= false,
+            removedDeceasedFromGuild = false,
+            removedDeceasedFromRoster = false,
+            addedHeirToGuild = false,
+            addedHeirToRoster = false,
+        }
+        if rosterChange.updated then
+            local rosterAdventurers = getRosterAdventurers(self.guildRoster)
+            if deceased and request.removeDeceased ~= false then
+                rosterChange.removedDeceasedFromGuild = removeActorFromList(self.guild, deceased)
+                rosterChange.removedDeceasedFromRoster = removeActorFromList(rosterAdventurers, deceased)
+                deceased.funeralHeld = true
+                deceased.replacedById = actorId(heir)
+            end
+            if heir and request.addHeirToGuild ~= false then
+                rosterChange.addedHeirToGuild = addActorToList(self.guild, heir)
+                rosterChange.addedHeirToRoster = addActorToList(rosterAdventurers, heir)
+            end
+        end
 
         local funeral = {
             deceased = deceased,
@@ -3571,6 +12336,7 @@ function M.createCityPhaseController(config)
             cost = cost,
             paidBy = actor,
             paidById = actorId(actor),
+            rosterChange = rosterChange,
         }
         self.funerals[#self.funerals + 1] = funeral
 
@@ -3581,7 +12347,360 @@ function M.createCityPhaseController(config)
             xpReclaimed = xpReclaimed,
             cost = cost,
             recipient = heir,
+            rosterChange = rosterChange,
             result = "funeral_held",
+        }
+    end
+
+    function controller:getFuneralOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.guild = opts.guild or self.guild
+        opts.guildRoster = opts.guildRoster or self.guildRoster
+        return M.getFuneralOptions(opts)
+    end
+
+    function controller:getRetirementChoiceOptions(actor, opts)
+        if type(actor) == "table" and opts == nil and
+           (actor.actor or actor.request or actor.retirement or actor.newQuestDeclaration or actor.newQuest) then
+            opts = actor
+            actor = opts.actor or opts.adventurer or opts.retiree
+        end
+        opts = opts or {}
+        opts.actor = actor or opts.actor or opts.adventurer or opts.retiree
+        opts.guild = opts.guild or self.guild
+        opts.guildRoster = opts.guildRoster or self.guildRoster
+        local options = M.getRetirementChoiceOptions(opts)
+        local alreadyActed = self:hasActed(options.actor)
+        options.alreadyActed = alreadyActed
+
+        local retirementAllowed, retirementReason = self:checkCityActionRestrictions(M.ACTIONS.RETIRE_ADVENTURER)
+        options.retirement.cityActionAllowed = retirementAllowed == true
+        options.retirement.cityActionUnavailableReason = retirementAllowed ~= true and retirementReason or nil
+        if alreadyActed and not options.retirement.disabled then
+            options.retirement.disabled = true
+            options.retirement.unavailableReason = "City Action already taken"
+        elseif retirementAllowed ~= true and not options.retirement.disabled then
+            options.retirement.disabled = true
+            options.retirement.unavailableReason = retirementReason
+        end
+        options.retirement.resultPreview = not options.retirement.disabled and "adventurer_retired" or nil
+
+        local questAllowed, questReason = self:checkCityActionRestrictions(M.ACTIONS.DECLARE_NEW_QUEST)
+        options.newQuest.cityActionAllowed = questAllowed == true
+        options.newQuest.cityActionUnavailableReason = questAllowed ~= true and questReason or nil
+        if alreadyActed and not options.newQuest.disabled then
+            options.newQuest.disabled = true
+            options.newQuest.unavailableReason = "City Action already taken"
+        elseif questAllowed ~= true and not options.newQuest.disabled then
+            options.newQuest.disabled = true
+            options.newQuest.unavailableReason = questReason
+        end
+        options.newQuest.resultPreview = not options.newQuest.disabled and "new_quest_declared" or nil
+        return options
+    end
+
+    function controller:getRetirementOptions(actor, opts)
+        return self:getRetirementChoiceOptions(actor, opts)
+    end
+
+    function controller:getDeclareNewQuestOptions(actor, opts)
+        return self:getRetirementChoiceOptions(actor, opts)
+    end
+
+    function controller:resolveRetireAdventurer(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.retirement or actionData
+        local retiree = request.retiree or request.adventurer or request.completedAdventurer or actor
+        if not retiree then
+            return false, "Retiring adventurer required"
+        end
+
+        local questComplete = request.questCompleted == true or
+            request.questComplete == true or
+            (request.completedQuest ~= nil and request.completedQuest ~= false) or
+            retiree.questCompleted == true or
+            (retiree.completedQuest ~= nil and retiree.completedQuest ~= false) or
+            retiree.questStatus == "complete" or
+            (type(retiree.quest) == "table" and retiree.quest.completed == true)
+        if not questComplete then
+            return false, "Quest must be complete"
+        end
+        if isDeadAdventurer(retiree) or retiree.lost == true or retiree.status == "lost" then
+            return false, "Retirement requires a living adventurer"
+        end
+
+        local retiredXP = tonumber(request.retiredXP or request.previousXP or retiree.xp or retiree.XP) or 0
+        retiredXP = math.max(0, math.floor(retiredXP))
+        local benefitSlots = math.floor(retiredXP / 10)
+        local successor = request.newAdventurer or request.successor or request.nextAdventurer or request.heir
+        local benefitRequests = {}
+        if type(request.benefits) == "table" then
+            for _, benefit in ipairs(request.benefits) do
+                if type(benefit) == "table" then
+                    local count = math.max(1, math.floor(tonumber(benefit.count or benefit.amount) or 1))
+                    local kind = normalizeTalentId(benefit.type or benefit.kind or "")
+                    if kind == "arete" or kind == "arete_check" or kind == "arete_check_mark" then
+                        for _ = 1, count do
+                            benefitRequests[#benefitRequests + 1] = { type = "arete_check" }
+                        end
+                    else
+                        benefitRequests[#benefitRequests + 1] = benefit
+                    end
+                else
+                    benefitRequests[#benefitRequests + 1] = benefit
+                end
+            end
+        end
+
+        local masteredTalents = request.masteredTalents or request.masteredTalent
+        if type(masteredTalents) == "table" then
+            for _, talentId in ipairs(masteredTalents) do
+                benefitRequests[#benefitRequests + 1] = { type = "talent", talentId = talentId }
+            end
+        elseif masteredTalents then
+            benefitRequests[#benefitRequests + 1] = { type = "talent", talentId = masteredTalents }
+        end
+        if request.talentId or request.talent then
+            benefitRequests[#benefitRequests + 1] = { type = "talent", talentId = request.talentId or request.talent }
+        end
+        local areteChecks = tonumber(request.areteChecks or request.areteCheckMarks or request.areteMarks) or 0
+        areteChecks = math.max(0, math.floor(areteChecks))
+        for _ = 1, areteChecks do
+            benefitRequests[#benefitRequests + 1] = { type = "arete_check" }
+        end
+
+        if #benefitRequests > benefitSlots then
+            return false, "Retirement benefits exceed available slots"
+        end
+        if #benefitRequests > 0 and not successor then
+            return false, "Successor adventurer required"
+        end
+
+        local appliedBenefits = {}
+        if successor then
+            successor.retirementBenefits = successor.retirementBenefits or {}
+        end
+        for _, rawBenefit in ipairs(benefitRequests) do
+            local benefit = rawBenefit
+            if type(benefit) == "string" then
+                benefit = { type = "talent", talentId = benefit }
+            elseif type(benefit) ~= "table" then
+                return false, "Retirement benefit invalid"
+            end
+
+            local kind = normalizeTalentId(benefit.type or benefit.kind or "")
+            if kind == "arete" or kind == "arete_check" or kind == "arete_check_mark" or benefit.areteCheck == true then
+                successor.arete = successor.arete or
+                    talent_catalog.getAreteSetup(successor.kin or successor.species or successor.race, successor.kith)
+
+                local triggerRef = benefit.triggerId or benefit.trigger or benefit.areteTrigger or benefit.id or benefit.name
+                if not triggerRef and successor.arete then
+                    for _, trigger in ipairs(successor.arete.triggers or {}) do
+                        if trigger.checked ~= true then
+                            triggerRef = trigger.id
+                            break
+                        end
+                    end
+                end
+
+                local applied = {
+                    type = "arete_check",
+                    sourceAdventurerId = actorId(retiree),
+                }
+                if successor.arete then
+                    if not triggerRef then
+                        return false, "No unchecked arete triggers"
+                    end
+                    local areteOk, areteResult = talent_catalog.recordAreteTrigger(successor, triggerRef)
+                    if not areteOk then
+                        return false, areteResult
+                    end
+                    if areteResult.alreadyChecked then
+                        return false, "Arete trigger already checked"
+                    end
+                    applied.triggerId = areteResult.triggerId
+                    applied.talentId = areteResult.talentId
+                    applied.checkCount = areteResult.checkCount
+                    applied.requiredChecks = areteResult.requiredChecks
+                    applied.completed = areteResult.completed
+                    applied.learned = areteResult.learned
+                else
+                    successor.areteCheckMarks = (tonumber(successor.areteCheckMarks) or 0) + 1
+                    applied.checkCount = successor.areteCheckMarks
+                    applied.triggerId = triggerRef
+                end
+                successor.retirementAreteCheckMarks = (tonumber(successor.retirementAreteCheckMarks) or 0) + 1
+                appliedBenefits[#appliedBenefits + 1] = applied
+                successor.retirementBenefits[#successor.retirementBenefits + 1] = applied
+            else
+                local talentId = normalizeTalentId(benefit.talentId or benefit.talent or benefit.id or benefit.name)
+                if talentId == "" then
+                    return false, "Retirement talent required"
+                end
+
+                successor.talents = successor.talents or {}
+                local talent = successor.talents[talentId]
+                if type(talent) ~= "table" then
+                    talent = {}
+                    successor.talents[talentId] = talent
+                end
+                local talentInfo = talent_catalog.getTalentInfo(talentId)
+                talent.mastered = true
+                talent.wounded = talent.wounded == true
+                talent.xp_invested = math.max(tonumber(talent.xp_invested) or 0, 7)
+                talent.retirementBenefit = true
+                talent.path = talent.path or (talentInfo and talentInfo.path)
+                talent.trainingKind = talent.trainingKind or (talentInfo and talentInfo.kind) or "retirement"
+
+                local applied = {
+                    type = "mastered_talent",
+                    talentId = talentId,
+                    sourceAdventurerId = actorId(retiree),
+                }
+                appliedBenefits[#appliedBenefits + 1] = applied
+                successor.retirementBenefits[#successor.retirementBenefits + 1] = applied
+            end
+        end
+
+        local rosterChange = {
+            updated = request.updateRoster ~= false,
+            removedRetireeFromGuild = false,
+            removedRetireeFromRoster = false,
+            addedSuccessorToGuild = false,
+            addedSuccessorToRoster = false,
+        }
+        if rosterChange.updated then
+            local rosterAdventurers = getRosterAdventurers(self.guildRoster)
+            if request.removeRetiree ~= false then
+                rosterChange.removedRetireeFromGuild = removeActorFromList(self.guild, retiree)
+                rosterChange.removedRetireeFromRoster = removeActorFromList(rosterAdventurers, retiree)
+            end
+            if successor and request.addSuccessorToGuild ~= false then
+                rosterChange.addedSuccessorToGuild = addActorToList(self.guild, successor)
+                rosterChange.addedSuccessorToRoster = addActorToList(rosterAdventurers, successor)
+            end
+        end
+
+        retiree.retired = true
+        retiree.retiredInCity = true
+        retiree.livesInCity = true
+        retiree.controlledByGM = true
+        retiree.gmControlled = true
+        retiree.status = "retired"
+        retiree.replacedById = actorId(successor)
+        if successor then
+            successor.replacesAdventurerId = actorId(retiree)
+        end
+
+        local retirement = {
+            retiree = retiree,
+            retireeId = actorId(retiree),
+            retireeName = request.retireeName or retiree.name,
+            retiredXP = retiredXP,
+            benefitSlots = benefitSlots,
+            unspentBenefitSlots = benefitSlots - #appliedBenefits,
+            successor = successor,
+            successorId = actorId(successor),
+            benefits = appliedBenefits,
+            rosterChange = rosterChange,
+            quest = request.completedQuest or retiree.completedQuest or retiree.quest,
+        }
+        retiree.retirementRecord = retirement
+        self.retirements[#self.retirements + 1] = retirement
+
+        local additionalCityActors = nil
+        if successor and request.markSuccessorActed ~= false and
+            (rosterChange.addedSuccessorToGuild or rosterChange.addedSuccessorToRoster) then
+            additionalCityActors = {
+                {
+                    actor = successor,
+                    action = M.ACTIONS.RETIRE_ADVENTURER,
+                    result = "successor_arrived",
+                },
+            }
+        end
+
+        return true, "adventurer_retired", {
+            actor = retiree,
+            action = M.ACTIONS.RETIRE_ADVENTURER,
+            retirement = retirement,
+            retiredXP = retiredXP,
+            benefitSlots = benefitSlots,
+            benefits = appliedBenefits,
+            successor = successor,
+            rosterChange = rosterChange,
+            additionalCityActors = additionalCityActors,
+            result = "adventurer_retired",
+        }
+    end
+
+    function controller:resolveDeclareNewQuest(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.newQuestDeclaration or actionData
+        local adventurer = request.adventurer or request.retiree or actor
+        if not adventurer then
+            return false, "Adventurer required"
+        end
+
+        local questComplete = request.questCompleted == true or
+            request.questComplete == true or
+            (request.completedQuest ~= nil and request.completedQuest ~= false) or
+            adventurer.questCompleted == true or
+            (adventurer.completedQuest ~= nil and adventurer.completedQuest ~= false) or
+            adventurer.questStatus == "complete" or
+            (type(adventurer.quest) == "table" and adventurer.quest.completed == true)
+        if not questComplete then
+            return false, "Quest must be complete"
+        end
+        if isDeadAdventurer(adventurer) or adventurer.lost == true or adventurer.status == "lost" then
+            return false, "New quest requires a living adventurer"
+        end
+
+        local newQuest = request.newQuest or request.nextQuest or request.questTitle or request.objective or request.quest
+        if type(newQuest) == "string" then
+            newQuest = newQuest:gsub("^%s+", ""):gsub("%s+$", "")
+            if newQuest == "" then
+                newQuest = nil
+            end
+        end
+        if not newQuest then
+            return false, "New quest required"
+        end
+
+        local previousQuest = request.completedQuest or request.previousQuest or adventurer.completedQuest or adventurer.quest
+        addXP(adventurer, 3)
+        adventurer.questHistory = adventurer.questHistory or {}
+        adventurer.questHistory[#adventurer.questHistory + 1] = {
+            quest = previousQuest,
+            completed = true,
+            xpAwarded = 3,
+            continuedWith = newQuest,
+        }
+        adventurer.lastCompletedQuest = previousQuest
+        adventurer.completedQuest = nil
+        adventurer.questCompleted = false
+        adventurer.questStatus = "active"
+        adventurer.quest = newQuest
+        adventurer.retired = false
+
+        local declaration = {
+            adventurer = adventurer,
+            adventurerId = actorId(adventurer),
+            previousQuest = previousQuest,
+            newQuest = newQuest,
+            xpGained = 3,
+        }
+        self.questDeclarations[#self.questDeclarations + 1] = declaration
+
+        return true, "new_quest_declared", {
+            actor = adventurer,
+            action = M.ACTIONS.DECLARE_NEW_QUEST,
+            declaration = declaration,
+            previousQuest = previousQuest,
+            newQuest = newQuest,
+            xpGained = 3,
+            result = "new_quest_declared",
         }
     end
 
@@ -3616,10 +12735,17 @@ function M.createCityPhaseController(config)
             drawnDeck:discard(hangoverCard)
         end
 
-        local minorDiscard = request.minorDiscardCard
         local minorDeck = request.playerDeck or request.minorDeck or self.playerDeck
-        if not minorDiscard and minorDeck and minorDeck.peekDiscard then
+        local minorDiscard = nil
+        if minorDeck and minorDeck.peekDiscard then
             minorDiscard = minorDeck:peekDiscard()
+        end
+        minorDiscard = minorDiscard or request.minorDiscardCard or request.minorDiscard or
+            request.topMinorDiscardCard or request.topMinorDiscard
+        local invalidMinorDiscard = nil
+        if minorDiscard and not isMinorDeckCard(minorDiscard) then
+            invalidMinorDiscard = minorDiscard
+            minorDiscard = nil
         end
 
         local hangover = M.HANGOVER_TABLE[hangoverCard.value] or {
@@ -3627,6 +12753,7 @@ function M.createCityPhaseController(config)
             title = "Unknown Hangover",
         }
         local hangoverOutcome = resolveHangoverOutcome(actor, hangover, minorDiscard)
+        local carouseConsequences = recordCarouseConsequences(self, actor, hangover, hangoverOutcome, request)
 
         local detail = {
             actor = actor,
@@ -3638,13 +12765,23 @@ function M.createCityPhaseController(config)
             hangoverCard = hangoverCard,
             hangover = hangover,
             hangoverOutcome = hangoverOutcome,
+            carouseConsequences = carouseConsequences,
             minorDiscard = minorDiscard,
+            invalidMinorDiscard = invalidMinorDiscard,
             result = "carouse_resolved",
         }
         actor.lastCarouse = detail
         appendActorRecord(actor, "carouseHangovers", hangoverOutcome)
 
         return true, "carouse_resolved", detail
+    end
+
+    function controller:getCarouseOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.gmDeck = opts.gmDeck or self.gmDeck
+        opts.playerDeck = opts.playerDeck or self.playerDeck
+        return M.getCarouseOptions(opts)
     end
 
     function controller:resolvePrepareComponents(actor, actionData)
@@ -3680,6 +12817,9 @@ function M.createCityPhaseController(config)
         end
 
         local location = actionData.location or inventory.LOCATIONS.PACK
+        if location ~= inventory.LOCATIONS.PACK then
+            return false, "components_pack_only"
+        end
         if not actor.inventory[location] then
             return false, "invalid_location"
         end
@@ -3702,6 +12842,10 @@ function M.createCityPhaseController(config)
             location = location,
             result = "components_prepared",
         }
+    end
+
+    function controller:getPrepareComponentOptions(actor)
+        return M.getPrepareComponentOptions({ actor = actor })
     end
 
     function controller:resolvePrayAtMythraeum(actor, actionData)
@@ -3766,8 +12910,11 @@ function M.createCityPhaseController(config)
             return false, training.reason
         end
 
-        local xpAmount = math.max(1, tonumber(request.xp or request.amount or request.xpInvested) or 1)
-        local costPerXP = tonumber(request.costPerXP or actionData.costPerXP) or M.TRAINING_COST_PER_XP
+        local xpAmount, xpError = requestedTrainingXP(request)
+        if not xpAmount then
+            return false, xpError
+        end
+        local costPerXP = M.TRAINING_COST_PER_XP
         local cost = xpAmount * costPerXP
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
@@ -3826,6 +12973,12 @@ function M.createCityPhaseController(config)
             talent = talent,
             result = "training_complete",
         }
+    end
+
+    function controller:getCityTrainingOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor
+        return M.getCityTrainingOptions(opts)
     end
 
     function controller:resolveChooseMonsterHunterFoe(actor, actionData)
@@ -3961,6 +13114,10 @@ function M.createCityPhaseController(config)
     function controller:resolveSupport(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.project or actionData
+        if request.reasonable == false or request.approved == false then
+            return false, "Support project not approved"
+        end
+
         local projectId = normalizeProjectId(request.projectId or request.id or request.name)
         if projectId == "" then
             return false, "Choose a project to support"
@@ -3973,13 +13130,9 @@ function M.createCityPhaseController(config)
 
         local project = self.projects[projectId]
         if not project then
-            local complexity = tonumber(request.complexity or request.stepsRequired or request.totalSteps)
+            local complexity, complexityError = normalizeSupportComplexity(request)
             if not complexity then
-                return false, "Project complexity required"
-            end
-            complexity = math.floor(complexity)
-            if complexity < 2 or complexity > 8 then
-                return false, "Project complexity must be 2-8"
+                return false, complexityError
             end
             project = {
                 id = projectId,
@@ -3987,6 +13140,7 @@ function M.createCityPhaseController(config)
                 complexity = complexity,
                 progress = tonumber(request.progress or request.stepsCompleted) or 0,
                 contributions = {},
+                completionEffects = request.completionEffects or request.completion or request.effects,
                 complete = false,
             }
             self.projects[projectId] = project
@@ -4005,14 +13159,21 @@ function M.createCityPhaseController(config)
 
         project.progress = math.min((project.progress or 0) + 1, project.complexity or 1)
         project.contributions = project.contributions or {}
-        project.contributions[#project.contributions + 1] = {
+        local contributionImpact = M.classifySupportContributionImpact(contribution)
+        local contributionRecord = {
             actor = actor,
             actorId = actorId(actor),
             gold = contribution,
+            impact = contributionImpact,
+            impactId = contributionImpact.id,
+            impactLabel = contributionImpact.label,
             description = request.description or request.method,
         }
+        project.contributions[#project.contributions + 1] = contributionRecord
+        local completionDetail = nil
         if project.progress >= (project.complexity or 1) then
             project.complete = true
+            completionDetail = applySupportCompletionEffects(self, project, actor, request)
         end
 
         return true, "project_supported", {
@@ -4021,22 +13182,39 @@ function M.createCityPhaseController(config)
             project = project,
             projectId = project.id,
             contribution = contribution,
+            contributionImpact = contributionImpact,
+            contributionRecord = contributionRecord,
             progress = project.progress,
             complexity = project.complexity,
             complete = project.complete,
+            completionDetail = completionDetail,
             result = "project_supported",
         }
+    end
+
+    function controller:getSupportContributionOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor
+        return M.getSupportContributionOptions(opts)
+    end
+
+    function controller:getSupportProjectOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor
+        opts.projects = opts.projects or self.projects
+        return M.getSupportProjectOptions(opts)
     end
 
     function controller:resolveResearch(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.research or actionData
-        local topic = request.topic or request.subject or request.question
+        local topic = request.topic or request.subject or request.subjectName or request.question or request.subjectId or
+            request.loreSubjectId
         if not topic or tostring(topic) == "" then
             return false, "Research topic required"
         end
 
-        local cost = tonumber(request.cost or request.gold) or 50
+        local cost = M.RESEARCH_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -4067,6 +13245,9 @@ function M.createCityPhaseController(config)
             questions = 1
         end
 
+        local answers, pendingQuestions, overflowQuestions, remainingQuestions =
+            resolveResearchQuestionRequests(self, request, questions)
+
         local detail = {
             actor = actor,
             action = M.ACTIONS.RESEARCH,
@@ -4075,11 +13256,40 @@ function M.createCityPhaseController(config)
             card = card,
             testResult = testResult,
             questions = questions,
+            answers = answers,
+            pendingQuestions = pendingQuestions,
+            overflowQuestions = overflowQuestions,
+            remainingQuestions = remainingQuestions,
             result = "research_complete",
         }
         actor.lastCityResearch = detail
+        self.researchLog[#self.researchLog + 1] = detail
 
         return true, "research_complete", detail
+    end
+
+    function controller:getResearchQuestionOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor
+        opts.bidLoreEngine = opts.bidLoreEngine or self.bidLoreEngine
+        return M.getResearchQuestionOptions(opts)
+    end
+
+    function controller:summarizeResearchResult(detail)
+        return M.summarizeResearchResult(detail)
+    end
+
+    function controller:getMenagerieReagentPurchaseOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.menagerieStock = opts.menagerieStock or self.menagerieStock
+        return M.getMenagerieReagentPurchaseOptions(opts)
+    end
+
+    function controller:getReagentSaleOptions(actor, opts)
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        return M.getReagentSaleOptions(opts)
     end
 
     function controller:resolveDistrictItemPurchase(actor, actionData, config)
@@ -4102,7 +13312,7 @@ function M.createCityPhaseController(config)
             return false, reason
         end
 
-        local costPerItem = tonumber(request.costPerItem or config.costPerItem) or 0
+        local costPerItem = tonumber(config.costPerItem) or 0
         local cost = math.max(0, costPerItem * quantity)
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
@@ -4197,7 +13407,7 @@ function M.createCityPhaseController(config)
         end
 
         local target = request.target or request.recipient or actor
-        local cost = tonumber(request.cost or request.costGold) or 100
+        local cost = M.VISIT_GRAVE_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -4238,7 +13448,7 @@ function M.createCityPhaseController(config)
             return false, "Appearance required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 10
+        local cost = M.MAKEOVER_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -4262,6 +13472,79 @@ function M.createCityPhaseController(config)
             appearance = actor.appearance,
             cost = cost,
             result = "makeover_complete",
+        }
+    end
+
+    function controller:resolveChangeMotif(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.motifChange or actionData
+        if request.approved ~= true and request.gmApproved ~= true and request.tableApproved ~= true and
+            request.requireApproval ~= false then
+            return false, "Motif change requires GM approval"
+        end
+        if type(actor and actor.motifs) ~= "table" then
+            return false, "Motif required"
+        end
+
+        local index = math.max(1, math.floor(tonumber(request.index or request.motifIndex) or 1))
+        local oldMotif = actor.motifs[index]
+        if not oldMotif then
+            return false, "Motif required"
+        end
+
+        local replacement = request.newDescriptor or request.replacementDescriptor or request.descriptor
+        local newMotif = request.newMotif or request.rewrittenMotif or request.motif
+        if not newMotif then
+            if not replacement or tostring(replacement) == "" then
+                return false, "Replacement motif required"
+            end
+            local oldInfo = motif_catalog.parseMotif(oldMotif)
+            if not oldInfo or not oldInfo.profession then
+                return false, "Motif requires a profession"
+            end
+            local profession = tostring(oldInfo.profession):gsub("_", " ")
+            profession = profession:gsub("(%a)([%w']*)", function(first, rest)
+                return first:upper() .. rest:lower()
+            end)
+            newMotif = tostring(replacement) .. " " .. profession
+        end
+
+        local parsed, parseReason = motif_catalog.parseMotif(newMotif)
+        if not parsed then
+            return false, parseReason
+        end
+        if request.requireStructuredMotif == true and not parsed.structured then
+            return false, "Motifs require a descriptor and profession"
+        end
+        if request.strictRulebookMotif == true and not parsed.sampleMotif then
+            return false, "Motif must use a rulebook descriptor and profession"
+        end
+
+        actor.motifs[index] = parsed.text
+        actor.motifInfo = motif_catalog.describeMotifs(actor.motifs)
+        local record = {
+            actor = actor,
+            actorId = actorId(actor),
+            action = M.ACTIONS.CHANGE_MOTIF,
+            index = index,
+            oldMotif = oldMotif,
+            newMotif = parsed.text,
+            motifInfo = actor.motifInfo and actor.motifInfo[index] or parsed,
+            reason = request.reason or request.cause,
+            approved = true,
+        }
+        appendActorRecord(actor, "motifChanges", record)
+        self.motifChanges[#self.motifChanges + 1] = record
+
+        return true, "motif_changed", {
+            actor = actor,
+            action = M.ACTIONS.CHANGE_MOTIF,
+            index = index,
+            oldMotif = oldMotif,
+            newMotif = parsed.text,
+            motifInfo = record.motifInfo,
+            record = record,
+            result = "motif_changed",
         }
     end
 
@@ -4316,7 +13599,7 @@ function M.createCityPhaseController(config)
             return false, config.requiredMessage or "Commission description required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or config.cost or 0
+        local cost = tonumber(config.cost) or 0
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -4401,7 +13684,7 @@ function M.createCityPhaseController(config)
             return false, "Preference rumor required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 10
+        local cost = M.PILLOW_TALK_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -4543,11 +13826,15 @@ function M.createCityPhaseController(config)
             if not rate then
                 return false, "Fence price scale required"
             end
-            syllables = resolveSyllables({
+            local syllableError = nil
+            syllables, syllableError = resolveSyllables({
                 syllables = request.syllables or request.syllableCount,
                 description = description,
                 name = description,
             })
+            if not syllables then
+                return false, syllableError
+            end
             if syllables <= 0 then
                 return false, "Goods required"
             end
@@ -4725,7 +14012,10 @@ function M.createCityPhaseController(config)
         if description == "" then
             return false, "Commission description required"
         end
-        local syllables = resolveSyllables(request)
+        local syllables, syllableError = resolveSyllables(request)
+        if not syllables then
+            return false, syllableError
+        end
         if syllables <= 0 then
             return false, "Commission description required"
         end
@@ -4945,7 +14235,7 @@ function M.createCityPhaseController(config)
             return false, "Play subject required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 25
+        local cost = M.PLAY_OUTING_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -5045,7 +14335,7 @@ function M.createCityPhaseController(config)
     function controller:resolveJoinCourtOfWands(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.membership or actionData
-        local cost = tonumber(request.cost or request.costGold) or 100
+        local cost = M.COURT_OF_WANDS_DUES
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -5113,7 +14403,7 @@ function M.createCityPhaseController(config)
             local drugId = slugify(entry.drugId or entry.id or entry.name or entry.drug or entry[1])
             local config = EXOTIC_DRUGS[drugId]
             local name = entry.name or (config and config.name) or tostring(entry.drugId or entry.id or entry.drug or "Exotic Drug")
-            local cost = tonumber(entry.cost or entry.costGold or entry.price or (config and config.cost))
+            local cost = config and tonumber(config.cost) or tonumber(entry.cost or entry.costGold or entry.price)
             if not cost then
                 return false, "Drug price required"
             end
@@ -5134,8 +14424,15 @@ function M.createCityPhaseController(config)
                         exoticDrug = true,
                         dose = true,
                         affliction = entry.affliction or (config and config.affliction) or drugId,
-                        stageEffects = entry.stageEffects or (config and config.stageEffects),
+                        afflictionName = entry.afflictionName or (config and config.name) or name,
+                        maxStage = entry.maxStage or (config and config.maxStage),
+                        stageCosts = shallowClone(entry.stageCosts or (config and config.stageCosts)),
+                        stageRecovery = shallowClone(entry.stageRecovery or (config and config.stageRecovery)),
+                        stageEffects = shallowClone(entry.stageEffects or (config and config.stageEffects)),
                         quitCharges = entry.quitCharges or (config and config.quitCharges),
+                        recentlyTakenEffect = entry.recentlyTakenEffect or (config and config.recentlyTakenEffect),
+                        reexposureClearsCuredStage = entry.reexposureClearsCuredStage or
+                            (config and config.reexposureClearsCuredStage),
                     },
                 })
                 item.drugId = drugId
@@ -5198,7 +14495,7 @@ function M.createCityPhaseController(config)
             return false, "Underworld monster carcass required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 50
+        local cost = M.BLOOD_FEAST_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -5265,13 +14562,16 @@ function M.createCityPhaseController(config)
     function controller:resolveStrangeCommunions(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.communion or actionData
+        local availableSources = request.availableSources or request.sources or { "minor_deck_top", "minor_discard_top" }
         local communion = {
             source = "street_of_heretics",
             service = request.service or request.faith or request.religion or "important religious service",
             expires = "next_expedition",
             uses = 1,
             challengeDrawChoice = true,
-            sources = request.sources or { "minor_deck_top", "minor_discard_top" },
+            sources = availableSources,
+            availableSources = availableSources,
+            drawSources = request.drawSources or request.selectedSources,
         }
         actor.nextExpeditionChallengeDrawChoice = communion
         appendActorRecord(actor, "strangeCommunions", communion)
@@ -5419,7 +14719,7 @@ function M.createCityPhaseController(config)
             return false, "Research tiles required"
         end
 
-        local costPerTile = tonumber(request.costPerTile or request.costGold) or 25
+        local costPerTile = M.SPELL_RESEARCH_COST_PER_TILE
         local cost = costPerTile * #tiles
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
@@ -5561,7 +14861,7 @@ function M.createCityPhaseController(config)
     function controller:resolveJoinSwordwhores(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.membership or actionData
-        local cost = tonumber(request.cost or request.costGold) or 100
+        local cost = M.SWORDWHORES_DUES
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -6071,7 +15371,7 @@ function M.createCityPhaseController(config)
         end
 
         local stages = math.max(1, math.floor(tonumber(request.stages or request.stageCount or affliction.stage) or 1))
-        local costPerStage = tonumber(request.costPerStage or request.costGoldPerStage) or 20
+        local costPerStage = M.LEECHING_COST_PER_STAGE
         local cost = math.max(0, stages * costPerStage)
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
@@ -6102,7 +15402,7 @@ function M.createCityPhaseController(config)
     function controller:resolveDoomsaying(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.doomsaying or actionData
-        local cost = tonumber(request.cost or request.costGold) or 10
+        local cost = M.DOOMSAYING_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -6190,7 +15490,7 @@ function M.createCityPhaseController(config)
             return false, "Truth outcome required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 50
+        local cost = M.SEEK_TRUTH_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -6333,7 +15633,7 @@ function M.createCityPhaseController(config)
     function controller:resolveJoinBeggarsGuild(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.membership or actionData
-        local cost = tonumber(request.cost or request.costGold) or 100
+        local cost = M.BEGGARS_GUILD_DUES
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -6359,12 +15659,156 @@ function M.createCityPhaseController(config)
         }
     end
 
+    local function findCityAnimalCompanion(actor, companionId)
+        if not actor then
+            return nil
+        end
+
+        local function matches(companion, key)
+            if type(companion) ~= "table" then
+                return false
+            end
+            if not companionId then
+                return true
+            end
+            return companion.id == companionId or companion.name == companionId or key == companionId
+        end
+
+        if matches(actor.companion, "companion") then
+            return actor.companion
+        end
+
+        for _, collection in ipairs({ actor.animalCompanions or false, actor.companions or false }) do
+            if type(collection) == "table" then
+                for key, companion in pairs(collection) do
+                    if matches(companion, key) then
+                        return companion
+                    end
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function companionKnowsCommand(commandList, command)
+        local wanted = animal_companions.normalizeCommandName(command)
+        for key, known in pairs(commandList or {}) do
+            if animal_companions.normalizeCommandName(animal_companions.getCommandEntryName(known, key)) == wanted then
+                return true
+            end
+        end
+        return false
+    end
+
+    function controller:resolveTrainAnimalCompanion(actor, actionData)
+        actionData = actionData or {}
+        local request = actionData.request or actionData.training or actionData
+        local companion = request.companion or request.target or
+            findCityAnimalCompanion(actor, request.companionId or request.companion_id or request.targetId)
+        if not companion then
+            return false, "Choose an animal companion"
+        end
+
+        local conditions = companion.conditions or {}
+        if companion.abandoned or conditions.abandoned then
+            return false, "Companion has abandoned the guild"
+        end
+        if conditions.dead or companion.dead then
+            return false, "Companion is dead"
+        end
+
+        local command = request.commandName or request.command or request.knownCommand
+        if not command or tostring(command) == "" then
+            return false, "Choose a command to teach"
+        end
+
+        companion.knownCommands = companion.knownCommands or companion.commands or {}
+        companion.commands = companion.knownCommands
+
+        local commandDisplay = animal_companions.getCommandDisplayName(command)
+        local commandKey = animal_companions.normalizeCommandName(command)
+        if companionKnowsCommand(companion.knownCommands, commandKey) then
+            return false, "Companion already knows command"
+        end
+
+        local replacement = request.replaceCommand or request.replace_command
+        local commandLimit = animal_companions.getCommandLimit(companion)
+        local trained = "taught"
+        local replacementIndex = nil
+        if #companion.knownCommands >= commandLimit then
+            if not replacement then
+                if commandLimit == 5 then
+                    return false, "Familiar already knows five commands"
+                end
+                return false, "Companion already knows three commands"
+            end
+
+            for index, known in ipairs(companion.knownCommands) do
+                if animal_companions.normalizeCommandName(animal_companions.getCommandEntryName(known, index)) ==
+                   animal_companions.normalizeCommandName(replacement) then
+                    replacementIndex = index
+                    trained = "retrained"
+                    break
+                end
+            end
+            if not replacementIndex then
+                return false, "Replacement command not known"
+            end
+        end
+
+        local cost = M.ANIMAL_COMPANION_TRAINING_COST
+        if currency.getGold(actor) < cost then
+            return false, "Not enough gold"
+        end
+        if cost > 0 and not currency.spendGold(actor, cost) then
+            return false, "Not enough gold"
+        end
+
+        if replacementIndex then
+            companion.knownCommands[replacementIndex] = commandDisplay
+        else
+            companion.knownCommands[#companion.knownCommands + 1] = commandDisplay
+        end
+
+        local training = {
+            companion = companion,
+            command = commandDisplay,
+            replacedCommand = replacement,
+            cost = cost,
+            result = trained,
+            source = "hippodrome_of_amet",
+        }
+        appendActorRecord(actor, "animalCompanionTraining", training)
+
+        return true, "animal_companion_trained", {
+            actor = actor,
+            action = M.ACTIONS.TRAIN_ANIMAL_COMPANION,
+            companion = companion,
+            command = commandDisplay,
+            replacedCommand = replacement,
+            cost = cost,
+            training = training,
+            result = "animal_companion_trained",
+        }
+    end
+
     function controller:resolvePurchaseAnimalCompanion(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.purchase or actionData
         local hasExplicitCompanionSpec = type(request.companion) == "table" or type(request.animal) == "table"
         local companionSpec = type(request.companion) == "table" and request.companion or
             (type(request.animal) == "table" and request.animal or request)
+        local templateId = request.templateId or request.companionTemplateId or request.animalTemplateId or
+            companionSpec.templateId or companionSpec.companionTemplateId
+        local template = nil
+        if templateId then
+            template = animal_companions.getTemplate(templateId)
+        end
+        if not template then
+            template, templateId = animal_companions.getTemplate(companionSpec.species or
+                companionSpec.animalType or companionSpec.kind)
+        end
         local function firstCommand(value)
             if type(value) == "string" and value ~= "" then
                 return value
@@ -6389,7 +15833,8 @@ function M.createCityPhaseController(config)
             return nil
         end
 
-        local cost = math.floor(tonumber(request.cost or request.costGold or request.price or request.rarityCost) or 0)
+        local cost = math.floor(tonumber((template and template.rarityCost) or request.cost or request.costGold or
+            request.price or request.rarityCost) or 0)
         if cost < 100 or cost > 1000 then
             return false, "Animal rarity cost must be 100-1000g"
         end
@@ -6408,10 +15853,16 @@ function M.createCityPhaseController(config)
         end
 
         actor.animalCompanions = actor.animalCompanions or {}
-        local species = companionSpec.species or companionSpec.animalType or companionSpec.kind or "exotic animal"
-        local name = companionSpec.name or request.companionName or ("Hippodrome " .. tostring(species))
         local index = #actor.animalCompanions + 1
-        local companion = hasExplicitCompanionSpec and shallowClone(companionSpec) or {}
+        local companionOverrides = hasExplicitCompanionSpec and shallowClone(companionSpec) or {
+            name = request.name or request.companionName,
+            species = request.species,
+            animalType = request.animalType,
+            kind = request.kind,
+        }
+        local companion = animal_companions.createCompanion(templateId, companionOverrides)
+        local species = companion.species or companion.animalType or companion.kind or "exotic animal"
+        local name = companion.name or request.companionName or ("Hippodrome " .. tostring(species))
         companion.id = companion.id or request.companionId or string.format("%s_companion_%02d_%s",
             slugify(actorId(actor)), index, slugify(name))
         companion.name = name
@@ -6419,7 +15870,7 @@ function M.createCityPhaseController(config)
         companion.animalType = companion.animalType or species
         companion.type = companion.type or "animal_companion"
         companion.conditions = companion.conditions or {}
-        companion.knownCommands = { tostring(command) }
+        companion.knownCommands = { animal_companions.getCommandDisplayName(command) }
         companion.commands = companion.knownCommands
         companion.purchaseCost = cost
         companion.rarityCost = cost
@@ -6446,6 +15897,30 @@ function M.createCityPhaseController(config)
         }
     end
 
+    function controller:getGoblinHordeOptions(actor, opts)
+        if type(actor) == "table" and opts == nil and
+           (actor.actor or actor.request or actor.horde or actor.xpSpent or actor.amount) then
+            opts = actor
+            actor = opts.actor
+        end
+        opts = opts or {}
+        opts.actor = actor or opts.actor
+        opts.actionsCompleted = opts.actionsCompleted or self.actionsCompleted
+        local options = M.getGoblinHordeOptions(opts)
+        local allowed, reason = self:checkCityActionRestrictions(M.ACTIONS.ASSEMBLE_GOBLIN_HORDE)
+        options.cityActionAllowed = allowed == true
+        options.cityActionUnavailableReason = allowed ~= true and reason or nil
+        if allowed ~= true and not options.disabled then
+            options.disabled = true
+            options.unavailableReason = reason
+        end
+        return options
+    end
+
+    function controller:getJarlGoblinHordeOptions(actor, opts)
+        return self:getGoblinHordeOptions(actor, opts)
+    end
+
     function controller:resolveAssembleGoblinHorde(actor, actionData)
         actionData = actionData or {}
         local request = actionData.request or actionData.horde or actionData
@@ -6453,9 +15928,12 @@ function M.createCityPhaseController(config)
             return false, "Requires Jarl talent"
         end
 
-        local xpSpend = math.floor(tonumber(request.xp or request.xpSpent or request.amount) or 0)
+        local xpSpend = tonumber(request.xp or request.xpSpent or request.amount) or 0
         if xpSpend < 0 then
             return false, "XP spend cannot be negative"
+        end
+        if xpSpend ~= math.floor(xpSpend) then
+            return false, "Jarl XP must be a whole number"
         end
         if (actor.xp or 0) < xpSpend then
             return false, "Not enough XP"
@@ -6688,7 +16166,7 @@ function M.createCityPhaseController(config)
             return false, "Loan amount required"
         end
 
-        local interestRate = tonumber(request.interestRate or request.interestPercent) or 30
+        local interestRate = M.LOAN_INTEREST_RATE
         local owed = math.floor(amount * (1 + interestRate / 100) + 0.5)
         currency.addGold(actor, amount)
         local loan = {
@@ -6718,7 +16196,7 @@ function M.createCityPhaseController(config)
             return false, "Letter recipient required"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 10
+        local cost = M.SEND_LETTER_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -6761,7 +16239,7 @@ function M.createCityPhaseController(config)
             return false, "Language already known"
         end
 
-        local cost = tonumber(request.cost or request.costGold) or 200
+        local cost = M.STUDY_LANGUAGE_COST
         if currency.getGold(actor) < cost then
             return false, "Not enough gold"
         end
@@ -6771,11 +16249,14 @@ function M.createCityPhaseController(config)
 
         actor.languages = actor.languages or {}
         actor.languages[#actor.languages + 1] = language
+        actor.languageInfo = actor.languageInfo or {}
+        actor.languageInfo[language] = language_catalog.getLanguage(language)
 
         return true, "language_studied", {
             actor = actor,
             action = M.ACTIONS.STUDY_LANGUAGE,
             language = language,
+            languageInfo = actor.languageInfo[language],
             cost = cost,
             result = "language_studied",
         }
@@ -6819,6 +16300,8 @@ function M.createCityPhaseController(config)
             ok, result, detail = self:resolveCampAction(actor, actionData)
         elseif actionId == M.ACTIONS.CAROUSE then
             ok, result, detail = self:resolveCarouse(actor, actionData)
+        elseif actionId == M.ACTIONS.CHANGE_MOTIF then
+            ok, result, detail = self:resolveChangeMotif(actor, actionData)
         elseif actionId == M.ACTIONS.CHOOSE_MONSTER_HUNTER_FOE then
             ok, result, detail = self:resolveChooseMonsterHunterFoe(actor, actionData)
         elseif actionId == M.ACTIONS.COMMISSION_GARGOYLE then
@@ -6873,6 +16356,10 @@ function M.createCityPhaseController(config)
             ok, result, detail = self:resolveLayHigh(actor, actionData)
         elseif actionId == M.ACTIONS.HOLD_FUNERAL then
             ok, result, detail = self:resolveHoldFuneral(actor, actionData)
+        elseif actionId == M.ACTIONS.RETIRE_ADVENTURER then
+            ok, result, detail = self:resolveRetireAdventurer(actor, actionData)
+        elseif actionId == M.ACTIONS.DECLARE_NEW_QUEST then
+            ok, result, detail = self:resolveDeclareNewQuest(actor, actionData)
         elseif actionId == M.ACTIONS.LOOSEN_LIPS then
             ok, result, detail = self:resolveLoosenLips(actor, actionData)
         elseif actionId == M.ACTIONS.MAKEOVER then
@@ -6900,11 +16387,14 @@ function M.createCityPhaseController(config)
         elseif actionId == M.ACTIONS.MENAGERIE_REAGENT_PURCHASE then
             ok, result, detail = alchemy.resolveMenagerieReagentPurchase(actor, actionData, {
                 eventBus = self.eventBus,
+                menagerieStock = self.menagerieStock,
             })
         elseif actionId == M.ACTIONS.PURCHASE_AMULETS then
             ok, result, detail = self:resolvePurchaseAmulets(actor, actionData)
         elseif actionId == M.ACTIONS.PURCHASE_ANIMAL_COMPANION then
             ok, result, detail = self:resolvePurchaseAnimalCompanion(actor, actionData)
+        elseif actionId == M.ACTIONS.TRAIN_ANIMAL_COMPANION then
+            ok, result, detail = self:resolveTrainAnimalCompanion(actor, actionData)
         elseif actionId == M.ACTIONS.PURCHASE_FATE_HONEY then
             ok, result, detail = self:resolvePurchaseFateHoney(actor, actionData)
         elseif actionId == M.ACTIONS.PURCHASE_FIREWORKS then
@@ -6989,6 +16479,13 @@ function M.createCityPhaseController(config)
         local districtEntry = self:getDistrictAction(requestedActionId)
         if not districtEntry then
             return false, "District City Action unavailable"
+        end
+        local blockedDistricts = self.cityEventEffects and self.cityEventEffects.blockedDistrictIds
+        local blockedActions = self.cityEventEffects and self.cityEventEffects.blockedDistrictActions
+        if districtEntry.blockedByCityEvent or
+           (blockedDistricts and blockedDistricts[districtEntry.districtId]) or
+           (blockedActions and blockedActions[requestedActionId]) then
+            return false, "District City Action blocked by City Event"
         end
 
         local actionId = districtActionAlias(requestedActionId)

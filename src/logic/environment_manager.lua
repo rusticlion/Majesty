@@ -41,6 +41,46 @@ M.STRESSFUL_OUTCOMES = {
     "void_glimpse",
 }
 
+local function getTravelEffects(data)
+    data = data or {}
+    local effects = data.effects
+    if type(effects) ~= "table" and type(data.result) == "table" then
+        effects = data.result.effects
+    end
+    if type(effects) ~= "table" and type(data.raw) == "table" then
+        effects = data.raw.effects
+    end
+    if type(effects) ~= "table" then
+        return {}
+    end
+    return effects
+end
+
+local function travelEffectAppliesPartyStress(effect)
+    if type(effect) ~= "table" then
+        return false
+    end
+
+    local effectType = tostring(effect.type or "")
+    if effectType == "stress_all" or effectType == "party_stress" then
+        return true
+    end
+
+    if effect.stressAll ~= true and effect.stress ~= true then
+        return false
+    end
+
+    local target = tostring(effect.stressTarget or effect.target or ""):lower()
+    return target == "all" or target == "everyone" or target == "party" or target == "guild"
+end
+
+local function travelEffectStressReason(effect)
+    if type(effect) ~= "table" then
+        return M.STRESS_REASONS.TERRIFYING
+    end
+    return effect.stressReason or effect.reason or effect.outcomeType or M.STRESS_REASONS.TERRIFYING
+end
+
 --------------------------------------------------------------------------------
 -- ENVIRONMENT MANAGER FACTORY
 --------------------------------------------------------------------------------
@@ -218,26 +258,41 @@ function M.createEnvironmentManager(config)
     --- Handle Travel Events from Meatgrinder (Major Arcana XI-XV)
     -- @param data table: { card, category, value }
     function manager:handleTravelEvent(data)
-        -- Travel events don't always cause stress
-        -- The specific outcome determines if it's stressful
-        -- For now, we'll use a simple probability based on card value
+        data = data or {}
+        local effects = getTravelEffects(data)
+        local stressApplications = {}
 
-        -- Higher values (XIV, XV) are more likely to be terrifying
-        local stressChance = (data.value - 10) * 0.15  -- 15% at XI, 75% at XV
+        for _, effect in ipairs(effects) do
+            if travelEffectAppliesPartyStress(effect) then
+                local reason = travelEffectStressReason(effect)
+                local count = self:applyStressToParty(reason)
+                stressApplications[#stressApplications + 1] = {
+                    effect = effect,
+                    reason = reason,
+                    count = count,
+                }
+            end
+        end
 
-        -- In a full implementation, this would check a travel event table
-        -- For now, emit event for narrative system to determine outcome
-        self.eventBus:emit("travel_event_check", {
+        local payload = {
             card          = data.card,
             value         = data.value,
-            stressChance  = stressChance,
+            category      = data.category,
+            roomId        = data.roomId,
+            result        = data.result,
+            raw           = data.raw,
+            effects       = effects,
+            stressApplications = stressApplications,
             checkStress   = function(outcomeType)
                 return self:checkOutcomeStressful(outcomeType)
             end,
             applyPartyStress = function(reason)
                 return self:applyStressToParty(reason)
             end,
-        })
+        }
+
+        self.eventBus:emit("travel_event_check", payload)
+        return payload
     end
 
     ----------------------------------------------------------------------------

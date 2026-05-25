@@ -76,17 +76,36 @@ end
 local function createConnection(targetRoomId, properties)
     properties = properties or {}
 
-    return {
+    local metadata = {}
+    for key, value in pairs(properties) do
+        metadata[key] = value
+    end
+
+    local connection = {
         target_room_id = targetRoomId,
         direction      = properties.direction or nil,
         is_secret      = properties.is_secret or false,
         is_locked      = properties.is_locked or false,
         is_one_way     = properties.is_one_way or false,
-        discovered     = not (properties.is_secret or false),  -- Secrets start undiscovered
         key_id         = properties.key_id or nil,              -- What unlocks this?
         trap           = properties.trap or nil,                -- Trap data (future)
         description    = properties.description or nil,         -- "A heavy iron door"
+        properties     = metadata,
     }
+
+    if properties.discovered ~= nil then
+        connection.discovered = properties.discovered
+    else
+        connection.discovered = not (connection.is_secret or false)  -- Secrets start undiscovered
+    end
+
+    for key, value in pairs(metadata) do
+        if connection[key] == nil then
+            connection[key] = value
+        end
+    end
+
+    return connection
 end
 
 --------------------------------------------------------------------------------
@@ -189,12 +208,13 @@ function M.createGraph()
 
     --- Get adjacent rooms from a given room
     -- @param roomId string: The room to query from
-    -- @param options table: { include_secret, include_locked }
+    -- @param options table: { include_secret, include_locked, include_blocked }
     -- @return table: Array of { room, connection } pairs
     function graph:getAdjacentRooms(roomId, options)
         options = options or {}
         local includeSecret = options.include_secret or false
         local includeLocked = options.include_locked ~= false  -- Default true
+        local includeBlocked = options.include_blocked ~= false -- Default true
 
         local room = self.rooms[roomId]
         if not room then
@@ -212,6 +232,10 @@ function M.createGraph()
 
             -- Optionally filter locked connections
             if connection.is_locked and not includeLocked then
+                include = false
+            end
+
+            if connection.is_blocked and not includeBlocked then
                 include = false
             end
 
@@ -250,6 +274,68 @@ function M.createGraph()
             return true
         end
         return false
+    end
+
+    --- Clear a blocked connection.
+    function graph:clearConnectionBlock(fromId, toId)
+        local conn = self:getConnection(fromId, toId)
+        if not conn then
+            return false
+        end
+
+        local function clear(connToClear)
+            connToClear.is_blocked = false
+            connToClear.blocked_by = nil
+            connToClear.cleared = true
+            connToClear.cleared_by = connToClear.cleared_by or true
+            if connToClear.properties then
+                connToClear.properties.is_blocked = false
+                connToClear.properties.blocked_by = nil
+                connToClear.properties.cleared = true
+                connToClear.properties.cleared_by = connToClear.properties.cleared_by or true
+            end
+        end
+
+        clear(conn)
+
+        local reverse = self:getConnection(toId, fromId)
+        if reverse then
+            clear(reverse)
+        end
+
+        return true
+    end
+
+    --- Clear ghost/intangible containment metadata from a connection.
+    function graph:clearConnectionGhostBlock(fromId, toId)
+        local conn = self:getConnection(fromId, toId)
+        if not conn then
+            return false
+        end
+
+        local function clear(connToClear)
+            connToClear.blocks_ghosts = false
+            connToClear.blocks_intangible = false
+            connToClear.destroying_webs_frees_ghosts = false
+            connToClear.blocked_by = nil
+            connToClear.ghost_block_cleared = true
+            if connToClear.properties then
+                connToClear.properties.blocks_ghosts = false
+                connToClear.properties.blocks_intangible = false
+                connToClear.properties.destroying_webs_frees_ghosts = false
+                connToClear.properties.blocked_by = nil
+                connToClear.properties.ghost_block_cleared = true
+            end
+        end
+
+        clear(conn)
+
+        local reverse = self:getConnection(toId, fromId)
+        if reverse then
+            clear(reverse)
+        end
+
+        return true
     end
 
     --- Unlock a locked connection

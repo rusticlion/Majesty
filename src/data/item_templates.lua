@@ -57,10 +57,11 @@ M.templates = {
     silver_longsword = {
         name = "Silver Longsword",
         size = 1,
-        durability = 3,
+        durability = 1,
         weaponType = "sword",
         properties = {
             silver = true,
+            notchCapacity = 1,
         },
     },
 
@@ -87,6 +88,8 @@ M.templates = {
             notchCapacity = 2,
             iron = true,
             blocksTargetedSpells = true,
+            blocksSneak = true,
+            blocksSwim = true,
         },
     },
 
@@ -101,15 +104,17 @@ M.templates = {
             notchCapacity = 3,
             latentIron = true,
             blocksCasting = true,
+            blocksSneak = true,
+            blocksSwim = true,
         },
     },
 
     helm = {
         name = "Helm",
         size = 1,
-        durability = 2,
+        durability = 1,
         isArmor = true,
-        properties = { armor = true, armorType = "helm" },
+        properties = { armor = true, armorType = "helm", notchCapacity = 1 },
     },
 
     shield_light = {
@@ -227,11 +232,37 @@ M.templates = {
         },
     },
 
+    healing_moss_ration = {
+        name = "Healing Moss Meal",
+        size = 1,
+        type = "ration",
+        isRation = true,
+        properties = {
+            ration = true,
+            food = true,
+            consumable = true,
+            healEffect = true,
+            sourceRoom = "112_hidden_sanctum",
+            effect = "heal_wound",
+            useEffect = {
+                type = "heal_wound",
+                target = "self_or_target",
+                successMessage = "The moss meal heals a wound.",
+            },
+        },
+    },
+
     lard = {
         name = "Lard",
         size = 1,
         durability = 1,
-        properties = { food = true, grease = true },
+        properties = {
+            food = true,
+            grease = true,
+            soap = true,
+            emergencyRation = true,
+            rationSubstitute = true,
+        },
     },
 
     leeches = {
@@ -299,7 +330,7 @@ M.templates = {
                 type = "salt_ooze",
                 target = "target",
                 attribute = "swords",
-                affectedTags = { "ooze", "jelly", "slime" },
+                affectedTags = { "ooze", "ooze_kin", "jelly", "slime", "ungoat" },
                 damage = {
                     amount = 2,
                     effects = { "salt_reactive" },
@@ -332,14 +363,33 @@ M.templates = {
         name = "Wolfsbane",
         size = 1,
         durability = 1,
-        properties = { herb = true, ward = true },
+        properties = {
+            herb = true,
+            ward = true,
+            effect = "ward_undead",
+            useEffect = {
+                type = "ward_undead",
+                target = "target",
+                attribute = "wands",
+                affectedTags = { "wolf", "lycanthrope", "werewolf", "lycan" },
+                defaultUndeadSpirit = false,
+                successMessage = "The wolfsbane drives the creature back.",
+                noEffectMessage = "The wolfsbane has no hold over this creature.",
+            },
+        },
     },
 
     booze_fancy = {
         name = "Booze, Fancy",
         size = 1,
         durability = 1,
-        properties = { alcohol = true, gift = true, luxury = true },
+        properties = {
+            alcohol = true,
+            gift = true,
+            luxury = true,
+            tradeGood = true,
+            socialTags = { "booze", "alcohol", "gift", "luxury", "trade" },
+        },
     },
 
     bezoar = {
@@ -491,11 +541,15 @@ M.templates = {
             consumable = true,
             consumeOnAttempt = true,
             offensive = true,
+            targetsIntangible = true,
+            affectsIncorporeal = true,
             source = "brain_spider",
             useEffect = {
                 type = "apply_conditions",
                 target = "target",
                 conditions = { rooted = true },
+                targetsIntangible = true,
+                affectsIncorporeal = true,
                 successMessage = "Silver web explodes over the target, rooting them.",
             },
         },
@@ -694,10 +748,13 @@ M.templates = {
             useEffect = {
                 type = "apply_conditions",
                 target = "target",
+                requiresBreathing = true,
                 conditions = {
                     exhausted = true,
                 },
+                ["until"] = "recover",
                 successMessage = "A choking cloud of spores leaves the target exhausted.",
+                noEffectMessage = "The choking spores have no effect on a target that does not breathe.",
             },
         },
     },
@@ -821,6 +878,7 @@ M.templates = {
             useEffect = {
                 type = "frictionless_surface",
                 target = "target",
+                duration = "watch",
                 puddleDiameterFeet = 10,
                 successMessage = "The touched surface becomes utterly frictionless.",
             },
@@ -875,6 +933,7 @@ M.templates = {
                 type = "jinn_shroud",
                 target = "self",
                 duration = "visible_interaction",
+                maxDuration = "watch",
                 successMessage = "Smokeless fire hides you as Shrouded until you touch the visible world.",
             },
         },
@@ -894,6 +953,7 @@ M.templates = {
             useEffect = {
                 type = "materialize_intangible",
                 target = "target",
+                duration = "watch",
                 successMessage = "The intangible target is forced into visible, tangible form.",
             },
         },
@@ -989,6 +1049,7 @@ M.templates = {
                 type = "apply_properties",
                 target = "target",
                 duration = "watch",
+                waterPlatformDiameterFeet = 10,
                 properties = {
                     rejectsWater = true,
                     hydrophobic = true,
@@ -1080,15 +1141,13 @@ M.templates = {
             useEffect = {
                 type = "apply_properties",
                 target = "target",
+                freezesWaterBodySize = "olympic_pool",
+                iceWallHeightFeet = 10,
+                iceWallWidthFeet = 10,
+                iceWallThicknessFeet = 1,
                 properties = {
                     freezing = true,
-                    freezesWater = true,
-                    createsIceWall = true,
-                    iceWallHeightFeet = 10,
-                    iceWallWidthFeet = 10,
-                    iceWallThicknessFeet = 1,
-                    opaque = true,
-                    impermeable = true,
+                    winterWolfOil = true,
                 },
                 successMessage = "The oil freezes into an opaque wall or sheet of ice.",
             },
@@ -1176,6 +1235,7 @@ M.templates = {
             useEffect = {
                 type = "rage_pheromone",
                 target = "target",
+                duration = "watch",
                 successMessage = "Rage-inducing pheromones make nearby creatures furious at the target.",
             },
         },
@@ -1398,6 +1458,8 @@ M.templates = {
                     amount = 1,
                     effects = { "critical" },
                 },
+                holeDiameterFeet = 5,
+                eatsThroughFloor = true,
                 immuneMaterials = { "glass" },
                 successMessage = "The acid oil dissolves what it touches.",
             },
@@ -1762,8 +1824,8 @@ M.templates = {
         name = "Arrows",
         size = 1,
         stackable = true,
-        stackSize = 20,
-        quantity = 10,
+        stackSize = 12,
+        quantity = 12,
         ammoType = "arrow",
     },
 
@@ -1771,8 +1833,8 @@ M.templates = {
         name = "Crossbow Bolts",
         size = 1,
         stackable = true,
-        stackSize = 20,
-        quantity = 10,
+        stackSize = 12,
+        quantity = 12,
         ammoType = "bolt",
     },
 
@@ -1783,36 +1845,78 @@ M.templates = {
     lockpicks = {
         name = "Lockpicks",
         size = 1,
-        durability = 2,
+        stackable = true,
+        stackSize = 6,
+        quantity = 6,
+        durability = 1,
         properties = { tool = true, toolType = "lockpick" },
+    },
+
+    handkerchief = {
+        name = "Handkerchief",
+        size = 1,
+        durability = 1,
+        properties = { common = true, cloth = true, tool = true, toolType = "handkerchief" },
+    },
+
+    length_of_wire = {
+        name = "Length of Wire",
+        size = 1,
+        durability = 1,
+        properties = { common = true, tool = true, toolType = "wire", wire = true },
     },
 
     rope = {
         name = "Rope (50ft)",
         size = 1,
         durability = 2,
-        properties = { tool = true, toolType = "rope" },
+        properties = { tool = true, toolType = "rope", rope = true, lengthFeet = 50 },
     },
 
     grappling_hook = {
         name = "Grappling Hook",
         size = 1,
         durability = 2,
-        properties = { tool = true, toolType = "grapple" },
+        properties = { tool = true, toolType = "grapple", grapplingHook = true, requiresRope = true },
     },
 
     caltrops = {
         name = "Caltrops",
         size = 1,
         durability = 1,
-        properties = { tool = true, areaDenial = true },
+        properties = {
+            tool = true,
+            areaDenial = true,
+            consumable = true,
+            effect = "scatter_caltrops",
+            useEffect = {
+                type = "scatter_caltrops",
+                target = "zone",
+                wound = 1,
+                affected = "unshod",
+                successMessage = "Caltrops scattered across the zone.",
+            },
+        },
     },
 
     chain_10ft = {
         name = "Chain, 10ft",
         size = 1,
         durability = 3,
-        properties = { tool = true, toolType = "chain", length = "10ft" },
+        properties = {
+            tool = true,
+            toolType = "chain",
+            length = "10ft",
+            lengthFeet = 10,
+            binding = true,
+            hauling = true,
+            useEffect = {
+                type = "bind_or_haul",
+                target = "target",
+                successMessage = "The chain secures the target for binding or hauling.",
+                noEffectMessage = "The chain needs a person or haulable object to secure.",
+            },
+        },
     },
 
     crowbar = {
@@ -1840,7 +1944,16 @@ M.templates = {
         name = "Hatchet",
         size = 1,
         durability = 2,
-        properties = { tool = true, toolType = "hatchet" },
+        properties = {
+            tool = true,
+            toolType = "hatchet",
+            useEffect = {
+                type = "cut_material",
+                target = "target",
+                successMessage = "The hatchet cuts through the material.",
+                noEffectMessage = "The hatchet needs rope, vines, or wood to cut.",
+            },
+        },
     },
 
     iron_spikes = {
@@ -1850,14 +1963,35 @@ M.templates = {
         stackSize = 6,
         quantity = 6,
         durability = 3,
-        properties = { tool = true, toolType = "spikes", iron = true },
+        properties = {
+            tool = true,
+            toolType = "spikes",
+            iron = true,
+            spike = true,
+            wedge = true,
+            piton = true,
+            useEffect = {
+                type = "iron_spike",
+                target = "target",
+                attribute = "swords",
+            },
+        },
     },
 
     mirror = {
         name = "Mirror",
         size = 1,
         durability = 1,
-        properties = { tool = true, reflective = true },
+        properties = {
+            tool = true,
+            reflective = true,
+            useEffect = {
+                type = "reflect_gaze",
+                target = "target",
+                successMessage = "The mirror turns the monster's dread gaze back on itself.",
+                noEffectMessage = "The mirror finds no reflectable dread gaze.",
+            },
+        },
     },
 
     musical_instrument = {
@@ -1879,7 +2013,20 @@ M.templates = {
         size = 2,
         durability = 2,
         oversized = true,
-        properties = { tool = true, toolType = "pole", length = "10ft" },
+        properties = {
+            tool = true,
+            toolType = "pole",
+            length = "10ft",
+            useFromBelt = true,
+            oversizedUseFromBelt = true,
+            useEffect = {
+                type = "probe_hazard",
+                target = "target",
+                reach = "10ft",
+                successMessage = "The pole probes the hazard from a safe distance.",
+                noEffectMessage = "The pole finds no obvious trap or hazard to probe.",
+            },
+        },
     },
 
     pick = {
@@ -1887,7 +2034,18 @@ M.templates = {
         size = 2,
         durability = 3,
         oversized = true,
-        properties = { tool = true, toolType = "pick" },
+        properties = {
+            tool = true,
+            toolType = "pick",
+            useFromBelt = true,
+            oversizedUseFromBelt = true,
+            useEffect = {
+                type = "excavate",
+                target = "target",
+                successMessage = "The pick breaks up the ground or rubble.",
+                noEffectMessage = "The pick needs earth, stone, or rubble to dig.",
+            },
+        },
     },
 
     shovel = {
@@ -1895,7 +2053,18 @@ M.templates = {
         size = 2,
         durability = 2,
         oversized = true,
-        properties = { tool = true, toolType = "shovel" },
+        properties = {
+            tool = true,
+            toolType = "shovel",
+            useFromBelt = true,
+            oversizedUseFromBelt = true,
+            useEffect = {
+                type = "excavate",
+                target = "target",
+                successMessage = "The shovel clears the soil or rubble.",
+                noEffectMessage = "The shovel needs earth, soil, or rubble to dig.",
+            },
+        },
     },
 
     tinkers_kit = {
@@ -1941,6 +2110,41 @@ M.templates = {
         },
     },
 
+    fragile_royal_scroll = {
+        name = "Fragile Royal Scroll",
+        size = 1,
+        durability = 1,
+        type = "scroll",
+        properties = {
+            scroll = true,
+            readableBook = true,
+            fragile = true,
+            specialCareToTransport = true,
+            antiquarianValueRange = { min = 10, max = 100, currency = "gold" },
+            subjectMatter = "royal family taxes and gifts collected in the sealed tomb",
+            loreSubjectId = "tomb_royal_records",
+            loreMotif = "royal records taxes gifts tomb history",
+        },
+    },
+
+    sealed_vetus_chronicle_scroll = {
+        name = "Sealed Vetus Chronicle Scroll",
+        size = 1,
+        durability = 1,
+        type = "scroll",
+        properties = {
+            scroll = true,
+            fragile = true,
+            vetus = true,
+            sealedCase = true,
+            inscription = "Do not open unless special occasion",
+            openerChronicle = true,
+            minuteByMinuteChronicle = true,
+            becomesInfinitelyLong = true,
+            growsUntilDestroyed = true,
+        },
+    },
+
     clothes_rags = {
         name = "Clothes, Rags",
         size = 1,
@@ -1980,14 +2184,23 @@ M.templates = {
         name = "Manacles",
         size = 1,
         durability = 3,
-        properties = { tool = true, restraint = true },
+        properties = {
+            tool = true,
+            restraint = true,
+            hostileUse = true,
+            useEffect = {
+                type = "restrain_person",
+                target = "target",
+                successMessage = "The target is restrained in manacles.",
+            },
+        },
     },
 
     spyglass = {
         name = "Spyglass",
         size = 1,
         durability = 2,
-        properties = { tool = true, magnification = true },
+        properties = { tool = true, magnification = true, magnificationFactor = 5 },
     },
 
     wand_archwood = {
@@ -2008,6 +2221,21 @@ M.templates = {
             subjectMatter = "Guardian Shrine and tomb astronomy",
             loreSubjectId = "location_guardian_shrine",
             loreMotif = "bookish history astronomy",
+        },
+    },
+
+    alchemical_treatise_francis_stewbrew = {
+        name = "Alchemical Treatise of Francis Stewbrew",
+        size = 1,
+        durability = 1,
+        type = "book",
+        properties = {
+            book = true,
+            readableBook = true,
+            alchemicalTreatise = true,
+            subjectMatter = "alchemical reagents of this Underworld level",
+            loreSubjectId = "underworld_alchemical_reagents",
+            loreMotif = "alchemy reagents underworld",
         },
     },
 
@@ -2507,7 +2735,17 @@ M.templates = {
         stackable = true,
         stackSize = 10,
         quantity = 5,
-        properties = { tool = true, toolType = "marking" },
+        properties = {
+            tool = true,
+            toolType = "marking",
+            consumable = true,
+            useEffect = {
+                type = "mark_surface",
+                target = "target",
+                successMessage = "The chalk mark is left in place.",
+                noEffectMessage = "Chalk needs a surface, feature, or zone to mark.",
+            },
+        },
     },
 
     ----------------------------------------------------------------------------
@@ -2560,10 +2798,110 @@ M.templates = {
         properties = { currency = true, value = 1 },
     },
 
+    gold_coins_54 = {
+        name = "Gold Coins",
+        size = 1,
+        stackable = true,
+        stackSize = 100,
+        quantity = 54,
+        properties = { currency = true, value = 1 },
+    },
+
+    gold_coins_1260 = {
+        name = "Gold Coins",
+        size = 1,
+        stackable = true,
+        stackSize = 1260,
+        quantity = 1260,
+        properties = { currency = true, value = 1 },
+    },
+
+    chest_111_key = {
+        name = "Key to the Spider Treasure Chest",
+        size = 1,
+        durability = 1,
+        keyId = "111_spiders_treasure_chest",
+        properties = { key = true },
+    },
+
+    lamp_oil = {
+        name = "Lamp Oil",
+        size = 1,
+        durability = 1,
+        properties = { liquid = true, oil = true, flammable = true },
+    },
+
+    fine_brandy = {
+        name = "Fine Brandy",
+        size = 1,
+        durability = 1,
+        properties = { liquid = true, drink = true, treasure = true },
+    },
+
+    golden_death_mask = {
+        name = "Golden Death Mask",
+        size = 1,
+        properties = {
+            art = true,
+            treasure = true,
+            deathMask = true,
+            stolenFrom = "107_golden_ghosts",
+            value = 50,
+            unitValue = 50,
+            appeasesGoldenGhosts = true,
+        },
+    },
+
+    golden_death_masks_6 = {
+        name = "Six Golden Death Masks",
+        size = 1,
+        stackable = true,
+        stackSize = 6,
+        quantity = 6,
+        properties = {
+            art = true,
+            treasure = true,
+            deathMask = true,
+            stolenFrom = "107_golden_ghosts",
+            value = 300,
+            unitValue = 50,
+            appeasesGoldenGhosts = true,
+        },
+    },
+
+    jeweled_scarabs_20 = {
+        name = "Twenty Jeweled Scarabs",
+        size = 1,
+        stackable = true,
+        stackSize = 20,
+        quantity = 20,
+        properties = {
+            jewelry = true,
+            treasure = true,
+            jeweledScarabs = true,
+            stolenFrom = "107_golden_ghosts",
+            value = 100,
+            unitValue = 5,
+            ghostsGiftAsCompensation = true,
+        },
+    },
+
+    orcish_golden_goat_idol = {
+        name = "Orcish Golden Goat Idol",
+        size = 1,
+        properties = { art = true, treasure = true, value = 15 },
+    },
+
     ruby_ring = {
         name = "Ruby Ring",
         size = 1,
         properties = { jewelry = true, value = 50 },
+    },
+
+    signet_ring_20 = {
+        name = "Signet Ring",
+        size = 1,
+        properties = { jewelry = true, treasure = true, value = 20 },
     },
 
     golden_amulet = {
@@ -2583,9 +2921,17 @@ M.templates = {
     },
 
     silver_crown = {
-        name = "Silver Crown",
+        name = "Thorn-Antlered Silver Crown",
         size = 1,
-        properties = { quest_item = true, cursed = true },
+        properties = {
+            quest_item = true,
+            magical = true,
+            treasure = true,
+            tripartiteCrown = true,
+            thornAntlers = true,
+            moonsight = true,
+            cityFactionsCovet = true,
+        },
     },
 
     crumpled_note = {
@@ -2641,10 +2987,17 @@ M.templates = {
         size = 1,
         durability = 1,
         properties = {
+            consumable = true,
             camping = true,
             firewood = true,
             felledWood = true,
             campComfort = "fire",
+            useEffect = {
+                type = "build_campfire",
+                target = "zone",
+                successMessage = "Firewood is stacked into a campfire.",
+                noEffectMessage = "Firewood needs a place to build a campfire.",
+            },
         },
     },
 
@@ -2655,6 +3008,11 @@ M.templates = {
         properties = {
             tool = true,
             toolType = "firestarter",
+            useEffect = {
+                type = "start_fire",
+                target = "target",
+                successMessage = "The fire catches.",
+            },
         },
     },
 
@@ -2698,14 +3056,14 @@ M.templates = {
     bedroll = {
         name = "Bedroll",
         size = 2,
-        properties = { camping = true, bedroll = true, campComfort = "bedroll" },
+        properties = { camping = true, bedroll = true, campComfort = "bedroll", sleepCapacity = 1 },
     },
 
     tent = {
         name = "Tent",
         size = 2,
         oversized = true,
-        properties = { camping = true, shelter = true, campComfort = "tent" },
+        properties = { camping = true, shelter = true, campComfort = "tent", sleepCapacity = 2 },
     },
 }
 

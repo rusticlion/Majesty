@@ -12,8 +12,21 @@
 local events = require('logic.events')
 local action_resolver = require('logic.action_resolver')
 local deck = require('logic.deck')
+local inventory = require('logic.inventory')
 
 local M = {}
+
+local function cloneValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = cloneValue(entry)
+    end
+    return copy
+end
 
 --------------------------------------------------------------------------------
 -- NPC RANKS (determines AI aggression)
@@ -39,6 +52,151 @@ local LARGE_SIZE_VALUES = {
     colossal = true,
 }
 
+local TARGETED_ACTION_TYPES = {
+    [action_resolver.ACTION_TYPES.MELEE] = true,
+    [action_resolver.ACTION_TYPES.MISSILE] = true,
+    [action_resolver.ACTION_TYPES.ROUGHHOUSE] = true,
+    [action_resolver.ACTION_TYPES.TRIP] = true,
+    [action_resolver.ACTION_TYPES.DISARM] = true,
+    [action_resolver.ACTION_TYPES.DISPLACE] = true,
+    [action_resolver.ACTION_TYPES.GRAPPLE] = true,
+    [action_resolver.ACTION_TYPES.BANTER] = true,
+    [action_resolver.ACTION_TYPES.PARLEY] = true,
+    [action_resolver.ACTION_TYPES.SPEAK_INCANTATION] = true,
+    [action_resolver.ACTION_TYPES.USE_ITEM] = true,
+}
+
+M.GM_CHALLENGE_REFERENCE = {
+    source = "Core Rules Chapter 7: GMing the Challenge",
+    sourcePages = "121-123",
+    roundDrawFormula = {
+        deck = "major_arcana",
+        timing = "step_1_draw_challenge_cards",
+        base = 3,
+        recalculatedEachRound = true,
+        runtimeMinimum = 1,
+        modifiers = {
+            { id = "enemy_type", amount = 1, per = "distinct enemy type" },
+            { id = "outnumber", amount = 1, when = "living enemies outnumber living adventurers" },
+            { id = "double_outnumber", amount = 1, when = "living enemies are at least twice living adventurers" },
+            { id = "larger_than_human", amount = 1, per = "enemy physically larger than a human" },
+            { id = "elite_enemy", amount = 2, when = "at least one elite enemy is present" },
+            { id = "dungeon_lord", amount = 3, when = "at least one dungeon lord is present" },
+        },
+        examples = {
+            {
+                id = "twelve_imps_vs_four_adventurers",
+                enemies = 12,
+                adventurers = 4,
+                enemyTypes = 1,
+                total = 6,
+            },
+            {
+                id = "seven_imps_vs_four_adventurers",
+                enemies = 7,
+                adventurers = 4,
+                enemyTypes = 1,
+                total = 5,
+            },
+        },
+    },
+    mulligan = {
+        optional = true,
+        trigger = "GM hand is mostly greater dooms or has no lesser dooms",
+        procedure = {
+            "discard all drawn GM cards",
+            "draw the same number again",
+        },
+        runtimeHook = "shouldMulliganRoundHand",
+    },
+    initiative = {
+        timing = "step_2_play_initiative",
+        facedown = true,
+        oneCardForEach = "significant enemy or enemy group",
+        sameEnemyTypeSharesCard = true,
+        significantEnemyKeys = {
+            "significant",
+            M.RANKS.ELITE,
+            M.RANKS.LORD,
+            "dungeon_lord",
+        },
+        facedownActionLimit = "every enemy with an Initiative card can have one facedown Challenge Action",
+        runtimeHooks = {
+            "getInitiativeGroupKey",
+            "handleNPCInitiative",
+            "discardRoundInitiativeCards",
+        },
+    },
+    doomCards = {
+        lesser = {
+            values = { min = 1, max = 14 },
+            use = {
+                "standard Challenge Actions",
+                "lesser doom creature abilities",
+                "Initiative cards when available",
+            },
+        },
+        greater = {
+            values = { min = 15, max = 21 },
+            use = {
+                "greater doom creature abilities",
+                "targeted greater doom riders paired with a lesser-doom Attack",
+                "environmental or self-affecting greater doom effects",
+                "discard for favor on another Challenge Action",
+                "miscellaneous actions except Vigilance",
+            },
+            standardChallengeActionDefault = false,
+            creatureSpecificExceptions = true,
+        },
+    },
+    enemyActions = {
+        timing = "step_3_enemy_actions",
+        majorArcanaValue = "card number",
+        lesserDoomsForStandardActions = true,
+        attributesAddedOnEnemyTurns = true,
+        targetedGreaterDoomRequiresLesserAttack = true,
+    },
+    minorActions = {
+        timing = "step_4_minor_actions",
+        majorArcanaHaveNoSuits = true,
+        anyMajorArcanaMayDeclareMinor = true,
+        ordinaryActionsUseLesserDooms = true,
+        greaterDoomsUseGreaterDoomAbilities = true,
+        oneMinorPerEnemyOrEnemyGroup = true,
+        activeEnemyOrGroupCannotMinorAfterItsOwnTurn = true,
+    },
+    endRound = {
+        timing = "step_5_end_round",
+        assessVictoryOrRetreat = true,
+        facedownActionsRemain = true,
+        discardUnusedGMHand = true,
+        discardCurrentInitiativeCards = true,
+        foolDrawShufflesBothDecks = true,
+        restatePositionsAtNewRound = true,
+    },
+    mobRule = {
+        sourcePages = "122",
+        groupSameAction = true,
+        thresholds = {
+            { attackers = 2, favor = true, piercing = false, critical = false },
+            { attackers = 4, favor = true, piercing = true, critical = false },
+            { attackers = 8, favor = true, piercing = false, critical = true },
+        },
+    },
+}
+
+function M.getGMChallengeReference()
+    return cloneValue(M.GM_CHALLENGE_REFERENCE)
+end
+
+function M.getGMRoundDrawFormula()
+    return cloneValue(M.GM_CHALLENGE_REFERENCE.roundDrawFormula)
+end
+
+function M.getGMMobRule()
+    return cloneValue(M.GM_CHALLENGE_REFERENCE.mobRule)
+end
+
 --------------------------------------------------------------------------------
 -- NPC AI FACTORY
 --------------------------------------------------------------------------------
@@ -61,6 +219,7 @@ function M.createNPCAI(config)
         baseHandSize = 3,
         lastPreparedRound = nil,
         roundInitiativeCards = {},
+        mulliganMostlyGreaterDooms = config.mulliganMostlyGreaterDooms ~= false,
     }
 
     ----------------------------------------------------------------------------
@@ -93,15 +252,15 @@ function M.createNPCAI(config)
         -- Rulebook step 5: discard unused GM Challenge cards before any
         -- Fool-triggered end-round reshuffle happens.
         self.eventBus:on(events.EVENTS.CHALLENGE_ROUND_END, function(data)
+            self:discardRoundInitiativeCards()
             self:discardHand()
-            self.roundInitiativeCards = {}
         end)
 
         -- Listen for challenge end to discard hand
         self.eventBus:on(events.EVENTS.CHALLENGE_END, function(data)
+            self:discardRoundInitiativeCards()
             self:discardHand()
             self.lastPreparedRound = nil
-            self.roundInitiativeCards = {}
         end)
     end
 
@@ -142,7 +301,7 @@ function M.createNPCAI(config)
 
         -- Choose initiative card based on rank/behavior
         local cardIndex = self:chooseInitiativeCard(npc)
-        local card = self:useCard(cardIndex)
+        local card = self:takeCardFromHand(cardIndex)
 
         if card then
             self.roundInitiativeCards[groupKey] = card
@@ -195,7 +354,9 @@ function M.createNPCAI(config)
         end)
 
         local conditions = npc.conditions or {}
-        if npc.mustPlayLowestInitiative or npc.brainfever or conditions.brainfever then
+        local impWimp = npc.blueprintId == "imp" or npc.enemyType == "imp" or
+            (npc.imp and npc.imp.wimps and npc.imp.wimps.alwaysLowestInitiative)
+        if npc.mustPlayLowestInitiative or impWimp or npc.brainfever or conditions.brainfever then
             return sorted[1].index
         end
         if npc.mustFleeFrom or conditions.inspiredFear or conditions.fearful then
@@ -253,6 +414,275 @@ function M.createNPCAI(config)
             return LARGE_SIZE_VALUES[size:lower()] == true
         end
         return false
+    end
+
+    function ai:normalizeAuthoredActionType(value)
+        local normalized
+        if self.actionResolver and self.actionResolver.normalizeActionType then
+            normalized = self.actionResolver:normalizeActionType(value)
+        end
+        if normalized then
+            return normalized
+        end
+
+        value = tostring(value or ""):lower()
+        value = value:gsub("[^%w]+", "_")
+        value = value:gsub("^_+", ""):gsub("_+$", "")
+        return action_resolver.ACTION_ALIASES[value] or value
+    end
+
+    function ai:collectAuthoredActions(npc)
+        local actions = {}
+        local sourceKeys = {
+            "aiActions",
+            "preferredActions",
+            "challengeActions",
+            "authoredActions",
+            "tactics",
+        }
+
+        for _, sourceKey in ipairs(sourceKeys) do
+            local source = npc and npc[sourceKey]
+            if type(source) == "table" then
+                if source.type or source.actionType or source.action then
+                    actions[#actions + 1] = source
+                else
+                    for _, entry in ipairs(source) do
+                        if type(entry) == "table" and (entry.type or entry.actionType or entry.action) then
+                            actions[#actions + 1] = entry
+                        end
+                    end
+                end
+            end
+        end
+
+        return actions
+    end
+
+    function ai:findAuthoredTarget(npc, pcs, entry, actionType)
+        if entry.target then
+            return entry.target
+        end
+
+        local targetId = entry.targetId or entry.target_id
+        if targetId then
+            for _, pc in ipairs(pcs or {}) do
+                if pc == targetId or pc.id == targetId or pc.name == targetId then
+                    return pc
+                end
+            end
+        end
+
+        local mode = tostring(entry.targetMode or entry.targeting or entry.targetScope or ""):lower()
+        if mode == "self" or mode == "actor" then
+            return npc
+        end
+        if mode == "none" or mode == "environment" or mode == "zone" then
+            return nil
+        end
+        if mode == "same_zone_pc" or mode == "same_zone" or mode == "melee" or entry.requiresSameZone == true then
+            return self:selectTarget(npc, pcs or {}, true)
+        end
+        if mode == "any_pc" or mode == "pc" or mode == "target" or mode == "lowest_defense" then
+            return self:selectTarget(npc, pcs or {}, false)
+        end
+
+        if TARGETED_ACTION_TYPES[actionType] then
+            return self:selectTarget(npc, pcs or {}, actionType == action_resolver.ACTION_TYPES.MELEE)
+        end
+        return nil
+    end
+
+    function ai:selectCardForAuthoredAction(entry, actionType)
+        if entry.cardless == true or entry.cardPolicy == "none" or entry.cardUse == "none" then
+            return nil, nil, true
+        end
+
+        local policy = entry.cardPolicy or entry.cardUse or entry.doomType or entry.doom
+        if not policy then
+            if actionType == action_resolver.ACTION_TYPES.MOVE or
+                actionType == action_resolver.ACTION_TYPES.FREE_ACTION or
+                actionType == action_resolver.ACTION_TYPES.TRIVIAL_ACTION or
+                actionType == action_resolver.ACTION_TYPES.INTERACT then
+                policy = "any"
+            else
+                policy = "lesser"
+            end
+        end
+        policy = tostring(policy):lower()
+
+        local index
+        if policy == "greater" or policy == "greater_doom" then
+            index = self:findGreaterDoom()
+        elseif policy == "any" or policy == "misc" or policy == "miscellaneous" then
+            index = self:selectBestActionCard()
+        else
+            index = self:selectBestLesserActionCard()
+        end
+
+        if not index then
+            return nil, nil, false
+        end
+        return index, self.hand[index], true
+    end
+
+    function ai:findAuthoredItem(npc, entry)
+        if entry.item then
+            return entry.item
+        end
+        local inv = npc and npc.inventory
+        if not inv then
+            return nil
+        end
+        local itemId = entry.itemId or entry.item_id
+        if itemId and inv.findItem then
+            local item = inv:findItem(itemId)
+            if item then
+                return item
+            end
+        end
+        local templateId = entry.templateId or entry.itemTemplateId or entry.itemTemplate
+        if templateId and inv.findItemByPredicate then
+            return inv:findItemByPredicate(function(item)
+                return item.templateId == templateId or item.id == templateId
+            end)
+        end
+        return nil
+    end
+
+    function ai:findAuthoredGreaterDoom(npc, entry)
+        if not entry then
+            return nil
+        end
+        if type(entry.greaterDoom) == "table" then
+            return entry.greaterDoom
+        end
+
+        local function normalizeKey(value)
+            value = tostring(value or ""):lower()
+            value = value:gsub("[^%w]+", "_")
+            value = value:gsub("^_+", ""):gsub("_+$", "")
+            return value
+        end
+
+        local doomId = entry.greaterDoomId or entry.doomId or entry.doom_id
+        if type(entry.greaterDoom) == "string" then
+            doomId = doomId or entry.greaterDoom
+        end
+        local effectType = entry.greaterDoomEffectType or entry.doomEffectType
+        local normalizedDoomId = normalizeKey(doomId)
+        local normalizedEffectType = normalizeKey(effectType)
+
+        if normalizedDoomId == "" and normalizedEffectType == "" and
+           entry.requiresGreaterDoom ~= true and entry.useGreaterDoom ~= true then
+            return nil
+        end
+
+        for _, doom in pairs(npc and npc.greaterDooms or {}) do
+            local effect = doom and doom.effect
+            if normalizedDoomId ~= "" and
+               (normalizeKey(doom.id) == normalizedDoomId or normalizeKey(doom.name) == normalizedDoomId) then
+                return doom
+            end
+            if normalizedEffectType ~= "" and effect and normalizeKey(effect.type) == normalizedEffectType then
+                return doom
+            end
+        end
+
+        local doom = npc and npc.greaterDoom
+        local effect = doom and doom.effect
+        if doom and normalizedDoomId ~= "" and
+           (normalizeKey(doom.id) == normalizedDoomId or normalizeKey(doom.name) == normalizedDoomId) then
+            return doom
+        end
+        if doom and normalizedEffectType ~= "" and effect and normalizeKey(effect.type) == normalizedEffectType then
+            return doom
+        end
+
+        return nil
+    end
+
+    function ai:createAuthoredAction(npc, pcs, entry)
+        local actionType = self:normalizeAuthoredActionType(entry.type or entry.actionType or entry.action)
+        if not actionType or actionType == "" then
+            return nil
+        end
+
+        local target = self:findAuthoredTarget(npc, pcs, entry, actionType)
+        if TARGETED_ACTION_TYPES[actionType] and not target and entry.targetOptional ~= true then
+            return nil
+        end
+
+        local item
+        if actionType == action_resolver.ACTION_TYPES.USE_ITEM or actionType == action_resolver.ACTION_TYPES.PULL_ITEM then
+            item = self:findAuthoredItem(npc, entry)
+            if not item and entry.requiresItem ~= false then
+                return nil
+            end
+        end
+
+        local cardIndex, card, usable = self:selectCardForAuthoredAction(entry, actionType)
+        if not usable then
+            return nil
+        end
+
+        local greaterDoom = self:findAuthoredGreaterDoom(npc, entry)
+        local needsGreaterDoom = entry.requiresGreaterDoom == true or entry.useGreaterDoom == true or
+            entry.greaterDoomId ~= nil or entry.doomId ~= nil or entry.doom_id ~= nil or
+            entry.greaterDoomEffectType ~= nil or entry.doomEffectType ~= nil or
+            type(entry.greaterDoom) == "table" or type(entry.greaterDoom) == "string"
+        if needsGreaterDoom and not greaterDoom then
+            return nil
+        end
+
+        local greaterCardIndex
+        local greaterCard
+        if needsGreaterDoom and entry.greaterDoomCardless ~= true then
+            greaterCardIndex = self:findGreaterDoom()
+            if not greaterCardIndex or greaterCardIndex == cardIndex then
+                return nil
+            end
+        end
+
+        if cardIndex and greaterCardIndex then
+            card, greaterCard = self:useDoomPair(cardIndex, greaterCardIndex)
+        elseif cardIndex then
+            card = self:useCard(cardIndex)
+        elseif greaterCardIndex then
+            greaterCard = self:useCard(greaterCardIndex)
+        end
+
+        local action = {}
+        for key, value in pairs(entry) do
+            if key ~= "cardPolicy" and key ~= "cardUse" and key ~= "doomType" and key ~= "doom" then
+                action[key] = value
+            end
+        end
+        action.actor = npc
+        action.target = target
+        action.card = card
+        action.type = actionType
+        action.item = item or action.item
+        action.greaterDoom = greaterDoom or action.greaterDoom
+        if greaterCard then
+            action.greaterDoomCard = greaterCard
+            action.discardedGreaterDoom = greaterCard
+            action.greaterDoomCardCount = action.greaterDoomCardCount or action.greaterDoomCount or 1
+        end
+        action.allEntities = self.challengeController and self.challengeController.allCombatants
+        action.npcAIAuthoredAction = true
+        action.npcAIActionSource = entry.source or entry.id or actionType
+        return action
+    end
+
+    function ai:selectAuthoredChallengeAction(npc, pcs)
+        for _, entry in ipairs(self:collectAuthoredActions(npc)) do
+            local action = self:createAuthoredAction(npc, pcs, entry)
+            if action then
+                return action
+            end
+        end
+        return nil
     end
 
     function ai:hasTag(entity, tag)
@@ -320,6 +750,66 @@ function M.createNPCAI(config)
         return npc.spirit == true or npc.isSpirit == true or self:hasTag(npc, "spirit")
     end
 
+    function ai:isWraith(npc)
+        if not npc then
+            return false
+        end
+        if npc.wraith == true or self:hasTag(npc, "wraith") then
+            return true
+        end
+        local blueprint = tostring(npc.blueprintId or npc.enemyType or npc.species or npc.name or ""):lower()
+        return blueprint:find("wraith", 1, true) ~= nil
+    end
+
+    function ai:isVisibleLightSourceItem(item, location)
+        if not item then
+            return false
+        end
+        local props = item.properties or {}
+        if not (props.light_source == true or props.lightSource == true or item.light_source == true) then
+            return false
+        end
+        if not (props.isLit == true or props.lit == true or item.isLit == true or item.lit == true) then
+            return false
+        end
+        if props.darklight == true or item.darklight == true or props.stealthLight == true or item.stealthLight == true then
+            return false
+        end
+        if props.extinguished == true or item.extinguished == true then
+            return false
+        end
+        if location == inventory.LOCATIONS.BELT and props.provides_belt_light == false then
+            return false
+        end
+        return true
+    end
+
+    function ai:targetCarriesVisibleLightSource(target)
+        if not target then
+            return false
+        end
+        if target.carryingVisibleLightSource == true or target.visibleLightSource == true then
+            return true
+        end
+        if self.actionResolver and self.actionResolver.entityHoldsVisibleLightSource then
+            return self.actionResolver:entityHoldsVisibleLightSource(target)
+        end
+
+        local inv = target.inventory
+        if not inv then
+            return false
+        end
+        for _, location in ipairs({ inventory.LOCATIONS.HANDS, inventory.LOCATIONS.BELT }) do
+            local items = inv.getItems and inv:getItems(location) or inv[location] or {}
+            for _, item in ipairs(items or {}) do
+                if self:isVisibleLightSourceItem(item, location) then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
     function ai:targetIsIgnoredByUndead(target)
         if not target then
             return false
@@ -357,6 +847,31 @@ function M.createNPCAI(config)
             end
         end
         return false
+    end
+
+    function ai:shouldMulliganRoundHand()
+        if not self.mulliganMostlyGreaterDooms or #self.hand == 0 then
+            return false, nil
+        end
+
+        local greaterDooms = 0
+        local lesserDooms = 0
+        for _, card in ipairs(self.hand) do
+            if self:isGreaterDoom(card) then
+                greaterDooms = greaterDooms + 1
+            elseif self:isLesserDoom(card) then
+                lesserDooms = lesserDooms + 1
+            end
+        end
+
+        if lesserDooms == 0 then
+            return true, "no_lesser_dooms"
+        end
+        if greaterDooms > (#self.hand / 2) then
+            return true, "mostly_greater_dooms"
+        end
+
+        return false, nil
     end
 
     function ai:getAttackGreaterDoom(npc)
@@ -450,10 +965,12 @@ function M.createNPCAI(config)
         end
 
         local drawPenalty = 0
+        local drawBonus = 0
         for _, npc in ipairs(livingNPCs) do
             drawPenalty = drawPenalty + math.max(0, npc.stinkingCloudDrawPenalty or npc.challengeDrawPenalty or 0)
+            drawBonus = drawBonus + math.max(0, npc.gmChallengeCardsBonus or npc.challengeDrawBonus or 0)
         end
-        drawCount = drawCount - drawPenalty
+        drawCount = drawCount + drawBonus - drawPenalty
 
         return math.max(1, drawCount)
     end
@@ -488,8 +1005,9 @@ function M.createNPCAI(config)
         local drawCount = self:calculateRoundDrawCount()
         self:drawHand(drawCount)
 
-        if #self.hand > 0 and not self:hasAnyLesserDoom() then
-            print("[NPC AI] Mulliganing hand (no lesser dooms).")
+        local shouldMulligan, mulliganReason = self:shouldMulliganRoundHand()
+        if shouldMulligan then
+            print("[NPC AI] Mulliganing hand (" .. tostring(mulliganReason) .. ").")
             self:discardHand()
             self:drawHand(drawCount)
         end
@@ -513,24 +1031,42 @@ function M.createNPCAI(config)
 
     --- Discard all cards in hand
     function ai:discardHand()
-        if not self.gmDeck then return end
-
-        for _, card in ipairs(self.hand) do
-            self.gmDeck:discard(card)
+        if self.gmDeck then
+            for _, card in ipairs(self.hand) do
+                self.gmDeck:discard(card)
+            end
         end
         self.hand = {}
     end
 
-    --- Use a card from hand (remove and return it)
-    function ai:useCard(index)
-        if index and index <= #self.hand then
-            local card = table.remove(self.hand, index)
-            if self.gmDeck then
-                self.gmDeck:discard(card)
+    function ai:discardRoundInitiativeCards()
+        local seen = {}
+        if self.gmDeck then
+            for _, card in pairs(self.roundInitiativeCards or {}) do
+                if card and not seen[card] then
+                    self.gmDeck:discard(card)
+                    seen[card] = true
+                end
             end
-            return card
+        end
+        self.roundInitiativeCards = {}
+    end
+
+    --- Remove a card from the GM hand without discarding it.
+    function ai:takeCardFromHand(index)
+        if index and index <= #self.hand then
+            return table.remove(self.hand, index)
         end
         return nil
+    end
+
+    --- Use a card from hand (remove and return it)
+    function ai:useCard(index)
+        local card = self:takeCardFromHand(index)
+        if card and self.gmDeck then
+            self.gmDeck:discard(card)
+        end
+        return card
     end
 
     function ai:useDoomPair(lesserIndex, greaterIndex)
@@ -550,6 +1086,27 @@ function M.createNPCAI(config)
         end
 
         return lesserCard, greaterCard
+    end
+
+    function ai:spendGreaterDoomForFavor(action)
+        if not action or action.favor == true then
+            return action
+        end
+
+        local greaterIndex = self:findGreaterDoom()
+        if not greaterIndex then
+            return action
+        end
+
+        local greaterCard = self:useCard(greaterIndex)
+        if not greaterCard then
+            return action
+        end
+
+        action.greaterDoomFavor = true
+        action.greaterDoomFavorCard = greaterCard
+        action.discardedGreaterDoomForFavor = greaterCard
+        return action
     end
 
     ----------------------------------------------------------------------------
@@ -604,6 +1161,27 @@ function M.createNPCAI(config)
             return nil  -- No cards available
         end
 
+        local fearFleeDestination = self:selectFearFleeDestination(npc)
+        if fearFleeDestination then
+            local cardIndex = self:selectBestActionCard()
+            local card = self:useCard(cardIndex)
+            if card then
+                print("[NPC AI] " .. (npc.name or "NPC") .. " flees from fear toward " .. fearFleeDestination)
+                local action = self:createMoveAction(npc, fearFleeDestination, card)
+                action.fearFlee = true
+                action.fleeSource = npc.mustFleeFrom
+                action.fleeSourceId = npc.mustFleeFrom and (npc.mustFleeFrom.id or npc.mustFleeFrom.name) or nil
+                return action
+            end
+        end
+
+        local authoredAction = self:selectAuthoredChallengeAction(npc, pcs)
+        if authoredAction then
+            print("[NPC AI] " .. (npc.name or "NPC") .. " uses authored action " ..
+                tostring(authoredAction.type))
+            return authoredAction
+        end
+
         -- Step 1: targeted greater dooms ride alongside a lesser-doom Attack.
         local attackDoom = self:getAttackGreaterDoom(npc)
         if attackDoom then
@@ -630,7 +1208,8 @@ function M.createNPCAI(config)
 
             if card then
                 print("[NPC AI] " .. (npc.name or "NPC") .. " attacks " .. (meleeTarget.name or "PC") .. " in zone " .. (npc.zone or "?"))
-                return self:createAttackAction(npc, meleeTarget, card)
+                local action = self:createAttackAction(npc, meleeTarget, card)
+                return self:spendGreaterDoomForFavor(action)
             end
         end
 
@@ -655,6 +1234,33 @@ function M.createNPCAI(config)
         -- No valid action
         print("[NPC AI] " .. (npc.name or "NPC") .. " has no valid targets or movement options")
         return nil
+    end
+
+    function ai:isFearDriven(npc)
+        local conditions = npc and npc.conditions or {}
+        return npc and (npc.mustFleeFrom ~= nil or conditions.inspiredFear == true or conditions.fearful == true)
+    end
+
+    function ai:selectFearFleeDestination(npc)
+        if not self:isFearDriven(npc) or not npc.zone then
+            return nil
+        end
+
+        local adjacent = self:getAdjacentZones(npc.zone)
+        if #adjacent == 0 then
+            return nil
+        end
+
+        local source = npc.mustFleeFrom or (npc.emotionalIllusion and npc.emotionalIllusion.cloakedTarget)
+        local sourceZone = source and source.zone or nil
+        table.sort(adjacent)
+        for _, zoneId in ipairs(adjacent) do
+            if not sourceZone or zoneId ~= sourceZone then
+                return zoneId
+            end
+        end
+
+        return adjacent[1]
     end
 
     ----------------------------------------------------------------------------
@@ -848,6 +1454,18 @@ function M.createNPCAI(config)
 
         if #validTargets == 0 then
             return nil
+        end
+
+        if self:isWraith(npc) then
+            local unlitTargets = {}
+            for _, target in ipairs(validTargets) do
+                if not self:targetCarriesVisibleLightSource(target.pc) then
+                    unlitTargets[#unlitTargets + 1] = target
+                end
+            end
+            if #unlitTargets > 0 then
+                validTargets = unlitTargets
+            end
         end
 
         if self:isDogLike(npc) then
